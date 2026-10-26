@@ -82,23 +82,21 @@ function Shell({ route, navigate, onLogout }: { route: string; navigate: (to: st
   const NAV = [
     { path: "/", label: "Home", icon: "◈" },
     { path: "/chat", label: "Chat", icon: "◉" },
-    { path: "/voice", label: "Voice", icon: "🎤" },
-    { path: "/agents", label: "Agents", icon: "✦" },
+    { path: "/voice", label: "AI", icon: "◉" },
     { path: "/tools", label: "Tools", icon: "⚙" },
-    { path: "/analytics", label: "Insights", icon: "▲" },
-    { path: "/terminal", label: "Terminal", icon: "▮" },
-    { path: "/tasks", label: "Tasks", icon: "▦" },
+    { path: "/profile", label: "Profile", icon: "▣" },
   ];
 
   const renderView = () => {
     if (route === "/") return <HomePage navigate={navigate} gw={gw} />;
     if (route === "/chat") return <ChatView />;
     if (route === "/voice") return <VoicePage />;
-    if (route === "/agents") return <AgentsPage />;
     if (route === "/tools") return <ToolsPage />;
+    if (route === "/agents") return <AgentsPage />;
     if (route === "/analytics") return <AnalyticsPage />;
     if (route === "/terminal") return <TerminalPage />;
     if (route === "/tasks") return <BoardView />;
+    if (route === "/profile") return <ProfilePage />;
     return <HomePage navigate={navigate} gw={gw} />;
   };
 
@@ -173,6 +171,28 @@ function HomePage({ navigate, gw }: { navigate: (to: string) => void; gw: Gatewa
         </div>
       </div>
 
+      <div className="card" style={{ marginBottom: 20 }}>
+        <div className="card-title">Quick Shortcuts</div>
+        <div className="shortcut-grid">
+          <div className="shortcut-card" onClick={() => navigate("/agents")}>
+            <div className="shortcut-icon">✦</div>
+            <div className="shortcut-label">Agents</div>
+          </div>
+          <div className="shortcut-card" onClick={() => navigate("/terminal")}>
+            <div className="shortcut-icon">▮</div>
+            <div className="shortcut-label">Terminal</div>
+          </div>
+          <div className="shortcut-card" onClick={() => navigate("/tasks")}>
+            <div className="shortcut-icon">▦</div>
+            <div className="shortcut-label">Tasks</div>
+          </div>
+          <div className="shortcut-card" onClick={() => navigate("/analytics")}>
+            <div className="shortcut-icon">▲</div>
+            <div className="shortcut-label">Insights</div>
+          </div>
+        </div>
+      </div>
+
       <div className="dashboard-grid">
         <div className="card">
           <div className="card-title">System Pulse</div>
@@ -222,12 +242,37 @@ function VoicePage() {
   const [supported, setSupported] = useState(false);
   const [ttsEnabled, setTtsEnabled] = useState(true);
   const [convId, setConvId] = useState<number | null>(null);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
   const recRef = useRef<any>(null);
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState<number>(1);
 
+  // Load workspaces and get active workspace on mount
   useEffect(() => {
+    api.workspaces().then(d => {
+      if (d.workspaces.length > 0) {
+        const activeId = d.activeWorkspaceId || d.workspaces[0].id;
+        setActiveWorkspaceId(activeId);
+        // Load conversations for active workspace
+        api.conversations(activeId).then(convData => setConversations(convData.conversations));
+      }
+    }).catch(() => {});
+
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     setSupported(Boolean(SR));
   }, []);
+
+  // Load conversations when workspace changes
+  useEffect(() => {
+    api.conversations(activeWorkspaceId).then(d => setConversations(d.conversations));
+  }, [activeWorkspaceId]);
+
+  // Ensure we have a conversation to use
+  useEffect(() => {
+    if (conversations.length > 0 && !convId) {
+      // Use the most recent conversation
+      setConvId(conversations[0].id);
+    }
+  }, [conversations, convId]);
 
   const startListening = () => {
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -263,19 +308,39 @@ function VoicePage() {
   const submitVoice = async (text: string) => {
     setStatus("processing");
     try {
-      if (!convId) {
-        const d = await api.createConversation(1, "Voice conversation");
-        setConvId(d.conversation.id);
-        await api.sendMessage(d.conversation.id, text);
-      } else {
-        await api.sendMessage(convId, text);
+      // Ensure we have a conversation ID
+      let currentConvId = convId;
+      if (!currentConvId || conversations.length === 0) {
+        // Create or get conversation
+        const convList = conversations.length > 0 ? conversations : await api.conversations(activeWorkspaceId);
+        if (convList.conversations && convList.conversations.length > 0) {
+          currentConvId = convList.conversations[0].id;
+          setConvId(currentConvId);
+        } else {
+          const d = await api.createConversation(activeWorkspaceId, "Voice conversation");
+          currentConvId = d.conversation.id;
+          setConvId(currentConvId);
+          setConversations(prev => [d.conversation, ...prev]);
+        }
       }
-      // Since sendMessage waits for the reply, we fetch it.
-      const msgs = await api.messages(convId ?? 0);
+
+      // Send message to current conversation
+      await api.sendMessage(currentConvId, text);
+      
+      // Fetch updated messages to get the assistant response
+      const msgs = await api.messages(currentConvId);
       const last = msgs.messages[msgs.messages.length - 1];
-      if (last) { setResponse(last.text); speak(last.text); }
-      else setStatus("idle");
-    } catch (e) { setStatus("error"); }
+      if (last) { 
+        setResponse(last.text); 
+        speak(last.text); 
+        setStatus("idle");
+      } else {
+        setStatus("idle");
+      }
+    } catch (e: any) { 
+      setStatus("error"); 
+      console.error("Voice submission error:", e);
+    }
   };
 
   return (
@@ -425,6 +490,74 @@ function AnalyticsPage() {
   );
 }
 
+// --- Profile Page ---
+function ProfilePage() {
+  const [session, setSession] = useState<{authenticated: boolean; gateway?: any} | null>(null);
+  const [workspaces, setWorkspaces] = useState<{id: number; name: string; description: string}[]>([]);
+  const [newWsName, setNewWsName] = useState("");
+  const [newWsDesc, setNewWsDesc] = useState("");
+
+  useEffect(() => {
+    api.session().then(setSession).catch(() => {});
+    api.workspaces().then(d => setWorkspaces(d.workspaces)).catch(() => {});
+  }, []);
+
+  const createWorkspace = async () => {
+    if (!newWsName.trim()) return;
+    const d = await api.createWorkspace(newWsName, newWsDesc);
+    setWorkspaces(prev => [...prev, d.workspace]);
+    setNewWsName("");
+    setNewWsDesc("");
+  };
+
+  const activateWorkspace = async (id: number) => {
+    await api.activateWorkspace(id);
+    window.location.reload();
+  };
+
+  return (
+    <div>
+      <div className="card" style={{ marginBottom: 20 }}>
+        <div className="card-title">Profile</div>
+        <div className="card-content" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div><span className="text-dim">Session:</span> {session?.authenticated ? "Authenticated" : "Anonymous"}</div>
+          <div><span className="text-dim">Gateway:</span> {session?.gateway?.connected ? "Connected" : "Disconnected"}</div>
+        </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: 20 }}>
+        <div className="card-title">Workspaces</div>
+        <div className="card-content" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {workspaces.map(ws => (
+            <div key={ws.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: 12, background: "rgba(0,0,0,0.2)", borderRadius: 8 }}>
+              <div>
+                <div style={{ fontWeight: 600 }}>{ws.name}</div>
+                <div className="text-dim" style={{ fontSize: "0.8rem" }}>{ws.description || "No description"}</div>
+              </div>
+              <button className="btn" style={{ padding: "6px 12px", fontSize: "0.8rem" }} onClick={() => activateWorkspace(ws.id)}>Use</button>
+            </div>
+          ))}
+          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+            <input 
+              placeholder="Workspace name" 
+              value={newWsName} 
+              onChange={e => setNewWsName(e.target.value)}
+              style={{ flex: 1 }}
+            />
+            <input 
+              placeholder="Description" 
+              value={newWsDesc} 
+              onChange={e => setNewWsDesc(e.target.value)}
+              style={{ flex: 2 }}
+            />
+            <button className="btn" onClick={createWorkspace}>+</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // --- Terminal Page ---
 function TerminalPage() {
   const [lines, setLines] = useState<string[]>(["$ Julie AiOS Terminal ready."]);
@@ -434,7 +567,9 @@ function TerminalPage() {
   const logRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const ws = new WebSocket(`ws://${window.location.host}/terminal-ws`);
+    // Protocol-aware WebSocket: wss:// for HTTPS, ws:// for HTTP
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${wsProtocol}//${window.location.host}/terminal-ws`);
     wsRef.current = ws;
     ws.onmessage = (ev) => {
       const d = JSON.parse(ev.data);
@@ -478,11 +613,32 @@ function ChatView() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState<number>(1);
   const logRef = useRef<HTMLDivElement>(null);
 
+  // Load workspaces and conversations
   useEffect(() => {
-    api.conversations(1).then(d => { setConvs(d.conversations); setConvId(d.conversations[0]?.id ?? null); }).catch(() => {});
+    api.workspaces().then(d => {
+      if (d.workspaces.length > 0) {
+        const activeId = d.activeWorkspaceId || d.workspaces[0].id;
+        setActiveWorkspaceId(activeId);
+        api.conversations(activeId).then(convData => {
+          setConvs(convData.conversations);
+          setConvId(convData.conversations[0]?.id ?? null);
+        });
+      }
+    }).catch(() => {});
   }, []);
+
+  // Load conversations when workspace changes
+  useEffect(() => {
+    api.conversations(activeWorkspaceId).then(d => {
+      setConvs(d.conversations);
+      if (!convId || !d.conversations.find(c => c.id === convId)) {
+        setConvId(d.conversations[0]?.id ?? null);
+      }
+    });
+  }, [activeWorkspaceId]);
 
   useEffect(() => {
     if (convId) api.messages(convId).then(d => setMessages(d.messages)).catch(() => {});
@@ -508,11 +664,19 @@ function ChatView() {
     <section className="chat" style={{ flex: 1, display: "flex", flexDirection: "column", height: "80vh" }}>
       <div className="card" style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
         <div style={{ display: "flex", gap: 10, marginBottom: 10 }}>
+          <select 
+            className="conv-select" 
+            value={activeWorkspaceId}
+            onChange={e => setActiveWorkspaceId(Number(e.target.value))}
+            style={{ maxWidth: 200 }}
+          >
+            <option value={1}>Workspace 1</option>
+          </select>
           <select className="conv-select" value={convId ?? ""} onChange={e => setConvId(Number(e.target.value))}>
             {convs.map(c => <option key={c.id} value={c.id}>{c.title}</option>)}
           </select>
           <button className="btn" onClick={async () => {
-            const d = await api.createConversation(1, "New conversation");
+            const d = await api.createConversation(activeWorkspaceId, "New conversation");
             setConvs(c => [d.conversation, ...c]);
             setConvId(d.conversation.id);
           }}>+</button>
@@ -530,35 +694,245 @@ function ChatView() {
   );
 }
 
-// --- Task Board View (Simplified/Reused) ---
+// --- Task Board View (Enhanced) ---
 function BoardView() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [newTitle, setNewTitle] = useState("");
-  useEffect(() => { api.tasks(1).then(d => setTasks(d.tasks)).catch(() => {}); }, []);
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState<number>(1);
+  const [workspaces, setWorkspaces] = useState<{id: number; name: string}[]>([]);
+  const [editingTask, setEditingTask] = useState<Task | null>(null);
+  const [editForm, setEditForm] = useState<{title: string; description: string; status: string; priority: number}>({
+    title: "",
+    description: "",
+    status: "backlog",
+    priority: 2
+  });
+
+  // Load workspaces and tasks
+  useEffect(() => {
+    api.workspaces().then(d => {
+      if (d.workspaces.length > 0) {
+        const activeId = d.activeWorkspaceId || d.workspaces[0].id;
+        setActiveWorkspaceId(activeId);
+        setWorkspaces(d.workspaces.map(w => ({ id: w.id, name: w.name })));
+      }
+    });
+  }, []);
+
+  useEffect(() => {
+    api.tasks(activeWorkspaceId).then(d => setTasks(d.tasks)).catch(() => {});
+  }, [activeWorkspaceId]);
 
   const add = async () => {
     if (!newTitle.trim()) return;
-    await api.createTask(1, newTitle);
+    await api.createTask(activeWorkspaceId, newTitle, "backlog");
     setNewTitle("");
-    api.tasks(1).then(d => setTasks(d.tasks));
+    api.tasks(activeWorkspaceId).then(d => setTasks(d.tasks));
+  };
+
+  const updateTask = async (id: number, patch: any) => {
+    await api.updateTask(id, patch);
+    api.tasks(activeWorkspaceId).then(d => setTasks(d.tasks));
+  };
+
+  const deleteTask = async (id: number) => {
+    if (!confirm("Delete this task?")) return;
+    await api.deleteTask(id);
+    api.tasks(activeWorkspaceId).then(d => setTasks(d.tasks));
+  };
+
+  const runTask = async (id: number) => {
+    if (!confirm("Run this task? This will execute it via the agent.")) return;
+    await api.runTask(id);
+    api.tasks(activeWorkspaceId).then(d => setTasks(d.tasks));
+  };
+
+  const openEdit = (task: Task) => {
+    setEditingTask(task);
+    setEditForm({
+      title: task.title,
+      description: task.description,
+      status: task.status,
+      priority: task.priority
+    });
+  };
+
+  const saveEdit = async () => {
+    if (!editingTask) return;
+    await updateTask(editingTask.id, editForm);
+    setEditingTask(null);
+  };
+
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case 'backlog': return 'var(--text-dim)';
+      case 'ready': return 'var(--accent-cyan)';
+      case 'in_progress': return 'var(--accent-primary)';
+      case 'pending_review': return 'var(--accent-violet)';
+      case 'done': return '#4ade80';
+      case 'blocked': return '#ff3b30';
+      default: return 'var(--text-dim)';
+    }
+  };
+
+  const formatDate = (dateStr?: string) => {
+    if (!dateStr) return 'N/A';
+    return new Date(dateStr).toLocaleString();
   };
 
   return (
     <section style={{ flex: 1 }}>
-      <div style={{ display: "flex", gap: 10, marginBottom: 20 }}>
-        <input className="conv-select" style={{ flex: 1, maxWidth: 400 }} value={newTitle} onChange={e => setNewTitle(e.target.value)} placeholder="New task…" />
+      <div style={{ display: "flex", gap: 10, marginBottom: 20, alignItems: "center" }}>
+        <select 
+          className="conv-select" 
+          style={{ maxWidth: 200 }}
+          value={activeWorkspaceId}
+          onChange={e => setActiveWorkspaceId(Number(e.target.value))}
+        >
+          {workspaces.map(w => (
+            <option key={w.id} value={w.id}>{w.name}</option>
+          ))}
+        </select>
+        <input 
+          className="conv-select" 
+          style={{ flex: 1, maxWidth: 400 }} 
+          value={newTitle} 
+          onChange={e => setNewTitle(e.target.value)} 
+          placeholder="New task…" 
+        />
         <button className="btn" onClick={add}>Add Task</button>
       </div>
+      
       <div className="dashboard-grid">
         {TASK_STATUSES.map(status => (
-          <div key={status} className="card" style={{ minHeight: 200 }}>
+          <div key={status} className="card" style={{ minHeight: 280 }}>
             <div className="card-title">{STATUS_LABEL[status]}</div>
-            <div className="card-content">
-              {tasks.filter(t => t.status === status).map(t => <div key={t.id} className="task-card mb-4 p-4" style={{ background: "rgba(0,0,0,0.2)", borderRadius: 8 }}>{t.title}</div>)}
+            <div className="card-content" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {tasks.filter(t => t.status === status).map(t => (
+                <div 
+                  key={t.id} 
+                  className="task-card mb-4 p-4" 
+                  style={{ 
+                    background: "rgba(0,0,0,0.2)", 
+                    borderRadius: 8,
+                    border: `1px solid ${getStatusColor(t.status)}`,
+                    cursor: 'pointer'
+                  }}
+                  onClick={() => openEdit(t)}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+                    <div style={{ fontWeight: 600, flex: 1 }}>{t.title}</div>
+                    <span 
+                      className="status-dot" 
+                      style={{ 
+                        background: getStatusColor(t.status),
+                        width: 8,
+                        height: 8,
+                        borderRadius: '50%',
+                        marginRight: 8
+                      }} 
+                    />
+                  </div>
+                  {t.description && (
+                    <div className="text-dim" style={{ fontSize: "0.8rem", marginBottom: 6 }}>
+                      {t.description.length > 120 ? t.description.slice(0, 120) + "..." : t.description}
+                    </div>
+                  )}
+                  {t.last_run_output && (
+                    <div className="text-dim" style={{ fontSize: "0.75rem", color: "var(--accent-cyan)", marginBottom: 4 }}>
+                      Run: {t.last_run_output.slice(0, 60)}{t.last_run_output.length > 60 ? "..." : ""}
+                    </div>
+                  )}
+                  <div className="text-dim" style={{ fontSize: "0.7rem", marginTop: 8 }}>
+                    {t.run_started_at ? `Started: ${formatDate(t.run_started_at)}` : `Created: ${formatDate(t.created_at)}`}
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
         ))}
       </div>
+
+      {/* Edit Modal */}
+      {editingTask && (
+        <div style={{
+          position: "fixed",
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: "rgba(0,0,0,0.7)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          zIndex: 1000
+        }}>
+          <div className="card" style={{ width: "100%", maxWidth: 500, maxHeight: "90vh", overflow: "auto" }}>
+            <div className="card-title">
+              Edit Task
+              <button className="icon-btn" onClick={() => setEditingTask(null)}>×</button>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <div>
+                <label className="text-dim" style={{ fontSize: "0.8rem", display: "block", marginBottom: 4 }}>Title</label>
+                <input 
+                  value={editForm.title} 
+                  onChange={e => setEditForm(f => ({ ...f, title: e.target.value }))}
+                />
+              </div>
+              <div>
+                <label className="text-dim" style={{ fontSize: "0.8rem", display: "block", marginBottom: 4 }}>Description</label>
+                <textarea 
+                  value={editForm.description}
+                  onChange={e => setEditForm(f => ({ ...f, description: e.target.value }))}
+                  rows={4}
+                  style={{ resize: "vertical" }}
+                />
+              </div>
+              <div style={{ display: "flex", gap: 12 }}>
+                <div style={{ flex: 1 }}>
+                  <label className="text-dim" style={{ fontSize: "0.8rem", display: "block", marginBottom: 4 }}>Status</label>
+                  <select 
+                    value={editForm.status}
+                    onChange={e => setEditForm(f => ({ ...f, status: e.target.value }))}
+                  >
+                    {TASK_STATUSES.map(s => (
+                      <option key={s} value={s}>{STATUS_LABEL[s]}</option>
+                    ))}
+                  </select>
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label className="text-dim" style={{ fontSize: "0.8rem", display: "block", marginBottom: 4 }}>Priority</label>
+                  <select 
+                    value={editForm.priority}
+                    onChange={e => setEditForm(f => ({ ...f, priority: Number(e.target.value) }))}
+                  >
+                    <option value="1">High</option>
+                    <option value="2">Medium</option>
+                    <option value="3">Low</option>
+                  </select>
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                <button className="btn" onClick={saveEdit}>Save</button>
+                <button className="icon-btn" onClick={() => setEditingTask(null)}>Cancel</button>
+                <button 
+                  className="icon-btn" 
+                  style={{ color: "#ff3b30", marginLeft: "auto" }}
+                  onClick={() => { deleteTask(editingTask.id); setEditingTask(null); }}
+                >
+                  🗑 Delete
+                </button>
+              </div>
+              {editingTask.status === 'ready' && (
+                <button className="btn" style={{ background: "var(--accent-cyan)", color: "#070B14" }} onClick={() => runTask(editingTask.id)}>
+                  ▶ Run Task
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }

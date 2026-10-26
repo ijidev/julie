@@ -179,6 +179,165 @@ input:focus { border-color: var(--accent-primary); box-shadow: 0 0 0 2px rgba(25
 .mb-4 { margin-bottom: 1rem; }
 .p-4 { padding: 1rem; }
 
+/* Empty state styling */
+.empty-state {
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--text-dim);
+  font-size: 1rem;
+}
+
+.empty-state p {
+  margin-top: 8px;
+  font-size: 0.9rem;
+}
+
+/* Task card styling */
+.task-card {
+  padding: 12px;
+  border-radius: 8px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.task-card:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* Chat components */
+.chat-log {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.msg {
+  padding: 10px 14px;
+  border-radius: 12px;
+  max-width: 80%;
+}
+.msg.user {
+  background: rgba(255, 122, 26, 0.2);
+  align-self: flex-end;
+  border: 1px solid rgba(255, 122, 26, 0.3);
+}
+.msg.assistant {
+  background: rgba(103, 221, 245, 0.15);
+  align-self: flex-start;
+  border: 1px solid rgba(103, 221, 245, 0.25);
+}
+.chat-input textarea {
+  flex: 1;
+  resize: none;
+  min-height: 40px;
+  max-height: 120px;
+}
+.send-btn {
+  padding: 10px 20px;
+  border-radius: var(--radius-sm);
+  border: none;
+  background: var(--accent-cyan);
+  color: #070B14;
+  font-weight: 600;
+  cursor: pointer;
+}
+.send-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.conv-select {
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--border-soft);
+  color: white;
+  cursor: pointer;
+}
+
+/* Login page */
+.login-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 20px;
+}
+.login-card {
+  width: 100%;
+  max-width: 400px;
+  text-align: center;
+}
+.error-text {
+  color: #ff3b30;
+  margin-top: 12px;
+  font-size: 0.9rem;
+}
+
+/* Quick shortcuts on home */
+.shortcut-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+.shortcut-card {
+  padding: 16px;
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-soft);
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.shortcut-card:hover {
+  background: rgba(255, 255, 255, 0.1);
+  transform: translateY(-2px);
+}
+.shortcut-card .shortcut-icon {
+  font-size: 1.8rem;
+  margin-bottom: 8px;
+}
+.shortcut-card .shortcut-label {
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+/* Status pills */
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 20px;
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+.status-pill.ok {
+  background: rgba(103, 221, 245, 0.15);
+  color: var(--accent-cyan);
+  border: 1px solid rgba(103, 221, 245, 0.3);
+}
+.status-pill.err {
+  background: rgba(255, 59, 48, 0.15);
+  color: #ff3b30;
+  border: 1px solid rgba(255, 59, 48, 0.3);
+}
+.status-pill.wait {
+  background: rgba(167, 139, 250, 0.1);
+  color: var(--accent-violet);
+  border: 1px solid rgba(167, 139, 250, 0.25);
+}
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: pulse-dot 2s infinite;
+}
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
 /* Reduced motion */
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
