@@ -25,6 +25,9 @@ CREATE TABLE IF NOT EXISTS tasks (
   status TEXT NOT NULL DEFAULT 'backlog'
     CHECK (status IN ('backlog','ready','in_progress','waiting_input','pending_review','done','blocked')),
   priority INTEGER NOT NULL DEFAULT 2,
+  gateway_session_key TEXT NOT NULL DEFAULT '',
+  last_run_output TEXT NOT NULL DEFAULT '',
+  run_started_at TEXT,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
@@ -53,6 +56,16 @@ export const TASK_STATUSES = [
   "backlog", "ready", "in_progress", "waiting_input", "pending_review", "done", "blocked",
 ] as const;
 export type TaskStatus = (typeof TASK_STATUSES)[number];
+
+// Migrations for existing databases (ALTER only adds columns; idempotent).
+function migrateTasks(): void {
+  const cols = (db.prepare("PRAGMA table_info(tasks)").all() as Array<{ name: string }>).map((c) => c.name);
+  const has = (n: string) => cols.includes(n);
+  if (!has("gateway_session_key")) db.exec("ALTER TABLE tasks ADD COLUMN gateway_session_key TEXT NOT NULL DEFAULT ''");
+  if (!has("last_run_output")) db.exec("ALTER TABLE tasks ADD COLUMN last_run_output TEXT NOT NULL DEFAULT ''");
+  if (!has("run_started_at")) db.exec("ALTER TABLE tasks ADD COLUMN run_started_at TEXT");
+}
+migrateTasks();
 
 export function getSetting(key: string): string | null {
   const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value: string } | undefined;

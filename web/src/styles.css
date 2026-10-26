@@ -202,3 +202,18 @@ body {
 ::-webkit-scrollbar { width: 9px; height: 9px; }
 ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.14); border-radius: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
+/* B-3: task run affordances */
+.t-running { color: var(--accent); font-size: 11px; font-weight: 600; }
+.t-run { color: var(--accent); border-color: rgba(255, 122, 26, 0.5); cursor: pointer; }
+.t-output {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--text-dim);
+  max-height: 72px;
+  overflow: hidden;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border-left: 2px solid var(--border);
+  padding-left: 6px;
+}

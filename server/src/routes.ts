@@ -90,7 +90,7 @@ api.get("/tasks", (req, res) => {
   const rows = db.prepare(
     "SELECT * FROM tasks WHERE workspace_id = ? ORDER BY priority, updated_at DESC"
   ).all(wsId);
-  res.json({ ok: true, tasks: rows });
+  res.json({ ok: true, tasks: rows, runningTaskIds: [...activeTaskRuns.keys()] });
 });
 
 api.post("/tasks", (req, res) => {
@@ -181,10 +181,93 @@ api.post("/conversations/:id/messages", async (req, res) => {
   }
 });
 
+// ---- streaming: SSE forward of gateway chat deltas per conversation ----
+api.get("/conversations/:id/events", (req, res) => {
+  const conv = db.prepare("SELECT * FROM conversations WHERE id = ?").get(req.params.id) as any;
+  if (!conv) { res.status(404).json({ ok: false, error: "conversation not found" }); return; }
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+  });
+  res.write("retry: 3000\n\n");
+  const send = (obj: unknown) => {
+    try { res.write(`data: ${JSON.stringify(obj)}\n\n`); } catch { /* client gone */ }
+  };
+  send({ type: "hello", conversationId: conv.id });
+  const heartbeat = setInterval(() => {
+    try { res.write(": ping\n\n"); } catch { /* client gone */ }
+  }, 15000);
+  const unsubscribe = gateway.subscribeChat((e) => {
+    if (e.sessionKey !== conv.gateway_session_key) return;
+    send({
+      type: e.state,
+      runId: e.runId ?? null,
+      deltaText: e.deltaText ?? null,
+      replace: e.replace,
+      snapshot: e.snapshot,
+      text: e.text,
+    });
+  });
+  req.on("close", () => {
+    clearInterval(heartbeat);
+    unsubscribe();
+  });
+});
+
 api.delete("/conversations/:id", (req, res) => {
   const info = db.prepare("DELETE FROM conversations WHERE id = ?").run(req.params.id);
   if (info.changes === 0) { res.status(404).json({ ok: false, error: "conversation not found" }); return; }
   res.json({ ok: true });
+});
+
+// ---- task automation bridge (B-3): run a ready task through the gateway ----
+// Lifecycle: ready -> in_progress -> pending_review (or blocked on failure).
+// Execution goes through the real OpenClaw agent registry: chat.send to the
+// orchestrator agent (agent:main) on a stable per-task session key.
+const activeTaskRuns = new Map<number, { startedAt: string }>();
+
+function taskRunPrompt(task: { title: string; description: string }): string {
+  const desc = task.description.trim();
+  return [
+    `Execute this JULIE task from the task board.`,
+    `Task: ${task.title}`,
+    desc ? `\nDescription:\n${desc}` : "",
+    `\nWork on it now using your available tools. When finished, reply with a short result summary as the final answer.`,
+  ].join("");
+}
+
+api.post("/tasks/:id/run", (req, res) => {
+  const task = db.prepare("SELECT * FROM tasks WHERE id = ?").get(req.params.id) as any;
+  if (!task) { res.status(404).json({ ok: false, error: "task not found" }); return; }
+  if (activeTaskRuns.has(task.id)) { res.status(409).json({ ok: false, error: "task is already running" }); return; }
+  if (task.status !== "ready") {
+    res.status(409).json({ ok: false, error: `task must be in 'ready' to run (current: ${task.status})` });
+    return;
+  }
+  const sessionKey = task.gateway_session_key || `agent:main:julie-task-${task.id}`;
+  const now = new Date().toISOString();
+  db.prepare(
+    "UPDATE tasks SET status = 'in_progress', run_started_at = ?, gateway_session_key = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?"
+  ).run(now, sessionKey, task.id);
+  activeTaskRuns.set(task.id, { startedAt: now });
+
+  // Background execution; never blocks the HTTP response.
+  gateway.chat(sessionKey, taskRunPrompt(task), 600000)
+    .then((reply) => {
+      const output = (reply.text || "(gateway returned no output)").slice(0, 20000);
+      db.prepare(
+        "UPDATE tasks SET status = 'pending_review', last_run_output = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?"
+      ).run(output, task.id);
+    })
+    .catch((e: any) => {
+      db.prepare(
+        "UPDATE tasks SET status = 'blocked', last_run_output = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?"
+      ).run(`Run failed: ${e?.message ?? "unknown error"}`.slice(0, 20000), task.id);
+    })
+    .finally(() => activeTaskRuns.delete(task.id));
+
+  res.json({ ok: true, task: db.prepare("SELECT * FROM tasks WHERE id = ?").get(task.id) });
 });
 
 // ---- settings ----

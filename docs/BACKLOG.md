@@ -1,17 +1,22 @@
 # Backlog
 
-## B-1 — TLS in front of JULIE (priority: high)
-Terminate TLS (Caddy site block on a subdomain, or a second Caddy listener) and bind
-JULIE to loopback only. Password auth over plain HTTP is the biggest current risk.
+## B-1 — TLS in front of JULIE (priority: high) — ✅ done 2026-10-26
+Caddy site block `julie.ijihost.com` → 127.0.0.1:3000 added (automatic TLS,
+ACME retrying until DNS record exists); JULIE rebound to 127.0.0.1 only.
+Remaining operator step: add Cloudflare DNS records `julie A 169.58.118.108`
+and `julie AAAA 2a02:c207:2365:275::1` (no CF credentials on this server).
 
-## B-2 — Streaming chat (priority: high)
-Forward gateway `chat` delta events to the browser (SSE or WebSocket) so replies
-render progressively; show the orb in "speaking" state while streaming.
+## B-2 — Streaming chat (priority: high) — ✅ done 2026-10-26
+SSE `GET /api/conversations/:id/events` (auth-gated) forwards gateway chat
+deltas/snapshots/finals; chat UI renders progressively; orb in "speaking"
+state while deltas arrive, idle otherwise. Verified with real round-trips.
 
-## B-3 — Task automation bridge (priority: high)
-Let JULIE act on tasks: a "run with JULIE" action on tasks that submits a prompt to
-the gateway and writes results back to the task (status transitions
-ready → in_progress → pending_review). Requires the auth gate + approval UX.
+## B-3 — Task automation bridge (priority: high) — ✅ done 2026-10-26
+"▶ run" action on `ready` tasks (confirm dialog = approval UX) →
+POST /api/tasks/:id/run → chat.send to orchestrator session
+`agent:main:julie-task-<id>`; lifecycle ready → in_progress → pending_review
+(blocked on failure), output persisted in `last_run_output`. Auth-gated,
+409 on double-run/non-ready, board polls while running.
 
 ## B-4 — Session hardening
 Random per-login session values stored in SQLite with expiry + rotation; secure

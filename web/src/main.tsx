@@ -1,4 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { createRoot } from "react-dom/client";
+import "./styles.css";
 import { api, type Conversation, type GatewayStatus, type Message, type Task, type Workspace, TASK_STATUSES } from "./api";
 
 // --- minimal SPA router (History API, no dependency) ---
@@ -67,6 +69,7 @@ function Shell({ route, navigate, onLogout }: { route: string; navigate: (to: st
   const [activeWs, setActiveWs] = useState<number | null>(null);
   const [gw, setGw] = useState<GatewayStatus | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [speaking, setSpeaking] = useState(false);
 
   const loadWorkspaces = useCallback(async () => {
     const data = await api.workspaces();
@@ -124,10 +127,10 @@ function Shell({ route, navigate, onLogout }: { route: string; navigate: (to: st
           <GatewayPill status={gw} />
         </header>
         <div className="content">
-          <OrbStage speaking={false} />
+          <OrbStage speaking={speaking} />
           {view === "chat"
-            ? <ChatView workspaceId={activeWs} />
-            : <BoardView workspaceId={activeWs} />}
+            ? <ChatView workspaceId={activeWs} onSpeaking={setSpeaking} />
+            : <BoardView workspaceId={activeWs} onSpeaking={setSpeaking} />}
         </div>
       </main>
     </div>
@@ -169,14 +172,16 @@ function OrbStage({ speaking }: { speaking: boolean }) {
   );
 }
 
-function ChatView({ workspaceId }: { workspaceId: number | null }) {
+function ChatView({ workspaceId, onSpeaking }: { workspaceId: number | null; onSpeaking: (v: boolean) => void }) {
   const [convs, setConvs] = useState<Conversation[]>([]);
   const [convId, setConvId] = useState<number | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [streamText, setStreamText] = useState("");
   const [error, setError] = useState("");
   const logRef = useRef<HTMLDivElement>(null);
+  const streamRef = useRef("");
 
   useEffect(() => {
     if (!workspaceId) { setConvs([]); setConvId(null); setMessages([]); return; }
@@ -191,12 +196,33 @@ function ChatView({ workspaceId }: { workspaceId: number | null }) {
     api.messages(convId).then((d) => setMessages(d.messages)).catch(() => setMessages([]));
   }, [convId]);
 
-  useEffect(() => { logRef.current?.scrollTo({ top: logRef.current.scrollHeight }); }, [messages, busy]);
+  // SSE subscription: forward gateway chat deltas so replies render progressively.
+  useEffect(() => {
+    if (!convId) return;
+    const es = new EventSource(`/api/conversations/${convId}/events`);
+    es.onmessage = (ev) => {
+      let d: { type?: string; deltaText?: string | null; replace?: boolean; snapshot?: string | null };
+      try { d = JSON.parse(ev.data); } catch { return; }
+      if (d.type === "delta") {
+        if (d.snapshot != null) streamRef.current = d.snapshot;         // authoritative snapshot (already includes deltaText)
+        else if (d.replace) streamRef.current = d.deltaText ?? "";      // full replacement
+        else streamRef.current += d.deltaText ?? "";                    // append
+        setStreamText(streamRef.current);
+        onSpeaking(true);
+      } else if (d.type === "final" || d.type === "error") {
+        onSpeaking(false);
+      }
+    };
+    return () => { es.close(); onSpeaking(false); };
+  }, [convId, onSpeaking]);
+
+  useEffect(() => { logRef.current?.scrollTo({ top: logRef.current.scrollHeight }); }, [messages, busy, streamText]);
 
   const send = async () => {
     const text = input.trim();
     if (!text || busy || !convId) return;
     setBusy(true); setError("");
+    streamRef.current = ""; setStreamText("");
     const optimistic: Message = { id: -Date.now(), role: "user", text, created_at: new Date().toISOString() };
     setMessages((m) => [...m, optimistic]);
     setInput("");
@@ -207,7 +233,11 @@ function ChatView({ workspaceId }: { workspaceId: number | null }) {
       setMessages((m) => m.filter((x) => x.id !== optimistic.id));
       setInput(text);
       setError(e.message);
-    } finally { setBusy(false); }
+    } finally {
+      setBusy(false);
+      streamRef.current = ""; setStreamText("");
+      onSpeaking(false);
+    }
   };
 
   const newConv = async () => {
@@ -241,7 +271,7 @@ function ChatView({ workspaceId }: { workspaceId: number | null }) {
             <span className="msg-time">{new Date(m.created_at).toLocaleString()}</span>
           </div>
         ))}
-        {busy && <div className="msg assistant">…thinking</div>}
+        {busy && <div className="msg assistant">{streamText || "…thinking"}</div>}
       </div>
       <div className="chat-input">
         <textarea
@@ -259,7 +289,7 @@ function ChatView({ workspaceId }: { workspaceId: number | null }) {
   );
 }
 
-function BoardView({ workspaceId }: { workspaceId: number | null }) {
+function BoardView({ workspaceId, onSpeaking }: { workspaceId: number | null; onSpeaking: (v: boolean) => void }) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [newTitle, setNewTitle] = useState("");
   const [error, setError] = useState("");
@@ -269,6 +299,23 @@ function BoardView({ workspaceId }: { workspaceId: number | null }) {
     api.tasks(workspaceId).then((d) => setTasks(d.tasks)).catch((e) => setError(e.message));
   }, [workspaceId]);
   useEffect(() => { load(); }, [load]);
+
+  // Poll while any task is executing so board transitions (in_progress -> pending_review) appear live.
+  const running = tasks.some((t) => t.status === "in_progress");
+  useEffect(() => {
+    if (!running) return;
+    const t = setInterval(load, 5000);
+    return () => clearInterval(t);
+  }, [running, load]);
+
+  const runTask = async (t: Task) => {
+    if (!window.confirm(`Run "${t.title}" with JULIE now?`)) return;
+    try {
+      await api.runTask(t.id);
+      onSpeaking(true); // falls back to idle via poll when the run settles
+      load();
+    } catch (e: any) { setError(e.message); }
+  };
 
   const addTask = async () => {
     if (!workspaceId || !newTitle.trim()) return;
@@ -312,12 +359,16 @@ function BoardView({ workspaceId }: { workspaceId: number | null }) {
               {tasks.filter((t) => t.status === status).map((t) => (
                 <div className="task-card" key={t.id} draggable
                   onDragStart={(e) => e.dataTransfer.setData("text/task-id", String(t.id))}>
-                  <div className="t-title">{t.title}</div>
+                  <div className="t-title">{t.title}{t.status === "in_progress" && <span className="t-running"> ◈ running</span>}</div>
+                  {t.last_run_output && (t.status === "pending_review" || t.status === "blocked") &&
+                    <div className="t-output" title={t.last_run_output}>{t.last_run_output}</div>}
                   <div className="t-meta">
                     <select className="t-badge" value={t.status} onChange={(e) => move(t, e.target.value)}
                       style={{ color: "var(--text)", background: "rgba(10,16,28,0.6)" }}>
                       {TASK_STATUSES.map((s) => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
                     </select>
+                    {t.status === "ready" &&
+                      <button className="t-badge t-run" title="Run with JULIE" onClick={() => runTask(t)}>▶ run</button>}
                     <button className="t-badge t-del" title="delete"
                       onClick={async () => { await api.deleteTask(t.id).catch(() => {}); load(); }}>✕</button>
                   </div>
@@ -330,3 +381,6 @@ function BoardView({ workspaceId }: { workspaceId: number | null }) {
     </section>
   );
 }
+
+// --- mount (was missing: SPA rendered a blank page) ---
+createRoot(document.getElementById("root")!).render(<App />);

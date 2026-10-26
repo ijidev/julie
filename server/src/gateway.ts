@@ -51,7 +51,19 @@ interface ChatEventPayload {
   state?: string;
   message?: { role: string; content?: Array<{ type: string; text?: string }> };
   deltaText?: string;
+  replace?: boolean;
   stopReason?: string;
+}
+
+// Reduced chat-stream event forwarded to SSE subscribers.
+export interface ChatStreamEvent {
+  sessionKey?: string;
+  state: "delta" | "final" | "error";
+  runId?: string;
+  deltaText?: string; // append payload (delta state)
+  replace: boolean; // deltaText is a full replacement, not an append
+  snapshot: string | null; // authoritative full text when a message snapshot was present
+  text: string | null; // full final text on final state
 }
 
 function extractText(content: Array<{ type: string; text?: string }> | undefined): string {
@@ -76,6 +88,43 @@ export class GatewayClient {
 
   onEvent(listener: (event: string, payload: any) => void): void {
     this.eventListeners.push(listener);
+  }
+
+  // Subscribe to reduced gateway chat stream events (deltas, finals, errors).
+  // Returns an unsubscribe function. Listener errors must not affect the socket.
+  subscribeChat(handler: (e: ChatStreamEvent) => void): () => void {
+    const listener = (event: string, payload: ChatEventPayload) => {
+      if (event !== "chat") return;
+      const state = payload?.state;
+      if (state === "delta") {
+        // Per protocol: a message snapshot on a frame is authoritative and already
+        // includes deltaText — never append on top of a snapshot.
+        const hasSnapshot = Array.isArray(payload.message?.content) && payload.message!.content!.length > 0;
+        handler({
+          sessionKey: payload.sessionKey,
+          state: "delta",
+          runId: payload.runId,
+          deltaText: payload.deltaText,
+          replace: payload.replace === true,
+          snapshot: hasSnapshot ? extractText(payload.message?.content) : null,
+          text: null,
+        });
+      } else if (state === "final" || state === "error") {
+        handler({
+          sessionKey: payload.sessionKey,
+          state: state === "final" ? "final" : "error",
+          runId: payload.runId,
+          deltaText: undefined,
+          replace: false,
+          snapshot: null,
+          text: state === "final" ? extractText(payload.message?.content) : null,
+        });
+      }
+    };
+    this.eventListeners.push(listener);
+    return () => {
+      this.eventListeners = this.eventListeners.filter((l) => l !== listener);
+    };
   }
 
   getStatus(): GatewayStatus {
