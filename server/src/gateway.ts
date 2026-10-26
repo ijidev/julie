@@ -397,6 +397,46 @@ export class GatewayClient {
     }
   }
 
+  // Real paired-node/presence data for the Home dashboard "Connected devices" widget.
+  // Primary: node.list (known/connected node state). Fallback: system-presence snapshot
+  // (connected operator/node devices). Throws if neither is available so the route can
+  // serve its honest single-row fallback. No fields are invented.
+  async listNodes(): Promise<Array<{ id: string; name: string; connected: boolean; lastSeenAtMs?: number }>> {
+    await this.ensureConnected();
+    const toList = (raw: any): any[] => {
+      if (Array.isArray(raw)) return raw;
+      if (raw && typeof raw === "object") {
+        if (Array.isArray(raw.nodes)) return raw.nodes;
+        if (Array.isArray(raw.devices)) return raw.devices;
+        // Presence snapshot is keyed by device id.
+        const out: any[] = [];
+        for (const [k, v] of Object.entries(raw)) {
+          if (v && typeof v === "object") out.push({ id: k, ...(v as object) });
+        }
+        if (out.length > 0) return out;
+      }
+      return [];
+    };
+    try {
+      const res = await this.rpc<any>("node.list", {}, 15000);
+      return toList(res)
+        .map((n: any) => ({
+          id: String(n.nodeId ?? n.id ?? n.deviceId ?? ""),
+          name: String(n.name ?? n.label ?? n.deviceName ?? n.nodeId ?? n.id ?? "Node"),
+          connected: n.connected === true || n.state === "connected" || n.status === "connected",
+          lastSeenAtMs: typeof n.lastSeenAtMs === "number" ? n.lastSeenAtMs : undefined,
+        }))
+        .filter((n) => n.id !== "" || n.name !== "Node");
+    } catch {
+      const res = await this.rpc<any>("system-presence", {}, 15000);
+      return toList(res).map((n: any) => ({
+        id: String(n.deviceId ?? n.id ?? ""),
+        name: String(n.deviceName ?? n.name ?? "Paired device"),
+        connected: true, // system-presence only lists currently connected devices
+      }));
+    }
+  }
+
   shutdown(): void {
     this.closedByUs = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);

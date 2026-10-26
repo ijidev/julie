@@ -30,6 +30,9 @@ export const api = {
   agents: () => jfetch("/api/agents"),
   tools: () => jfetch("/api/tools"),
   analytics: () => jfetch("/api/analytics"),
+  weather: () => jfetch("/api/weather"),
+  devices: () => jfetch("/api/devices"),
+  insights: () => jfetch("/api/insights"),
 };
 
 export type Agent = { id: string; name?: string; model?: string; status?: string; [key: string]: unknown };
@@ -48,5 +51,26 @@ export type Task = { id: number; workspace_id: number; title: string; descriptio
 export type Conversation = { id: number; workspace_id: number; title: string; gateway_session_key: string; updated_at: string };
 export type Message = { id: number; role: string; text: string; created_at: string };
 export type GatewayStatus = { connected: boolean; serverVersion?: string | null; latencyMs?: number; error?: string };
+
+export type WeatherForecastDay = { day: string; tempC: number; minC: number; icon: string };
+export type Weather = {
+  ok: true;
+  city: string;
+  tempC: number;
+  condition: string;
+  humidity: number;
+  windKph: number;
+  forecast: WeatherForecastDay[];
+  fetchedAt: string;
+  source: string;
+};
+export type Device = { id: string; name: string; connected: boolean; detail: string; lastSeenAtMs: number | null };
+export type Devices = { ok: boolean; source: string; error?: string; devices: Device[] };
+export type Insights = {
+  spark: Array<{ day: string; count: number }>;
+  productivity: { today: number; yesterday: number; pct: number | null };
+  score: number | null;
+  totals: { totalTasks: number; doneTasks: number; inProgressTasks: number };
+};
 
 export const TASK_STATUSES = ["backlog", "ready", "in_progress", "waiting_input", "pending_review", "done", "blocked"] as const;

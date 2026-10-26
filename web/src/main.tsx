@@ -147,87 +147,471 @@ function GatewayPill({ status }: { status: GatewayStatus | null }) {
   return <span className="status-pill err"><span className="status-dot" /> System Offline</span>;
 }
 
-// --- Home Page: Dashboard ---
+// --- Home Page: Dashboard (Phase D-1 reference design) ---
+const OWNER_NAME = "Ikenna";
+
+const AI_TOOLS: Array<{ label: string; icon: string; prompt: string }> = [
+  { label: "Summarize", icon: "Σ", prompt: "Summarize the following text into the key points:\n\n" },
+  { label: "Translate", icon: "文A", prompt: "Translate the following text into English:\n\n" },
+  { label: "Write", icon: "✎", prompt: "Help me write something. My topic and instructions:\n\n" },
+  { label: "Analyze", icon: "◔", prompt: "Analyze the following and explain what you find:\n\n" },
+  { label: "Design", icon: "✦", prompt: "Propose a design concept for:\n\n" },
+  { label: "Code", icon: "</>", prompt: "Write code for:\n\n" },
+];
+
+const SMART_SHORTCUTS: Array<{ title: string; sub: string; icon: string; tone: "cyan" | "violet"; prompt: string }> = [
+  { title: "Meeting Summary", sub: "Summarize your meeting", icon: "▣", tone: "cyan", prompt: "Summarize my meeting: list the key decisions, action items, and owners." },
+  { title: "Email Assistant", sub: "Draft professional email", icon: "✉", tone: "violet", prompt: "Draft a professional email for me. Ask me for the recipient and the key points first." },
+  { title: "Study Helper", sub: "Explain any topic", icon: "◈", tone: "cyan", prompt: "Explain this topic simply, then quiz me with 3 short questions:\n" },
+  { title: "Plan My Day", sub: "Schedule & prioritize", icon: "◷", tone: "violet", prompt: "Review my open tasks and plan my day: propose a prioritized schedule with time blocks." },
+];
+
+// Curated public reads (plain URLs, open in a new tab). Titles verified 2026-10-26 (HTTP 200);
+// read times computed from live word counts at ~200 wpm. These are curated links, not analytics.
+const TRENDING: Array<{ title: string; category: string; readTime: string; url: string; grad: string }> = [
+  { title: "What Is Artificial Intelligence?", category: "Technology", readTime: "15 min read", url: "https://www.ibm.com/think/topics/what-is-artificial-intelligence", grad: "linear-gradient(135deg,#0e7490,#7c3aed)" },
+  { title: "What Is Generative AI?", category: "Technology", readTime: "23 min read", url: "https://aws.amazon.com/what-is/generative-ai/", grad: "linear-gradient(135deg,#1d4ed8,#06b6d4)" },
+  { title: "AI News & Analysis — The Verge", category: "News", readTime: "13 min read", url: "https://www.theverge.com/ai-artificial-intelligence", grad: "linear-gradient(135deg,#6d28d9,#db2777)" },
+];
+const TRENDING_HUB = "https://www.ibm.com/think/ai";
+
+function truncate(s: string, n: number): string {
+  return s.length > n ? s.slice(0, n - 1).trimEnd() + "…" : s;
+}
+function hhmm(iso: string): string {
+  return new Date(iso).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+}
+function msgTimeLabel(m: Message): string {
+  const d = new Date(m.created_at);
+  const sameDay = d.toDateString() === new Date().toDateString();
+  return `${sameDay ? "TODAY" : ""} ${d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`.trim();
+}
+function elapsedSince(iso: string): string {
+  const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+  if (mins < 1) return "<1m";
+  if (mins < 60) return `${mins}m`;
+  return `${Math.floor(mins / 60)}h ${String(mins % 60).padStart(2, "0")}m`;
+}
+function dayAbbr(isoDate: string): string {
+  const d = new Date(`${isoDate}T12:00:00`);
+  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleDateString("en-US", { weekday: "short" }).toUpperCase();
+}
+function wxIcon(code: string): string {
+  const c = Number(code);
+  if (Number.isNaN(c)) return "☁️";
+  if (c === 0) return "☀️";
+  if (c <= 2) return "🌤️";
+  if (c === 3) return "☁️";
+  if (c === 45 || c === 48) return "🌫️";
+  if (c >= 51 && c <= 57) return "🌦️";
+  if (c >= 61 && c <= 67) return "🌧️";
+  if (c >= 71 && c <= 77) return "❄️";
+  if (c >= 80 && c <= 82) return "🌧️";
+  if (c === 85 || c === 86) return "❄️";
+  if (c >= 95) return "⛈️";
+  return "🌤️";
+}
+
+const BUST_PARTICLES = [
+  { x: 18, y: 30, d: 0, s: 7 }, { x: 82, y: 26, d: 1.2, s: 8 }, { x: 12, y: 62, d: 2.1, s: 6 },
+  { x: 88, y: 58, d: 0.6, s: 9 }, { x: 30, y: 12, d: 1.8, s: 7.5 }, { x: 66, y: 8, d: 2.6, s: 6.5 },
+  { x: 46, y: 20, d: 0.3, s: 8.5 }, { x: 60, y: 88, d: 1.5, s: 7 }, { x: 24, y: 84, d: 2.9, s: 6.8 }, { x: 78, y: 82, d: 0.9, s: 7.2 },
+];
+
+function HologramBust() {
+  return (
+    <div className="hv-bust-wrap">
+      <svg className="hv-bust" viewBox="0 0 220 280" aria-hidden="true">
+        <defs>
+          <linearGradient id="hvGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#7DD3FC" />
+            <stop offset="55%" stopColor="#38BDF8" />
+            <stop offset="100%" stopColor="#8B5CF6" />
+          </linearGradient>
+          <radialGradient id="hvFace" cx="50%" cy="42%" r="60%">
+            <stop offset="0%" stopColor="#E0F2FE" stopOpacity="0.9" />
+            <stop offset="60%" stopColor="#7DD3FC" stopOpacity="0.35" />
+            <stop offset="100%" stopColor="#38BDF8" stopOpacity="0.08" />
+          </radialGradient>
+          <radialGradient id="hvBase" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stopColor="#67E8F9" stopOpacity="0.8" />
+            <stop offset="100%" stopColor="#67E8F9" stopOpacity="0" />
+          </radialGradient>
+          <filter id="hvSoft" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="5" />
+          </filter>
+        </defs>
+        {/* base platform glow + rings */}
+        <ellipse cx="110" cy="252" rx="62" ry="12" fill="url(#hvBase)" filter="url(#hvSoft)" />
+        <ellipse cx="110" cy="252" rx="70" ry="14" fill="none" stroke="#67E8F9" strokeOpacity="0.5" strokeWidth="1.5" />
+        <ellipse cx="110" cy="252" rx="50" ry="9" fill="none" stroke="#A78BFA" strokeOpacity="0.4" strokeWidth="1" />
+        {/* halo rings behind head */}
+        <circle cx="110" cy="100" r="58" fill="none" stroke="#67E8F9" strokeOpacity="0.25" strokeWidth="1" />
+        <circle cx="110" cy="100" r="66" fill="none" stroke="#A78BFA" strokeOpacity="0.15" strokeWidth="1" />
+        {/* torso */}
+        <path d="M 46 250 C 50 206 80 176 110 172 C 140 176 170 206 174 250 Z" fill="url(#hvGrad)" fillOpacity="0.16" stroke="url(#hvGrad)" strokeOpacity="0.75" strokeWidth="1.5" />
+        {/* neck */}
+        <path d="M 100 148 L 100 168 C 100 174 105 177 110 177 C 115 177 120 174 120 168 L 120 148" fill="url(#hvGrad)" fillOpacity="0.2" stroke="#7DD3FC" strokeOpacity="0.6" strokeWidth="1.2" />
+        {/* head */}
+        <ellipse cx="110" cy="104" rx="33" ry="40" fill="url(#hvFace)" stroke="#A5F3FC" strokeOpacity="0.8" strokeWidth="1.5" />
+        {/* hair top */}
+        <path d="M 77 110 C 72 64 90 44 110 42 C 130 44 148 64 143 110 C 141 84 132 62 110 58 C 88 62 79 84 77 110 Z" fill="url(#hvGrad)" fillOpacity="0.5" stroke="#C4B5FD" strokeOpacity="0.7" strokeWidth="1.2" />
+        {/* side strands */}
+        <path d="M 78 104 C 68 140 72 168 64 200 C 74 196 80 188 82 172 C 84 150 84 128 86 112 Z" fill="url(#hvGrad)" fillOpacity="0.35" stroke="#7DD3FC" strokeOpacity="0.5" strokeWidth="1" />
+        <path d="M 142 104 C 152 140 148 168 156 200 C 146 196 140 188 138 172 C 136 150 136 128 134 112 Z" fill="url(#hvGrad)" fillOpacity="0.35" stroke="#7DD3FC" strokeOpacity="0.5" strokeWidth="1" />
+        {/* face glow */}
+        <ellipse cx="110" cy="112" rx="20" ry="24" fill="#E0F2FE" fillOpacity="0.18" filter="url(#hvSoft)" />
+        {/* chest circuit lines */}
+        <path d="M 110 186 L 110 216 M 110 200 L 92 214 M 110 200 L 128 214" stroke="#67E8F9" strokeOpacity="0.6" strokeWidth="1" fill="none" />
+        <circle cx="110" cy="186" r="2.5" fill="#A5F3FC" />
+        <circle cx="92" cy="214" r="1.8" fill="#A78BFA" />
+        <circle cx="128" cy="214" r="1.8" fill="#A78BFA" />
+      </svg>
+      <div className="hv-scanline" aria-hidden="true" />
+      {BUST_PARTICLES.map((p, i) => (
+        <span key={i} className="hv-particle" style={{ left: `${p.x}%`, top: `${p.y}%`, animationDelay: `${p.d}s`, animationDuration: `${p.s}s` }} />
+      ))}
+    </div>
+  );
+}
+
+function Sparkline({ points }: { points: number[] }) {
+  const w = 300, h = 64, pad = 5;
+  const max = Math.max(...points, 1);
+  const n = points.length;
+  const x = (i: number) => pad + (i * (w - pad * 2)) / Math.max(n - 1, 1);
+  const y = (v: number) => h - pad - (v / max) * (h - pad * 2);
+  const line = points.map((p, i) => `${i === 0 ? "M" : "L"} ${x(i).toFixed(1)} ${y(p).toFixed(1)}`).join(" ");
+  const area = `${line} L ${x(n - 1).toFixed(1)} ${h - pad} L ${x(0).toFixed(1)} ${h - pad} Z`;
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} className="hv-spark" preserveAspectRatio="none" role="img" aria-label="Messages per day, last 14 days">
+      <defs>
+        <linearGradient id="hvSparkFill" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#38BDF8" stopOpacity="0.35" />
+          <stop offset="100%" stopColor="#8B5CF6" stopOpacity="0.02" />
+        </linearGradient>
+        <linearGradient id="hvSparkLine" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stopColor="#22D3EE" />
+          <stop offset="100%" stopColor="#A78BFA" />
+        </linearGradient>
+      </defs>
+      <path d={area} fill="url(#hvSparkFill)" />
+      <path d={line} fill="none" stroke="url(#hvSparkLine)" strokeWidth="2" strokeLinecap="round" />
+      <circle cx={x(n - 1)} cy={y(points[n - 1])} r="3" fill="#E0F2FE" />
+    </svg>
+  );
+}
+
+function ScoreRing({ value }: { value: number | null }) {
+  const r = 26;
+  const c = 2 * Math.PI * r;
+  const clamped = value == null ? 0 : Math.min(Math.max(value, 0), 100);
+  const off = value == null ? c : c * (1 - clamped / 100);
+  return (
+    <svg width={64} height={64} viewBox="0 0 64 64">
+      <defs>
+        <linearGradient id="hvRingGrad" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#22D3EE" />
+          <stop offset="100%" stopColor="#8B5CF6" />
+        </linearGradient>
+      </defs>
+      <circle cx="32" cy="32" r={r} stroke="rgba(148,163,184,0.15)" strokeWidth="6" fill="none" />
+      <circle cx="32" cy="32" r={r} stroke="url(#hvRingGrad)" strokeWidth="6" fill="none" strokeLinecap="round"
+        strokeDasharray={c} strokeDashoffset={off} transform="rotate(-90 32 32)" />
+    </svg>
+  );
+}
+
 function HomePage({ navigate, gw }: { navigate: (to: string) => void; gw: GatewayStatus | null }) {
-  const [analytics, setAnalytics] = useState<Analytics | null>(null);
-  const [agents, setAgents] = useState<Agent[]>([]);
-  const [greeting, setGreeting] = useState("");
+  const [hour] = useState(() => new Date().getHours());
+  const [activeWs, setActiveWs] = useState<number | null>(null);
+  const [convs, setConvs] = useState<Conversation[]>([]);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [weather, setWeather] = useState<Weather | null>(null);
+  const [weatherError, setWeatherError] = useState("");
+  const [devices, setDevices] = useState<Device[] | null>(null);
+  const [devicesSource, setDevicesSource] = useState<"" | "gateway" | "fallback">("");
+  const [insights, setInsights] = useState<Insights | null>(null);
+  const [cmd, setCmd] = useState("");
+  const [posting, setPosting] = useState<string | null>(null);
+
+  const greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
 
   useEffect(() => {
-    const h = new Date().getHours();
-    setGreeting(h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening");
-    api.analytics().then(d => setAnalytics(d.analytics)).catch(() => {});
-    api.agents().then(d => setAgents(d.agents)).catch(() => setAgents([]));
+    api.workspaces().then((d) => {
+      const activeId = d.activeWorkspaceId || d.workspaces[0]?.id;
+      if (activeId) setActiveWs(activeId);
+    }).catch(() => {});
+    api.weather().then(setWeather).catch((e) => setWeatherError(e.message));
+    api.devices().then((d) => { setDevices(d.devices); setDevicesSource(d.source); })
+      .catch(() => setDevices([{ id: "this-device", name: "This device", connected: true, detail: "This device", lastSeenAtMs: null }]));
+    api.insights().then((d) => setInsights(d.insights)).catch(() => {});
   }, []);
 
+  useEffect(() => {
+    if (activeWs == null) return;
+    api.conversations(activeWs).then((d) => {
+      setConvs(d.conversations);
+      const latest = d.conversations[0];
+      if (latest) api.messages(latest.id).then((m) => setMessages(m.messages)).catch(() => {});
+      else setMessages([]);
+    }).catch(() => {});
+    api.tasks(activeWs).then((d) => setTasks(d.tasks)).catch(() => {});
+  }, [activeWs]);
+
+  const latestConv = convs[0] ?? null;
+  const previewMsgs = messages.slice(-4);
+  const lastMsg = messages[messages.length - 1] ?? null;
+  const pendingTasks = tasks.filter((t) => t.status !== "done").length;
+
+  const todayKey = new Date().toDateString();
+  const schedule = tasks
+    .filter((t) =>
+      new Date(t.created_at).toDateString() === todayKey ||
+      (t.run_started_at && new Date(t.run_started_at).toDateString() === todayKey) ||
+      t.status === "in_progress")
+    .map((t) => ({ ...t, time: new Date(t.run_started_at ?? t.created_at).getTime(), src: t.run_started_at ?? t.created_at }))
+    .sort((a, b) => a.time - b.time);
+
+  // Every widget interaction posts into the CURRENTLY OPEN conversation (latest in the
+  // active workspace) — the Phase C.1 convId pattern. Never spawns a new session unless
+  // none exists yet; then it creates one so the prompt has somewhere to live.
+  const postToConversation = useCallback(async (text: string, tag: string) => {
+    if (posting) return;
+    setPosting(tag);
+    try {
+      let convId = latestConv?.id ?? null;
+      if (!convId) {
+        if (activeWs == null) throw new Error("No active workspace");
+        const d = await api.createConversation(activeWs, "New conversation");
+        convId = d.conversation.id;
+        setConvs((prev) => [d.conversation, ...prev]);
+      }
+      await api.sendMessage(convId, text);
+      navigate("/chat");
+    } catch (e) {
+      console.error("home post failed:", e);
+    } finally {
+      setPosting(null);
+    }
+  }, [posting, latestConv, activeWs, navigate]);
+
+  const retryWeather = () => {
+    setWeatherError("");
+    api.weather().then(setWeather).catch((e) => setWeatherError(e.message));
+  };
+
+  const prod = insights?.productivity ?? null;
+  const prodClass = !prod ? "flat" : prod.pct == null ? "flat" : prod.pct > 0 ? "up" : prod.pct < 0 ? "down" : "flat";
+
   return (
-    <div>
-      <div className="card" style={{ marginBottom: 20 }}>
-        <h2 style={{ fontSize: "1.8rem", marginBottom: 8 }}>{greeting}, Operator</h2>
-        <p style={{ color: "var(--text-dim)" }}>Julie AiOS is {gw?.connected ? "online and ready" : "offline"}. Active agents: {agents.length || "0"}</p>
-        <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
-          <button className="btn" onClick={() => navigate("/chat")}>New Mission</button>
-          <button className="btn" style={{ background: "rgba(255,255,255,0.1)" }} onClick={() => navigate("/agents")}>View Agents</button>
-        </div>
-      </div>
+    <div className="home-v2">
+      <div className="home-grid">
+        {/* LEFT COLUMN */}
+        <div className="home-col">
+          {/* 1. Greeting */}
+          <section className="hv-card card-greeting">
+            <h2 className="hv-greeting-title">{greeting}, {OWNER_NAME}</h2>
+            <p className="hv-greeting-sub">What would you like to accomplish today?</p>
+            <div className="hv-waveform" aria-hidden="true">
+              {Array.from({ length: 24 }).map((_, i) => <span key={i} style={{ animationDelay: `${(i % 8) * 0.13}s` }} />)}
+            </div>
+            <form className="hv-cmd" onSubmit={(e) => { e.preventDefault(); if (cmd.trim() && !posting) postToConversation(cmd.trim(), "cmd"); }}>
+              <input value={cmd} onChange={(e) => setCmd(e.target.value)} placeholder="Ask Julie anything…" aria-label="Command input" />
+              <button className="hv-cmd-send" type="submit" disabled={!cmd.trim() || !!posting} aria-label="Send">➤</button>
+            </form>
+            {gw && !gw.connected && <div className="hv-empty" style={{ padding: "8px 0 0" }}>Gateway offline — responses may be delayed.</div>}
+          </section>
 
-      <div className="card" style={{ marginBottom: 20 }}>
-        <div className="card-title">Quick Shortcuts</div>
-        <div className="shortcut-grid">
-          <div className="shortcut-card" onClick={() => navigate("/agents")}>
-            <div className="shortcut-icon">✦</div>
-            <div className="shortcut-label">Agents</div>
-          </div>
-          <div className="shortcut-card" onClick={() => navigate("/terminal")}>
-            <div className="shortcut-icon">▮</div>
-            <div className="shortcut-label">Terminal</div>
-          </div>
-          <div className="shortcut-card" onClick={() => navigate("/tasks")}>
-            <div className="shortcut-icon">▦</div>
-            <div className="shortcut-label">Tasks</div>
-          </div>
-          <div className="shortcut-card" onClick={() => navigate("/analytics")}>
-            <div className="shortcut-icon">▲</div>
-            <div className="shortcut-label">Insights</div>
-          </div>
-        </div>
-      </div>
+          {/* 2. AI tools */}
+          <section className="hv-card card-aitools">
+            <div className="hv-card-head"><span className="hv-card-title">AI TOOLS</span></div>
+            <div className="hv-tiles">
+              {AI_TOOLS.map((t) => (
+                <button key={t.label} className="hv-tile" disabled={!!posting} title={t.prompt.trim()} onClick={() => postToConversation(t.prompt, t.label)}>
+                  <span className="hv-tile-icon">{t.icon}</span>
+                  <span className="hv-tile-label">{t.label}</span>
+                </button>
+              ))}
+            </div>
+            <button className="hv-link" onClick={() => navigate("/tools")}>Explore all tools →</button>
+          </section>
 
-      <div className="dashboard-grid">
-        <div className="card">
-          <div className="card-title">System Pulse</div>
-          <div className="orb-stage">
-            <div className={`orb ${gw?.connected ? "idle" : "error"}`} style={{ width: 80, height: 80 }} />
-            <div className="text-dim mt-4">{gw?.connected ? "All systems nominal" : "Gateway disconnected"}</div>
-          </div>
+          {/* 3. Smart shortcuts */}
+          <section className="hv-card card-shortcuts">
+            <div className="hv-card-head"><span className="hv-card-title">SMART SHORTCUTS</span></div>
+            {SMART_SHORTCUTS.map((s) => (
+              <button key={s.title} className="hv-row" disabled={!!posting} onClick={() => postToConversation(s.prompt, s.title)}>
+                <span className={`hv-row-icon hv-icon-${s.tone}`}>{s.icon}</span>
+                <span className="hv-row-body">
+                  <span className="hv-row-title">{s.title}</span>
+                  <span className="hv-row-sub">{s.sub}</span>
+                </span>
+                <span className="hv-row-chev">›</span>
+              </button>
+            ))}
+          </section>
+
+          {/* 4. Connected devices (real gateway data; honest single-row fallback) */}
+          <section className="hv-card card-devices">
+            <div className="hv-card-head"><span className="hv-card-title">CONNECTED DEVICES</span></div>
+            {devices == null && <div className="hv-empty">Checking paired devices…</div>}
+            {(devices ?? []).map((d) => (
+              <div key={d.id} className="hv-row hv-device-row">
+                <span className="hv-row-icon hv-icon-violet">▣</span>
+                <span className="hv-row-body"><span className="hv-row-title">{d.name}</span></span>
+                <span className="hv-device-status">
+                  <span className={`hv-dot ${d.connected ? "on" : "off"}`} />
+                  {d.detail}
+                </span>
+              </div>
+            ))}
+            <button className="hv-link" onClick={() => navigate("/profile")}>Manage devices →</button>
+          </section>
         </div>
-        <div className="card">
-          <div className="card-title">Active Agents</div>
-          <div className="card-content">
-            {agents.length === 0 ? <div>No agents online.</div> :
-              agents.slice(0, 4).map(a => (
-                <div key={a.id} style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-                  <span>{a.name || a.id}</span>
-                  <span className="text-dim" style={{ fontSize: "0.8rem" }}>{a.status || "idle"}</span>
+
+        {/* MIDDLE COLUMN */}
+        <div className="home-col">
+          {/* 5. AI assistant panel */}
+          <section className="hv-card card-ai">
+            <div className="hv-panel-head"><span className="hv-panel-title">AI ASSISTANT</span></div>
+            <HologramBust />
+            <div className="hv-bubble">
+              {greeting}, {OWNER_NAME}. How can I help you today?
+              <br />
+              {pendingTasks > 0 || convs.length > 0
+                ? `You have ${pendingTasks} pending ${pendingTasks === 1 ? "task" : "tasks"} and ${convs.length} open ${convs.length === 1 ? "conversation" : "conversations"}.`
+                : "You're all caught up."}
+            </div>
+            <div className="hv-chat-label">{lastMsg ? msgTimeLabel(lastMsg) : "CHAT PREVIEW"}</div>
+            <div className="hv-chat-preview">
+              {messages.length === 0 && <div className="hv-empty">No messages yet — start from the command bar, a tool tile, or the quick replies.</div>}
+              {previewMsgs.map((m) => (
+                <div key={m.id} className={`hv-msg ${m.role === "user" ? "user" : "assistant"}`}>
+                  {m.role === "assistant" && <span className="hv-avatar">AI</span>}
+                  <div className="hv-msg-bubble">{truncate(m.text, 170)}</div>
                 </div>
               ))}
-            <button className="icon-btn mt-4" onClick={() => navigate("/agents")}>View All →</button>
-          </div>
+            </div>
+            {latestConv && (
+              <div className="hv-quick">
+                {["Thanks!", "👍", "What's next?", "Explain this"].map((q) => (
+                  <button key={q} className="hv-chip" disabled={!!posting} onClick={() => postToConversation(q, q)}>{q}</button>
+                ))}
+              </div>
+            )}
+          </section>
+
+          {/* 6. Voice orb — opens the existing voice flow, which reuses the current conversation (Phase C.1) */}
+          <section className="hv-card card-voice">
+            <button className="hv-voice-orb" onClick={() => navigate("/voice?start=1")} aria-label="Start voice conversation">
+              <span className="hv-orb-ring" /><span className="hv-orb-ring hv-orb-ring-2" /><span className="hv-orb-ring hv-orb-ring-3" />
+              <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#E0F2FE" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+                <rect x="9" y="3" width="6" height="11" rx="3" />
+                <path d="M5 11a7 7 0 0 0 14 0" />
+                <path d="M12 18v3" />
+              </svg>
+            </button>
+            <div className="hv-voice-label">Tap to speak</div>
+            <div className="hv-voice-sub">Voice lands in your current conversation</div>
+          </section>
         </div>
-        <div className="card">
-          <div className="card-title">Quick Stats</div>
-          <div className="card-content" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            <div><div className="text-primary" style={{ fontSize: 24, fontWeight: 700 }}>{analytics?.taskCount || 0}</div><div className="text-dim" style={{ fontSize: 12 }}>Total Tasks</div></div>
-            <div><div className="text-cyan" style={{ fontSize: 24, fontWeight: 700 }}>{analytics?.conversationCount || 0}</div><div className="text-dim" style={{ fontSize: 12 }}>Conversations</div></div>
-          </div>
-        </div>
-        <div className="card">
-          <div className="card-title">Shortcuts</div>
-          <div className="card-content">
-            <button className="nav-item" onClick={() => navigate("/terminal")}>▮ Open Terminal</button>
-            <button className="nav-item" onClick={() => navigate("/tasks")}>▦ Task Board</button>
-            <button className="nav-item" onClick={() => navigate("/analytics")}>▲ Insights</button>
-          </div>
+
+        {/* RIGHT COLUMN */}
+        <div className="home-col home-col-right">
+          {/* 7. Weather (Port Harcourt via wttr.in, 30-min backend cache) */}
+          <section className="hv-card card-weather">
+            <div className="hv-card-head"><span className="hv-card-title">WEATHER</span></div>
+            {weather ? (
+              <>
+                <div className="hv-wx-loc">◉ {weather.city}</div>
+                <div className="hv-wx-main">
+                  <span className="hv-wx-temp">{Math.round(weather.tempC)}°</span>
+                  <span className="hv-wx-cond">{weather.condition}</span>
+                </div>
+                <div className="hv-wx-forecast">
+                  {weather.forecast.slice(0, 5).map((d, i) => (
+                    <div key={d.day} className="hv-wx-day">
+                      <span className="hv-wx-dow">{i === 0 ? "TODAY" : dayAbbr(d.day)}</span>
+                      <span className="hv-wx-icon">{wxIcon(d.icon)}</span>
+                      <span className="hv-wx-t">{Math.round(d.tempC)}°</span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : weatherError ? (
+              <div className="hv-empty">
+                <div>Weather unavailable</div>
+                <p>Live data from wttr.in could not be fetched. Try again in a few minutes.</p>
+                <button className="hv-link" onClick={retryWeather}>Retry →</button>
+              </div>
+            ) : (
+              <div className="hv-empty">Loading weather…</div>
+            )}
+          </section>
+
+          {/* 8. AI insights (real analytics from SQLite) */}
+          <section className="hv-card card-insights">
+            <div className="hv-card-head"><span className="hv-card-title">AI INSIGHTS</span></div>
+            {insights ? (
+              <>
+                <Sparkline points={insights.spark.map((p) => p.count)} />
+                <div className="hv-ins-row">
+                  <div className="hv-prod">
+                    <span className="hv-prod-label">Productivity</span>
+                    <span className={`hv-prod-delta ${prodClass}`}>
+                      {prod && prod.pct != null ? `${prod.pct > 0 ? "↑" : prod.pct < 0 ? "↓" : "→"} ${Math.abs(prod.pct)}%` : "No data yet"}
+                    </span>
+                    <span className="hv-prod-sub">vs yesterday</span>
+                  </div>
+                  <div className="hv-score">
+                    <div className="hv-score-ring-wrap">
+                      <ScoreRing value={insights.score} />
+                      <span className="hv-score-num">{insights.score == null ? "—" : insights.score}</span>
+                    </div>
+                    <span className="hv-score-label">Score</span>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="hv-empty">Loading insights…</div>
+            )}
+          </section>
+
+          {/* 9. Today's schedule (real tasks from the DB) */}
+          <section className="hv-card card-schedule">
+            <div className="hv-card-head"><span className="hv-card-title">TODAY'S SCHEDULE</span></div>
+            {schedule.length === 0 ? (
+              <div className="hv-empty">Nothing scheduled for today</div>
+            ) : (
+              schedule.slice(0, 6).map((t) => (
+                <div key={t.id} className="hv-sched-row">
+                  <span className="hv-sched-time">{hhmm(t.src)}</span>
+                  <span className="hv-sched-title">{t.title}</span>
+                  <span className={`hv-chip-status st-${t.status}`}>
+                    {t.status === "in_progress" && t.run_started_at ? `${elapsedSince(t.run_started_at)} · ` : ""}{STATUS_LABEL[t.status] ?? t.status}
+                  </span>
+                </div>
+              ))
+            )}
+            <button className="hv-link" onClick={() => navigate("/tasks")}>View full calendar →</button>
+          </section>
+
+          {/* 10. Trending for you (curated public AI reads; plain URLs, new tab) */}
+          <section className="hv-card card-trending">
+            <div className="hv-card-head"><span className="hv-card-title">TRENDING FOR YOU</span></div>
+            {TRENDING.map((a) => (
+              <a key={a.url} className="hv-row hv-trend-row" href={a.url} target="_blank" rel="noopener noreferrer">
+                <span className="hv-trend-thumb" style={{ background: a.grad }}><span aria-hidden="true">◆</span></span>
+                <span className="hv-row-body">
+                  <span className="hv-row-title">{a.title}</span>
+                  <span className="hv-row-sub">{a.category} · {a.readTime}</span>
+                </span>
+              </a>
+            ))}
+            <button className="hv-link" onClick={() => window.open(TRENDING_HUB, "_blank", "noopener,noreferrer")}>Explore more →</button>
+          </section>
         </div>
       </div>
     </div>
@@ -260,6 +644,17 @@ function VoicePage() {
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     setSupported(Boolean(SR));
   }, []);
+
+  // Auto-start listening when arriving from the Home voice orb (orb tap = user gesture).
+  // The flow below still targets the CURRENT conversation (Phase C.1 convId reuse).
+  const [autoStartOnce] = useState(() => new URLSearchParams(window.location.search).get("start") === "1");
+  useEffect(() => {
+    if (!autoStartOnce || !supported) return;
+    const t = setTimeout(() => startListening(), 250);
+    return () => clearTimeout(t);
+    // startListening is stable per-mount; re-run only when support flag flips on.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoStartOnce, supported]);
 
   // Load conversations when workspace changes
   useEffect(() => {

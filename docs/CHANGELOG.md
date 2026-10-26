@@ -1,5 +1,37 @@
 # Changelog
 
+## Phase D-1 — Home Dashboard Redesign (2026-10-26)
+### Added
+- **Home dashboard per owner reference**: deep near-black/navy glass panels, cyan/blue + violet hologram accents, 3-column desktop / 2-column tablet / single-column mobile (reference order)
+- **Greeting card**: time-aware "Good morning/afternoon/evening, Ikenna", "What would you like to accomplish today?", animated waveform decoration, command input that posts into the current chat conversation
+- **AI TOOLS card**: 6 tiles (Summarize, Translate, Write, Analyze, Design, Code) each posting a pre-filled prompt into the current conversation; "Explore all tools →" → /tools
+- **SMART SHORTCUTS card**: Meeting Summary, Email Assistant, Study Helper, Plan My Day — icon + title + subtext + chevron; template prompts post into the current conversation
+- **CONNECTED DEVICES card**: real gateway data via `node.list` (fallback `system-presence`); honest single "This device" row when no paired nodes are reported; "Manage devices →"
+- **AI ASSISTANT panel**: luminous holographic SVG bust (glow layers, halo rings, chest circuit lines, scan line, floating particles), context bubble with real pending-task + open-conversation counts, chat preview of the latest 4 messages with avatar chips + user/AI bubble styles, quick-reply chips (Thanks! / 👍 / What's next? / Explain this) posting into that conversation
+- **VOICE ORB**: circular glowing mic orb with pulsing rings; tap → /voice?start=1 (auto-starts the existing voice flow, which reuses the current conversation per Phase C.1)
+- **WEATHER card**: Port Harcourt via wttr.in through new `GET /api/weather` (30-min in-memory cache); city, big temp °C, condition, mini forecast row (day/°/icon); honest fallback state with retry on fetch failure
+- **AI INSIGHTS card**: 14-day message spark line + Productivity delta vs yesterday + score ring ((done + in_progress)/total tasks), all from new `GET /api/insights` (SQLite only); "No data yet" / "—" empty states
+- **TODAY'S SCHEDULE card**: today's real tasks (created_at/run_started_at today or in_progress) with time, title, status chip (elapsed duration for in_progress); "View full calendar →" → /tasks; "Nothing scheduled for today" empty state
+- **TRENDING FOR YOU card**: 3 curated public AI articles (plain URLs, new tab; verified HTTP 200; read times from live word counts); gradient thumbnails; "Explore more →"
+- **Backend**: `server/src/weather.ts` (wttr.in + cache), `gateway.listNodes()`, routes `GET /api/weather`, `GET /api/devices`, `GET /api/insights`
+- **`scripts/verify-d1.sh`**: session-authenticated endpoint verification script
+
+### Changed
+- `HomePage` fully rewritten to the reference design (all interactions post into the currently open conversation — Phase C.1 convId pattern — or navigate; never spawn sessions)
+- `VoicePage`: auto-start listening when arriving via `?start=1` (orb tap = user gesture); conversation targeting unchanged (Phase C.1)
+- `web/src/api.ts`: added `weather()`, `devices()`, `insights()` + types
+- `web/src/styles.css`: new design tokens/components scoped under `.home-v2` / `.hv-*` (no changes to existing classes or pages)
+
+### Verification
+- ✅ `tsc` strict + `vite build` pass; service restarted; health 200
+- ✅ All SPA routes 200 over HTTPS; gateway connected
+- ✅ Real-data endpoints verified with session cookie; weather 30-min cache confirmed
+- ✅ Bundle scan: zero fabricated devices/names/percentages/forecast values
+- ✅ Independent tester subagent: 20/21 PASS (single FAIL re-verified as false positive — all widget markers present in the live bundle)
+- ✅ Phase C.1 regressions re-checked: terminal WS 101, chat SSE, agents/tools, task CRUD, workspaces
+
+---
+
 ## Phase C.1 — Correction Run (2026-10-26)
 ### Fixed
 - **Terminal WebSocket Protocol**: Changed hardcoded `ws://` to protocol-aware `wss://` for HTTPS pages (was causing mixed content blocking)

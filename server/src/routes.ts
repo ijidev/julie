@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import { db, getSetting, setSetting, TASK_STATUSES, type TaskStatus } from "./db.js";
 import { gateway } from "./gateway.js";
+import { getWeather } from "./weather.js";
 import { loginHandler, logoutHandler, requireAuth, parseCookies, SESSION_COOKIE, safeEqual } from "./auth.js";
 import { config } from "./config.js";
 
@@ -75,6 +76,79 @@ api.get("/analytics", (_req, res) => {
       conversationCount,
       gatewaySessions,
       taskCount,
+    },
+  });
+});
+
+// ---- weather (Port Harcourt via wttr.in, 30-min in-memory cache; honest error on failure) ----
+api.get("/weather", async (_req, res) => {
+  try {
+    res.json(await getWeather());
+  } catch (e: any) {
+    res.status(502).json({ ok: false, error: e.message ?? "weather fetch failed", source: "wttr.in" });
+  }
+});
+
+// ---- connected devices (real gateway data: node.list / system-presence) ----
+// Fallback is a single honest row ("This device") — never invented nodes or percentages.
+api.get("/devices", async (_req, res) => {
+  try {
+    const nodes = await gateway.listNodes();
+    // Real paired nodes when the gateway reports any; otherwise a single honest row
+    // for this host ("This device"). Never invented nodes or percentages.
+    const devices = nodes.length > 0
+      ? nodes.map((n) => ({
+          id: n.id || n.name,
+          name: n.name,
+          connected: n.connected,
+          detail: n.connected ? "Online" : "Offline",
+          lastSeenAtMs: n.lastSeenAtMs ?? null,
+        }))
+      : [{ id: "this-device", name: "This device", connected: true, detail: "This device", lastSeenAtMs: null }];
+    res.json({ ok: true, source: "gateway", devices });
+  } catch (e: any) {
+    res.json({
+      ok: true,
+      source: "fallback",
+      error: e.message ?? "gateway node listing unavailable",
+      devices: [{ id: "this-device", name: "This device", connected: true, detail: "This device", lastSeenAtMs: null }],
+    });
+  }
+});
+
+// ---- insights for the Home dashboard (all computed from local SQLite) ----
+api.get("/insights", (_req, res) => {
+  const one = (sql: string) => (db.prepare(sql).get() as any)?.count ?? 0;
+  const rows = db
+    .prepare("SELECT date(created_at) as day, COUNT(*) as count FROM messages WHERE created_at >= date('now', '-13 days') GROUP BY day")
+    .all() as Array<{ day: string; count: number }>;
+  const byDay = new Map(rows.map((r) => [r.day, r.count]));
+  // Full 14-day series (UTC day buckets, zero-filled) for the spark chart.
+  const spark: Array<{ day: string; count: number }> = [];
+  for (let i = 13; i >= 0; i--) {
+    const day = new Date(Date.now() - i * 86400000).toISOString().slice(0, 10);
+    spark.push({ day, count: byDay.get(day) ?? 0 });
+  }
+  const msgsToday = one("SELECT COUNT(*) AS count FROM messages WHERE date(created_at) = date('now')");
+  const msgsYesterday = one("SELECT COUNT(*) AS count FROM messages WHERE date(created_at) = date('now', '-1 day')");
+  const tasksToday = one("SELECT COUNT(*) AS count FROM tasks WHERE date(updated_at) = date('now')");
+  const tasksYesterday = one("SELECT COUNT(*) AS count FROM tasks WHERE date(updated_at) = date('now', '-1 day')");
+  // Productivity: message activity today vs yesterday (task touches as secondary signal).
+  const today = msgsToday + tasksToday;
+  const yesterday = msgsYesterday + tasksYesterday;
+  const pct = yesterday > 0 ? Math.round(((today - yesterday) / yesterday) * 100) : null;
+  // Score ring: (done + in_progress) / total tasks. null = no tasks yet.
+  const totalTasks = one("SELECT COUNT(*) AS count FROM tasks");
+  const doneTasks = one("SELECT COUNT(*) AS count FROM tasks WHERE status = 'done'");
+  const inProgressTasks = one("SELECT COUNT(*) AS count FROM tasks WHERE status = 'in_progress'");
+  const score = totalTasks > 0 ? Math.round(((doneTasks + inProgressTasks) / totalTasks) * 100) : null;
+  res.json({
+    ok: true,
+    insights: {
+      spark,
+      productivity: { today, yesterday, pct },
+      score,
+      totals: { totalTasks, doneTasks, inProgressTasks },
     },
   });
 });
