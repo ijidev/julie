@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
-import { api, type Conversation, type GatewayStatus, type Message, type Task, type Workspace, type Agent, type Tool, type Analytics, TASK_STATUSES } from "./api";
+import { Markdown } from "./markdown";
+import { api, type Conversation, type GatewayStatus, type Message, type Task, type Workspace, type Agent, type Tool, type Analytics, type Weather, type Device, type Insights, TASK_STATUSES } from "./api";
 
 // --- Router Hook ---
 function useRoute(): [string, (to: string) => void] {
@@ -169,9 +170,9 @@ const SMART_SHORTCUTS: Array<{ title: string; sub: string; icon: string; tone: "
 // Curated public reads (plain URLs, open in a new tab). Titles verified 2026-10-26 (HTTP 200);
 // read times computed from live word counts at ~200 wpm. These are curated links, not analytics.
 const TRENDING: Array<{ title: string; category: string; readTime: string; url: string; grad: string }> = [
-  { title: "What Is Artificial Intelligence?", category: "Technology", readTime: "15 min read", url: "https://www.ibm.com/think/topics/what-is-artificial-intelligence", grad: "linear-gradient(135deg,#0e7490,#7c3aed)" },
-  { title: "What Is Generative AI?", category: "Technology", readTime: "23 min read", url: "https://aws.amazon.com/what-is/generative-ai/", grad: "linear-gradient(135deg,#1d4ed8,#06b6d4)" },
-  { title: "AI News & Analysis — The Verge", category: "News", readTime: "13 min read", url: "https://www.theverge.com/ai-artificial-intelligence", grad: "linear-gradient(135deg,#6d28d9,#db2777)" },
+  { title: "What Is Artificial Intelligence?", category: "Technology", readTime: "15 min read", url: "https://www.ibm.com/think/topics/what-is-artificial-intelligence", grad: "linear-gradient(135deg,#FF9A3D,#E05E00)" },
+  { title: "What Is Generative AI?", category: "Technology", readTime: "23 min read", url: "https://aws.amazon.com/what-is/generative-ai/", grad: "linear-gradient(135deg,#FFB36B,#FF7A1A)" },
+  { title: "AI News & Analysis — The Verge", category: "News", readTime: "13 min read", url: "https://www.theverge.com/ai-artificial-intelligence", grad: "linear-gradient(135deg,#E8590C,#FF8C33)" },
 ];
 const TRENDING_HUB = "https://www.ibm.com/think/ai";
 
@@ -224,18 +225,18 @@ function HologramBust() {
       <svg className="hv-bust" viewBox="0 0 220 280" aria-hidden="true">
         <defs>
           <linearGradient id="hvGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#7DD3FC" />
-            <stop offset="55%" stopColor="#38BDF8" />
-            <stop offset="100%" stopColor="#8B5CF6" />
+            <stop offset="0%" stopColor="#FFD9B0" />
+            <stop offset="55%" stopColor="#FF9A3D" />
+            <stop offset="100%" stopColor="#E05E00" />
           </linearGradient>
           <radialGradient id="hvFace" cx="50%" cy="42%" r="60%">
-            <stop offset="0%" stopColor="#E0F2FE" stopOpacity="0.9" />
-            <stop offset="60%" stopColor="#7DD3FC" stopOpacity="0.35" />
-            <stop offset="100%" stopColor="#38BDF8" stopOpacity="0.08" />
+            <stop offset="0%" stopColor="#FFF3E6" stopOpacity="0.9" />
+            <stop offset="60%" stopColor="#FFB36B" stopOpacity="0.35" />
+            <stop offset="100%" stopColor="#FF8C33" stopOpacity="0.08" />
           </radialGradient>
           <radialGradient id="hvBase" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="#67E8F9" stopOpacity="0.8" />
-            <stop offset="100%" stopColor="#67E8F9" stopOpacity="0" />
+            <stop offset="0%" stopColor="#FF9A3D" stopOpacity="0.8" />
+            <stop offset="100%" stopColor="#FF9A3D" stopOpacity="0" />
           </radialGradient>
           <filter id="hvSoft" x="-50%" y="-50%" width="200%" height="200%">
             <feGaussianBlur stdDeviation="5" />
@@ -243,29 +244,29 @@ function HologramBust() {
         </defs>
         {/* base platform glow + rings */}
         <ellipse cx="110" cy="252" rx="62" ry="12" fill="url(#hvBase)" filter="url(#hvSoft)" />
-        <ellipse cx="110" cy="252" rx="70" ry="14" fill="none" stroke="#67E8F9" strokeOpacity="0.5" strokeWidth="1.5" />
-        <ellipse cx="110" cy="252" rx="50" ry="9" fill="none" stroke="#A78BFA" strokeOpacity="0.4" strokeWidth="1" />
+        <ellipse cx="110" cy="252" rx="70" ry="14" fill="none" stroke="#FFB36B" strokeOpacity="0.5" strokeWidth="1.5" />
+        <ellipse cx="110" cy="252" rx="50" ry="9" fill="none" stroke="#FF8C33" strokeOpacity="0.4" strokeWidth="1" />
         {/* halo rings behind head */}
-        <circle cx="110" cy="100" r="58" fill="none" stroke="#67E8F9" strokeOpacity="0.25" strokeWidth="1" />
-        <circle cx="110" cy="100" r="66" fill="none" stroke="#A78BFA" strokeOpacity="0.15" strokeWidth="1" />
+        <circle cx="110" cy="100" r="58" fill="none" stroke="#FFB36B" strokeOpacity="0.25" strokeWidth="1" />
+        <circle cx="110" cy="100" r="66" fill="none" stroke="#FF8C33" strokeOpacity="0.15" strokeWidth="1" />
         {/* torso */}
         <path d="M 46 250 C 50 206 80 176 110 172 C 140 176 170 206 174 250 Z" fill="url(#hvGrad)" fillOpacity="0.16" stroke="url(#hvGrad)" strokeOpacity="0.75" strokeWidth="1.5" />
         {/* neck */}
-        <path d="M 100 148 L 100 168 C 100 174 105 177 110 177 C 115 177 120 174 120 168 L 120 148" fill="url(#hvGrad)" fillOpacity="0.2" stroke="#7DD3FC" strokeOpacity="0.6" strokeWidth="1.2" />
+        <path d="M 100 148 L 100 168 C 100 174 105 177 110 177 C 115 177 120 174 120 168 L 120 148" fill="url(#hvGrad)" fillOpacity="0.2" stroke="#FFB36B" strokeOpacity="0.6" strokeWidth="1.2" />
         {/* head */}
-        <ellipse cx="110" cy="104" rx="33" ry="40" fill="url(#hvFace)" stroke="#A5F3FC" strokeOpacity="0.8" strokeWidth="1.5" />
+        <ellipse cx="110" cy="104" rx="33" ry="40" fill="url(#hvFace)" stroke="#FFD9B0" strokeOpacity="0.8" strokeWidth="1.5" />
         {/* hair top */}
-        <path d="M 77 110 C 72 64 90 44 110 42 C 130 44 148 64 143 110 C 141 84 132 62 110 58 C 88 62 79 84 77 110 Z" fill="url(#hvGrad)" fillOpacity="0.5" stroke="#C4B5FD" strokeOpacity="0.7" strokeWidth="1.2" />
+        <path d="M 77 110 C 72 64 90 44 110 42 C 130 44 148 64 143 110 C 141 84 132 62 110 58 C 88 62 79 84 77 110 Z" fill="url(#hvGrad)" fillOpacity="0.5" stroke="#FFC08A" strokeOpacity="0.7" strokeWidth="1.2" />
         {/* side strands */}
-        <path d="M 78 104 C 68 140 72 168 64 200 C 74 196 80 188 82 172 C 84 150 84 128 86 112 Z" fill="url(#hvGrad)" fillOpacity="0.35" stroke="#7DD3FC" strokeOpacity="0.5" strokeWidth="1" />
-        <path d="M 142 104 C 152 140 148 168 156 200 C 146 196 140 188 138 172 C 136 150 136 128 134 112 Z" fill="url(#hvGrad)" fillOpacity="0.35" stroke="#7DD3FC" strokeOpacity="0.5" strokeWidth="1" />
+        <path d="M 78 104 C 68 140 72 168 64 200 C 74 196 80 188 82 172 C 84 150 84 128 86 112 Z" fill="url(#hvGrad)" fillOpacity="0.35" stroke="#FF9A3D" strokeOpacity="0.5" strokeWidth="1" />
+        <path d="M 142 104 C 152 140 148 168 156 200 C 146 196 140 188 138 172 C 136 150 136 128 134 112 Z" fill="url(#hvGrad)" fillOpacity="0.35" stroke="#FF9A3D" strokeOpacity="0.5" strokeWidth="1" />
         {/* face glow */}
-        <ellipse cx="110" cy="112" rx="20" ry="24" fill="#E0F2FE" fillOpacity="0.18" filter="url(#hvSoft)" />
+        <ellipse cx="110" cy="112" rx="20" ry="24" fill="#FFF3E6" fillOpacity="0.18" filter="url(#hvSoft)" />
         {/* chest circuit lines */}
-        <path d="M 110 186 L 110 216 M 110 200 L 92 214 M 110 200 L 128 214" stroke="#67E8F9" strokeOpacity="0.6" strokeWidth="1" fill="none" />
-        <circle cx="110" cy="186" r="2.5" fill="#A5F3FC" />
-        <circle cx="92" cy="214" r="1.8" fill="#A78BFA" />
-        <circle cx="128" cy="214" r="1.8" fill="#A78BFA" />
+        <path d="M 110 186 L 110 216 M 110 200 L 92 214 M 110 200 L 128 214" stroke="#FF9A3D" strokeOpacity="0.6" strokeWidth="1" fill="none" />
+        <circle cx="110" cy="186" r="2.5" fill="#FFD9B0" />
+        <circle cx="92" cy="214" r="1.8" fill="#FF8C33" />
+        <circle cx="128" cy="214" r="1.8" fill="#FF8C33" />
       </svg>
       <div className="hv-scanline" aria-hidden="true" />
       {BUST_PARTICLES.map((p, i) => (
@@ -287,17 +288,17 @@ function Sparkline({ points }: { points: number[] }) {
     <svg viewBox={`0 0 ${w} ${h}`} className="hv-spark" preserveAspectRatio="none" role="img" aria-label="Messages per day, last 14 days">
       <defs>
         <linearGradient id="hvSparkFill" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#38BDF8" stopOpacity="0.35" />
-          <stop offset="100%" stopColor="#8B5CF6" stopOpacity="0.02" />
+          <stop offset="0%" stopColor="#FF9A3D" stopOpacity="0.35" />
+          <stop offset="100%" stopColor="#E05E00" stopOpacity="0.02" />
         </linearGradient>
         <linearGradient id="hvSparkLine" x1="0" y1="0" x2="1" y2="0">
-          <stop offset="0%" stopColor="#22D3EE" />
-          <stop offset="100%" stopColor="#A78BFA" />
+          <stop offset="0%" stopColor="#FFA14E" />
+          <stop offset="100%" stopColor="#E05E00" />
         </linearGradient>
       </defs>
       <path d={area} fill="url(#hvSparkFill)" />
       <path d={line} fill="none" stroke="url(#hvSparkLine)" strokeWidth="2" strokeLinecap="round" />
-      <circle cx={x(n - 1)} cy={y(points[n - 1])} r="3" fill="#E0F2FE" />
+      <circle cx={x(n - 1)} cy={y(points[n - 1])} r="3" fill="#FFD9B0" />
     </svg>
   );
 }
@@ -311,8 +312,8 @@ function ScoreRing({ value }: { value: number | null }) {
     <svg width={64} height={64} viewBox="0 0 64 64">
       <defs>
         <linearGradient id="hvRingGrad" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stopColor="#22D3EE" />
-          <stop offset="100%" stopColor="#8B5CF6" />
+          <stop offset="0%" stopColor="#FFA14E" />
+          <stop offset="100%" stopColor="#E05E00" />
         </linearGradient>
       </defs>
       <circle cx="32" cy="32" r={r} stroke="rgba(148,163,184,0.15)" strokeWidth="6" fill="none" />
@@ -507,7 +508,7 @@ function HomePage({ navigate, gw }: { navigate: (to: string) => void; gw: Gatewa
           <section className="hv-card card-voice">
             <button className="hv-voice-orb" onClick={() => navigate("/voice?start=1")} aria-label="Start voice conversation">
               <span className="hv-orb-ring" /><span className="hv-orb-ring hv-orb-ring-2" /><span className="hv-orb-ring hv-orb-ring-3" />
-              <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#E0F2FE" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+              <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#FFE8D6" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
                 <rect x="9" y="3" width="6" height="11" rx="3" />
                 <path d="M5 11a7 7 0 0 0 14 0" />
                 <path d="M12 18v3" />
@@ -704,12 +705,12 @@ function VoicePage() {
     setStatus("processing");
     try {
       // Ensure we have a conversation ID
-      let currentConvId = convId;
+      let currentConvId: number | null = convId;
       if (!currentConvId || conversations.length === 0) {
-        // Create or get conversation
-        const convList = conversations.length > 0 ? conversations : await api.conversations(activeWorkspaceId);
-        if (convList.conversations && convList.conversations.length > 0) {
-          currentConvId = convList.conversations[0].id;
+        // Create or get conversation (always fetch the fresh list)
+        const convData = await api.conversations(activeWorkspaceId);
+        if (convData.conversations.length > 0) {
+          currentConvId = convData.conversations[0].id;
           setConvId(currentConvId);
         } else {
           const d = await api.createConversation(activeWorkspaceId, "Voice conversation");
@@ -720,6 +721,7 @@ function VoicePage() {
       }
 
       // Send message to current conversation
+      if (currentConvId == null) throw new Error("No conversation to send voice to");
       await api.sendMessage(currentConvId, text);
       
       // Fetch updated messages to get the assistant response
@@ -758,7 +760,7 @@ function VoicePage() {
           {ttsEnabled ? "🔊" : "🔇"}
         </button>
       </div>
-      {response && <div className="mt-4 p-4 card" style={{ width: "100%" }}><strong>Julie:</strong> {response}</div>}
+      {response && <div className="mt-4 p-4 card" style={{ width: "100%" }}><strong>Julie:</strong> <Markdown text={response} /></div>}
     </div>
   );
 }
@@ -865,7 +867,7 @@ function AnalyticsPage() {
         <div className="chart-container">
           {data.taskRunsPerDay.length === 0 && <div className="text-dim">No task runs yet.</div>}
           {data.taskRunsPerDay.map(d => (
-            <div key={d.day} className="chart-bar" style={{ height: `${(d.count / maxDay) * 100}%`, width: 20, background: "var(--accent-violet)" }} title={`${d.day}: ${d.count}`} />
+            <div key={d.day} className="chart-bar" style={{ height: `${(d.count / maxDay) * 100}%`, width: 20, background: "var(--accent-cyan)" }} title={`${d.day}: ${d.count}`} />
           ))}
         </div>
       </div>
@@ -1077,7 +1079,11 @@ function ChatView() {
           }}>+</button>
         </div>
         <div className="chat-log" ref={logRef} style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 12 }}>
-          {messages.map(m => <div key={m.id} className={`msg ${m.role}`}>{m.text}</div>)}
+          {messages.map(m => (
+            <div key={m.id} className={`msg ${m.role}`}>
+              {m.role === "assistant" ? <Markdown text={m.text} /> : <span className="msg-plain">{m.text}</span>}
+            </div>
+          ))}
         </div>
         <div className="chat-input" style={{ display: "flex", gap: 10, marginTop: 10 }}>
           <textarea value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === "Enter" && !e.shiftKey && send()}
@@ -1161,9 +1167,9 @@ function BoardView() {
   const getStatusColor = (status: string) => {
     switch (status) {
       case 'backlog': return 'var(--text-dim)';
-      case 'ready': return 'var(--accent-cyan)';
-      case 'in_progress': return 'var(--accent-primary)';
-      case 'pending_review': return 'var(--accent-violet)';
+      case 'ready': return 'var(--accent-bright)';
+      case 'in_progress': return 'var(--accent)';
+      case 'pending_review': return '#AAB8CC';
       case 'done': return '#4ade80';
       case 'blocked': return '#ff3b30';
       default: return 'var(--text-dim)';
@@ -1234,7 +1240,7 @@ function BoardView() {
                     </div>
                   )}
                   {t.last_run_output && (
-                    <div className="text-dim" style={{ fontSize: "0.75rem", color: "var(--accent-cyan)", marginBottom: 4 }}>
+                    <div className="text-dim" style={{ fontSize: "0.75rem", marginBottom: 4 }}>
                       Run: {t.last_run_output.slice(0, 60)}{t.last_run_output.length > 60 ? "..." : ""}
                     </div>
                   )}
@@ -1320,7 +1326,7 @@ function BoardView() {
                 </button>
               </div>
               {editingTask.status === 'ready' && (
-                <button className="btn" style={{ background: "var(--accent-cyan)", color: "#070B14" }} onClick={() => runTask(editingTask.id)}>
+                <button className="btn" style={{ background: "var(--accent)", color: "var(--on-accent)" }} onClick={() => runTask(editingTask.id)}>
                   ▶ Run Task
                 </button>
               )}
