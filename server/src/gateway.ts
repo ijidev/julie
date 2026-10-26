@@ -208,7 +208,7 @@ export class GatewayClient {
   }
 
   private buildConnectFrame(challenge: { nonce: string; ts: number }): any {
-    const scopes = ["operator.read", "operator.write"];
+    const scopes = ["operator.read", "operator.write", "operator.admin"];
     const platform = "linux";
     const payload = [
       "v3",
@@ -353,6 +353,48 @@ export class GatewayClient {
       "chat.history", { sessionKey }, 15000
     );
     return (h.messages ?? []).map((m) => ({ role: m.role, text: extractText(m.content), timestamp: m.timestamp }));
+  }
+
+  async listAgents(): Promise<Array<{ id: string; name?: string; model?: string; status?: string }>> {
+    await this.ensureConnected();
+    try {
+      const res = await this.rpc<any>("agents.list", {}, 15000);
+      return Array.isArray(res) ? res : (res?.agents ?? []);
+    } catch {
+      try {
+        const res = await this.rpc<any>("sessions.list", {}, 15000);
+        return Array.isArray(res) ? res : (res?.sessions ?? []).map((s: any) => ({
+          id: s.key ?? s.id,
+          name: s.agentId ?? s.name ?? s.key,
+          status: s.status ?? "unknown",
+          model: s.model ?? "unknown",
+        }));
+      } catch (e: any) {
+        throw new Error(`Gateway agents listing unavailable: ${e.message}`);
+      }
+    }
+  }
+
+  async listTools(): Promise<Array<{ id: string; name?: string; description?: string; status?: string; group?: string }>> {
+    await this.ensureConnected();
+    try {
+      const res = await this.rpc<any>("tools.catalog", { agentId: "main", includePlugins: true }, 15000);
+      if (Array.isArray(res?.groups)) {
+        // Flatten grouped tool catalog (e.g. { groups: [{ id: 'fs', tools: [...] }] })
+        return res.groups.flatMap((g: any) =>
+          (g.tools ?? []).map((t: any) => ({
+            id: t.id,
+            name: t.label ?? t.id,
+            description: t.description,
+            status: "available",
+            group: g.label ?? g.id,
+          }))
+        );
+      }
+      return Array.isArray(res) ? res : (res?.tools ?? []);
+    } catch (e: any) {
+      throw new Error(`Gateway tools listing unavailable: ${e.message}`);
+    }
   }
 
   shutdown(): void {

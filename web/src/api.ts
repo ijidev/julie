@@ -27,6 +27,20 @@ export const api = {
   createConversation: (workspaceId: number, title: string) => jfetch("/api/conversations", { method: "POST", body: JSON.stringify({ workspaceId, title }) }),
   messages: (conversationId: number) => jfetch(`/api/conversations/${conversationId}/messages`),
   sendMessage: (conversationId: number, text: string) => jfetch(`/api/conversations/${conversationId}/messages`, { method: "POST", body: JSON.stringify({ text }) }),
+  agents: () => jfetch("/api/agents"),
+  tools: () => jfetch("/api/tools"),
+  analytics: () => jfetch("/api/analytics"),
+};
+
+export type Agent = { id: string; name?: string; model?: string; status?: string; [key: string]: unknown };
+export type Tool = { id: string; name?: string; description?: string; status?: string; [key: string]: unknown };
+export type Analytics = {
+  tasksByStatus: Array<{ status: string; count: number }>;
+  taskRunsPerDay: Array<{ day: string; count: number }>;
+  messagesPerDay: Array<{ day: string; count: number }>;
+  conversationCount: number;
+  gatewaySessions: number;
+  taskCount: number;
 };
 
 export type Workspace = { id: number; name: string; description: string };

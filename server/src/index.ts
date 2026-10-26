@@ -5,6 +5,9 @@ import path from "node:path";
 import { config, validateConfig } from "./config.js";
 import { api } from "./routes.js";
 import { gateway } from "./gateway.js";
+import { WebSocketServer } from "ws";
+import http from "node:http";
+import { setupTerminal } from "./terminal.js";
 
 const problems = validateConfig();
 if (problems.length > 0) {
@@ -47,6 +50,19 @@ if (!getSetting("active_workspace_id")) {
 
 const server = app.listen(config.port, config.host, () => {
   console.log(`[julie] listening on http://${config.host}:${config.port}`);
+});
+
+// Terminal WS bridge — attached to the main HTTP server (shares the port).
+const wss = new WebSocketServer({ noServer: true });
+server.on("upgrade", (req, socket, head) => {
+  if (req.url === "/terminal-ws") {
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      setupTerminal(wss);
+      wss.emit("connection", ws, req);
+    });
+  } else {
+    socket.destroy();
+  }
 });
 
 // Establish the gateway connection in the background; never block boot.

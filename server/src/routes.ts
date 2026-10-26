@@ -36,6 +36,49 @@ api.get("/gateway/status", async (_req, res) => {
   res.json(await gateway.checkConnection());
 });
 
+// ---- agents (real gateway data; honest error states) ----
+api.get("/agents", async (_req, res) => {
+  try {
+    const agents = await gateway.listAgents();
+    res.json({ ok: true, agents, source: "gateway" });
+  } catch (e: any) {
+    res.status(503).json({ ok: false, agents: [], error: e.message, source: "gateway" });
+  }
+});
+
+// ---- tools (real gateway data; honest error states) ----
+api.get("/tools", async (_req, res) => {
+  try {
+    const tools = await gateway.listTools();
+    res.json({ ok: true, tools, source: "gateway" });
+  } catch (e: any) {
+    res.status(503).json({ ok: false, tools: [], error: e.message, source: "gateway" });
+  }
+});
+
+// ---- analytics (aggregated from local SQLite only) ----
+api.get("/analytics", (_req, res) => {
+  const q = (sql: string) => db.prepare(sql).all() as any[];
+  const one = (sql: string) => db.prepare(sql).get() as any;
+  const tasksByStatus = q(`SELECT status, COUNT(*) as count FROM tasks GROUP BY status`);
+  const taskRunsPerDay = q(`SELECT date(updated_at) as day, COUNT(*) as count FROM tasks WHERE updated_at >= date('now', '-30 days') GROUP BY day ORDER BY day`);
+  const messagesPerDay = q(`SELECT date(created_at) as day, COUNT(*) as count FROM messages WHERE created_at >= date('now', '-30 days') GROUP BY day ORDER BY day`);
+  const conversationCount = (one(`SELECT COUNT(*) as count FROM conversations`) as any).count;
+  const gatewaySessions = (one(`SELECT COUNT(DISTINCT gateway_session_key) as count FROM conversations WHERE gateway_session_key != ''`) as any).count;
+  const taskCount = (one(`SELECT COUNT(*) as count FROM tasks`) as any).count;
+  res.json({
+    ok: true,
+    analytics: {
+      tasksByStatus,
+      taskRunsPerDay,
+      messagesPerDay,
+      conversationCount,
+      gatewaySessions,
+      taskCount,
+    },
+  });
+});
+
 // ---- workspaces ----
 api.get("/workspaces", (_req, res) => {
   const rows = db.prepare("SELECT * FROM workspaces ORDER BY id").all();
