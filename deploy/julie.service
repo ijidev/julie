@@ -1,0 +1,20 @@
+[Unit]
+Description=JULIE AI OS (single-process Express + web, port 3000)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=admin
+WorkingDirectory=/home/admin/julie
+ExecStart=/usr/bin/node /home/admin/julie/server/dist/index.js
+Restart=always
+RestartSec=3
+Environment=NODE_ENV=production
+# Secrets (ADMIN_PASSWORD, ADMIN_TOKEN, GATEWAY_TOKEN) are read from /home/admin/julie/.env
+# by the app itself; the file is mode 0600 and never logged.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
