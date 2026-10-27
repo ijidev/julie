@@ -68,6 +68,37 @@
 
 ---
 
+## Phase D-3 — Mobile 3-column density + 3D hologram avatar (2026-10-27)
+### Added
+- Rewritten `HologramBust` SVG: layered-gradient 3D-style female hologram
+  (volumetric hair, shaded face, rim light, bottom dissolve, pulsing chest core).
+- Chest-core pulse keyframes (`hvCorePulse`), ambient aura, desktop bust resize.
+### Changed
+- Mobile home keeps the 3-column grid with center-dominant column ratio
+  (1fr 1.12fr 1fr); desktop pinned symmetric.
+- Mobile type scale bumped app-wide on the dashboard (greeting 18px, titles/rows
+  +0.5–1.5px) so the 3-column layout reads intentional, not compressed.
+- Grid gap 10px, card padding 12px, bust center panel enlarged (152×207).
+
+---
+
+## Phase D-2 — Global voice + personalization (2026-10-26/27)
+### Added
+- **Global voice FAB** (Chunk B): floating mic on every route; inline
+  SpeechRecognition, transcript posts into the current conversation; off-/chat
+  replies in a compact sheet. Shared `voice.ts` capture + `speaking.ts` TTS
+  store; all wave components stay in sync app-wide.
+- **Prompt-usage learning** (Chunk C): normalized+hashed real user messages into
+  a bounded `prompt_usage` table (top-100 retention); `GET /api/prompt-usage`.
+- **Owner avatar**: `/api/settings/avatar` CRUD — base64 jpeg/png/webp dataURL,
+  magic-byte validated, ~1MB cap, stored in settings.
+- **Task run-evidence**: `PATCH /api/tasks/:id` accepts `last_run_output` and
+  `run_started_at` (backward compatible).
+### Fixed
+- Center nav AI item + Home orb trigger inline voice capture (no navigation).
+
+---
+
 ## Phase C — Julie AiOS Rebrand & Command Center (2026-10-26)
 ### Added
 - **Agents Page** (`/agents`): Real gateway agent directory (RPC-backed) with honest error states.
@@ -83,4 +114,4 @@
 
 ---
 
-*Last updated: 2026-10-26*
+*Last updated: 2026-10-27*

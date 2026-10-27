@@ -1,7 +1,56 @@
 # Project State: Julie AiOS
 
+## Status: Phase D-3 (Mobile 3-column density + 3D hologram avatar)
+**Date:** 2026-10-27
+
+### Phase D-3 Overview
+Goal from owner reference: keep the 3-column dashboard composition ON MOBILE
+(no single-column stacking), but scale fonts/density so it feels intentional
+rather than compressed. Plus a much more 3D-looking female AI avatar in the
+center AI ASSISTANT panel.
+
+### Changes — Mobile density polish
+- `.home-grid` mobile columns now `1fr 1.12fr 1fr` (center AI panel dominant,
+  matching the reference); desktop stays symmetric `repeat(3, minmax(0,1fr))`.
+- Mobile type scale bumped so nothing reads "shrunk to fit": greeting 18px,
+  card titles 10px, row titles 12px / subs 10px, tile labels 10px (icons 15px),
+  chip 10px, msg bubbles 10.5px (avatars 20px), schedule 10.5px, weather temp
+  27px, insights delta 14px, empty states 11px.
+- Density rhythm: grid/col gap 8→10px, card padding 10→12px, rows 7px 8px,
+  voice orb 100px.
+- Center panel hero: bust area 152×207 (was 112×142), stronger glow.
+
+### Changes — 3D hologram avatar (HologramBust rewritten, SVG, no deps)
+- viewBox 220×300; layered gradients for volume: upper-left lit skin
+  (`hvSkin` + `hvFaceGlow`), gradient hair (`hvHair`) with inner flow strands,
+  torso drape + collarbone shading (`hvBody`).
+- Face details: brows, downcast serene eyes with lash hints (reference pose),
+  nose hint, lips, cheek glow, jaw/neck shadow.
+- Rim-light stroke on left edge for 3D pop; ambient aura ellipse behind;
+  holographic bottom dissolve via `hvDissolve` mask; base platform ellipses.
+- Pulsing chest core (`.hv-core` + `hvCorePulse` keyframes, 3.4s).
+- Desktop bust area resized to match new aspect (196×267).
+- Zero new dependencies; still the same `.hv-*` scoped CSS, orange accent
+  system, scan line + floating particles kept.
+
+### Verification
+- ✅ `tsc` (server, strict) + `vite build` pass
+- ✅ `sudo systemctl restart julie.service` — active; health 200 (gateway connected, server 2026.10.5)
+- ✅ Live bundle contains new avatar markers (`hvDissolve` in JS, `hvCorePulse` in CSS)
+
+### Known Limitations (honest)
+- The avatar is a hand-built SVG illustration (stylized hologram), not a rendered
+  3D mesh — no three.js/webgl dependency per minimal-deps rule. A real glTF model
+  would need a decision record + larger bundle.
+- Avatar stays in the orange accent system (matches current Chunk A accent);
+  a blue hologram variant like the raw reference image would need a design call.
+- `prefers-reduced-motion` not yet applied to `hv-core` pulse.
+
+---
+
 ## Status: Phase D-1 (Home Dashboard Redesign Complete)
 **Date:** 2026-10-26
+**Superseded by D-3 above (kept for history).**
 
 ### Phase D-1 Overview
 Full Home dashboard redesign to match the owner's reference image: deep near-black/navy

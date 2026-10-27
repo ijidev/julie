@@ -237,51 +237,130 @@ const BUST_PARTICLES = [
 function HologramBust() {
   return (
     <div className="hv-bust-wrap">
-      <svg className="hv-bust" viewBox="0 0 220 280" aria-hidden="true">
+      <svg className="hv-bust" viewBox="0 0 220 300" aria-hidden="true">
         <defs>
-          <linearGradient id="hvGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#FFD9B0" />
-            <stop offset="55%" stopColor="#FF9A3D" />
-            <stop offset="100%" stopColor="#E05E00" />
+          {/* skin: lit from upper-left for 3D volume */}
+          <linearGradient id="hvSkin" x1="0.2" y1="0" x2="0.85" y2="1">
+            <stop offset="0%" stopColor="#FFEFDC" />
+            <stop offset="38%" stopColor="#FFC48C" />
+            <stop offset="100%" stopColor="#D96A10" />
           </linearGradient>
-          <radialGradient id="hvFace" cx="50%" cy="42%" r="60%">
-            <stop offset="0%" stopColor="#FFF3E6" stopOpacity="0.9" />
-            <stop offset="60%" stopColor="#FFB36B" stopOpacity="0.35" />
-            <stop offset="100%" stopColor="#FF8C33" stopOpacity="0.08" />
+          <radialGradient id="hvFaceGlow" cx="42%" cy="40%" r="70%">
+            <stop offset="0%" stopColor="#FFF3E6" stopOpacity="0.85" />
+            <stop offset="55%" stopColor="#FFB36B" stopOpacity="0.28" />
+            <stop offset="100%" stopColor="#FF8C33" stopOpacity="0.05" />
+          </radialGradient>
+          <linearGradient id="hvHair" x1="0" y1="0" x2="0.6" y2="1">
+            <stop offset="0%" stopColor="#FFB366" />
+            <stop offset="55%" stopColor="#E56B12" />
+            <stop offset="100%" stopColor="#B85005" />
+          </linearGradient>
+          <linearGradient id="hvBody" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#FF9A3D" stopOpacity="0.34" />
+            <stop offset="100%" stopColor="#D35400" stopOpacity="0.1" />
+          </linearGradient>
+          <radialGradient id="hvAura" cx="50%" cy="55%" r="60%">
+            <stop offset="0%" stopColor="#FF9A3D" stopOpacity="0.22" />
+            <stop offset="70%" stopColor="#E05E00" stopOpacity="0.07" />
+            <stop offset="100%" stopColor="#E05E00" stopOpacity="0" />
+          </radialGradient>
+          <radialGradient id="hvCore" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stopColor="#FFF3E6" stopOpacity="0.95" />
+            <stop offset="45%" stopColor="#FFB36B" stopOpacity="0.55" />
+            <stop offset="100%" stopColor="#FF8C33" stopOpacity="0" />
           </radialGradient>
           <radialGradient id="hvBase" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="#FF9A3D" stopOpacity="0.8" />
+            <stop offset="0%" stopColor="#FF9A3D" stopOpacity="0.75" />
             <stop offset="100%" stopColor="#FF9A3D" stopOpacity="0" />
           </radialGradient>
+          {/* hologram dissolve: figure fades out at the bottom */}
+          <linearGradient id="hvFade" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#fff" stopOpacity="1" />
+            <stop offset="74%" stopColor="#fff" stopOpacity="1" />
+            <stop offset="100%" stopColor="#fff" stopOpacity="0.25" />
+          </linearGradient>
+          <mask id="hvDissolve">
+            <rect x="0" y="0" width="220" height="300" fill="url(#hvFade)" />
+          </mask>
           <filter id="hvSoft" x="-50%" y="-50%" width="200%" height="200%">
             <feGaussianBlur stdDeviation="5" />
           </filter>
+          <filter id="hvSoft2" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="2.4" />
+          </filter>
         </defs>
-        {/* base platform glow + rings */}
-        <ellipse cx="110" cy="252" rx="62" ry="12" fill="url(#hvBase)" filter="url(#hvSoft)" />
-        <ellipse cx="110" cy="252" rx="70" ry="14" fill="none" stroke="#FFB36B" strokeOpacity="0.5" strokeWidth="1.5" />
-        <ellipse cx="110" cy="252" rx="50" ry="9" fill="none" stroke="#FF8C33" strokeOpacity="0.4" strokeWidth="1" />
+
+        {/* ambient aura behind the figure */}
+        <ellipse cx="110" cy="170" rx="98" ry="128" fill="url(#hvAura)" />
         {/* halo rings behind head */}
-        <circle cx="110" cy="100" r="58" fill="none" stroke="#FFB36B" strokeOpacity="0.25" strokeWidth="1" />
-        <circle cx="110" cy="100" r="66" fill="none" stroke="#FF8C33" strokeOpacity="0.15" strokeWidth="1" />
-        {/* torso */}
-        <path d="M 46 250 C 50 206 80 176 110 172 C 140 176 170 206 174 250 Z" fill="url(#hvGrad)" fillOpacity="0.16" stroke="url(#hvGrad)" strokeOpacity="0.75" strokeWidth="1.5" />
-        {/* neck */}
-        <path d="M 100 148 L 100 168 C 100 174 105 177 110 177 C 115 177 120 174 120 168 L 120 148" fill="url(#hvGrad)" fillOpacity="0.2" stroke="#FFB36B" strokeOpacity="0.6" strokeWidth="1.2" />
-        {/* head */}
-        <ellipse cx="110" cy="104" rx="33" ry="40" fill="url(#hvFace)" stroke="#FFD9B0" strokeOpacity="0.8" strokeWidth="1.5" />
-        {/* hair top */}
-        <path d="M 77 110 C 72 64 90 44 110 42 C 130 44 148 64 143 110 C 141 84 132 62 110 58 C 88 62 79 84 77 110 Z" fill="url(#hvGrad)" fillOpacity="0.5" stroke="#FFC08A" strokeOpacity="0.7" strokeWidth="1.2" />
-        {/* side strands */}
-        <path d="M 78 104 C 68 140 72 168 64 200 C 74 196 80 188 82 172 C 84 150 84 128 86 112 Z" fill="url(#hvGrad)" fillOpacity="0.35" stroke="#FF9A3D" strokeOpacity="0.5" strokeWidth="1" />
-        <path d="M 142 104 C 152 140 148 168 156 200 C 146 196 140 188 138 172 C 136 150 136 128 134 112 Z" fill="url(#hvGrad)" fillOpacity="0.35" stroke="#FF9A3D" strokeOpacity="0.5" strokeWidth="1" />
-        {/* face glow */}
-        <ellipse cx="110" cy="112" rx="20" ry="24" fill="#FFF3E6" fillOpacity="0.18" filter="url(#hvSoft)" />
-        {/* chest circuit lines */}
-        <path d="M 110 186 L 110 216 M 110 200 L 92 214 M 110 200 L 128 214" stroke="#FF9A3D" strokeOpacity="0.6" strokeWidth="1" fill="none" />
-        <circle cx="110" cy="186" r="2.5" fill="#FFD9B0" />
-        <circle cx="92" cy="214" r="1.8" fill="#FF8C33" />
-        <circle cx="128" cy="214" r="1.8" fill="#FF8C33" />
+        <circle cx="110" cy="98" r="56" fill="none" stroke="#FFB36B" strokeOpacity="0.28" strokeWidth="1.1" />
+        <circle cx="110" cy="98" r="65" fill="none" stroke="#FF8C33" strokeOpacity="0.14" strokeWidth="1" />
+
+        {/* hologram figure (bottom dissolves) */}
+        <g mask="url(#hvDissolve)">
+          {/* hair — back silhouette with flowing tips */}
+          <path d="M 110 34 C 74 36 60 62 63 94 C 65 124 59 158 48 194 C 62 186 72 168 77 148 C 76 122 76 100 80 86 C 86 70 96 62 110 62 C 124 62 134 70 140 86 C 144 100 144 122 143 148 C 148 168 158 186 172 194 C 161 158 155 124 157 94 C 160 62 146 36 110 34 Z"
+            fill="url(#hvHair)" fillOpacity="0.42" stroke="#FF9A3D" strokeOpacity="0.55" strokeWidth="1.1" />
+          {/* hair — inner flow strands (volume) */}
+          <path d="M 74 96 C 72 124 68 152 58 182 M 84 80 C 80 110 78 140 70 172 M 146 96 C 148 124 152 152 162 182 M 136 80 C 140 110 142 140 150 172"
+            stroke="#FFC08A" strokeOpacity="0.4" strokeWidth="1" fill="none" />
+          {/* torso with drape */}
+          <path d="M 40 268 C 44 220 58 196 84 186 C 92 183 99 180 103 176 L 105 154 C 108 156 112 156 115 154 L 117 176 C 121 180 128 183 136 186 C 162 196 176 220 180 268 Z"
+            fill="url(#hvBody)" stroke="#FFB36B" strokeOpacity="0.6" strokeWidth="1.3" />
+          {/* collarbone shading */}
+          <path d="M 90 202 C 99 209 121 209 130 202 M 104 196 L 110 202 L 116 196"
+            stroke="#FFD9B0" strokeOpacity="0.4" strokeWidth="1" fill="none" />
+          {/* chest core + circuits */}
+          <g className="hv-core">
+            <circle cx="110" cy="220" r="16" fill="url(#hvCore)" filter="url(#hvSoft2)" />
+            <path d="M 110 208 L 121 220 L 110 232 L 99 220 Z" fill="#FFE8D6" fillOpacity="0.5" stroke="#FFD9B0" strokeOpacity="0.85" strokeWidth="1.2" />
+            <path d="M 110 236 L 110 252 M 102 246 L 94 258 M 118 246 L 126 258" stroke="#FF9A3D" strokeOpacity="0.6" strokeWidth="1" fill="none" />
+            <circle cx="94" cy="258" r="1.8" fill="#FF8C33" />
+            <circle cx="126" cy="258" r="1.8" fill="#FF8C33" />
+          </g>
+          {/* neck */}
+          <path d="M 104 128 C 104 148 101 160 96 167 C 104 174 116 174 124 167 C 119 160 116 148 116 128 Z"
+            fill="url(#hvSkin)" fillOpacity="0.55" stroke="#FFB36B" strokeOpacity="0.5" strokeWidth="1.1" />
+          {/* neck shadow under jaw */}
+          <path d="M 104 132 C 107 138 113 138 116 132 C 114 144 106 144 104 132 Z" fill="#B85005" fillOpacity="0.35" filter="url(#hvSoft2)" />
+          {/* face */}
+          <path d="M 78 94 C 78 70 92 56 110 56 C 128 56 142 70 142 94 C 142 110 136 123 128 133 C 122 140 116 143 110 143 C 104 143 98 140 92 133 C 84 123 78 110 78 94 Z"
+            fill="url(#hvSkin)" fillOpacity="0.9" stroke="#FFD9B0" strokeOpacity="0.9" strokeWidth="1.4" />
+          {/* face volume: lit top-left, soft cheek glow, jaw shade */}
+          <ellipse cx="98" cy="96" rx="17" ry="21" fill="#FFF3E6" fillOpacity="0.22" filter="url(#hvSoft2)" />
+          <ellipse cx="94" cy="115" rx="6.5" ry="4" fill="#FF9666" fillOpacity="0.16" filter="url(#hvSoft2)" />
+          <ellipse cx="126" cy="115" rx="6.5" ry="4" fill="#FF9666" fillOpacity="0.12" filter="url(#hvSoft2)" />
+          <path d="M 96 128 C 103 134 117 134 124 128 C 118 141 102 141 96 128 Z" fill="#C2620C" fillOpacity="0.28" filter="url(#hvSoft2)" />
+          {/* brows */}
+          <path d="M 88 95 C 94 91 102 91 107 94 M 113 94 C 118 91 126 91 132 95"
+            stroke="#E56B12" strokeOpacity="0.75" strokeWidth="1.6" strokeLinecap="round" fill="none" />
+          {/* eyes — downcast, serene + lash hint (reference pose) */}
+          <path d="M 92 105 C 96 109 102 109 106 105 M 114 105 C 118 109 124 109 128 105"
+            stroke="#7A3A06" strokeOpacity="0.8" strokeWidth="1.7" strokeLinecap="round" fill="none" />
+          <path d="M 93 108 L 91 110 M 105 108 L 107 110 M 115 108 L 113 110 M 127 108 L 129 110"
+            stroke="#7A3A06" strokeOpacity="0.55" strokeWidth="1.1" strokeLinecap="round" />
+          <path d="M 92 99 C 96 96 102 96 106 99 M 114 99 C 118 96 124 96 128 99"
+            stroke="#FFB36B" strokeOpacity="0.4" strokeWidth="1" fill="none" />
+          {/* nose hint */}
+          <path d="M 110 102 C 109 108 108 112 106 115 C 108 117 112 117 114 115" stroke="#C2620C" strokeOpacity="0.45" strokeWidth="1.1" fill="none" strokeLinecap="round" />
+          {/* lips */}
+          <path d="M 104 126 C 108 124 112 124 116 126 C 112 130 108 130 104 126 Z" fill="#FF8C5A" fillOpacity="0.55" />
+          <path d="M 104 126 L 116 126" stroke="#B85005" strokeOpacity="0.5" strokeWidth="0.8" strokeLinecap="round" />
+          {/* hair — front layer over forehead */}
+          <path d="M 78 94 C 75 62 92 46 110 45 C 128 46 145 62 142 94 C 136 74 129 64 117 60 C 112 74 95 82 83 79 C 80 83 79 89 78 94 Z"
+            fill="url(#hvHair)" fillOpacity="0.85" stroke="#FFC08A" strokeOpacity="0.7" strokeWidth="1.2" />
+          {/* side strands falling over shoulders */}
+          <path d="M 77 108 C 71 148 75 178 61 208 C 73 202 82 184 84 158 L 86 116 Z" fill="url(#hvHair)" fillOpacity="0.6" stroke="#FF9A3D" strokeOpacity="0.5" strokeWidth="1" />
+          <path d="M 143 108 C 149 148 145 178 159 208 C 147 202 138 184 136 158 L 134 116 Z" fill="url(#hvHair)" fillOpacity="0.6" stroke="#FF9A3D" strokeOpacity="0.5" strokeWidth="1" />
+          {/* rim light — left edge for 3D pop */}
+          <path d="M 79 92 C 79 68 93 56 110 56" stroke="#FFEFD9" strokeOpacity="0.95" strokeWidth="1.7" fill="none" strokeLinecap="round" />
+          <path d="M 63 94 C 64 122 58 158 48 194" stroke="#FFEFD9" strokeOpacity="0.5" strokeWidth="1.2" fill="none" strokeLinecap="round" />
+        </g>
+
+        {/* base platform glow + rings */}
+        <ellipse cx="110" cy="284" rx="62" ry="10" fill="url(#hvBase)" filter="url(#hvSoft)" />
+        <ellipse cx="110" cy="284" rx="70" ry="12" fill="none" stroke="#FFB36B" strokeOpacity="0.5" strokeWidth="1.3" />
+        <ellipse cx="110" cy="284" rx="48" ry="8" fill="none" stroke="#FF8C33" strokeOpacity="0.4" strokeWidth="1" />
       </svg>
       <div className="hv-scanline" aria-hidden="true" />
       {BUST_PARTICLES.map((p, i) => (
