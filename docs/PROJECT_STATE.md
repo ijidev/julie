@@ -1,5 +1,62 @@
 # Project State: Julie AiOS
 
+## Status: Phase D-3.1 (Mobile stabilization + D2/D3 backlog cleared)
+**Date:** 2026-10-27
+
+### Outcome
+The owner-reported phone layout defects were entered into Julie's SQLite task
+board as D3-M1 through D3-M6 and completed sequentially. The older D2 task set
+was then audited against the live code, completed where missing, and closed.
+The task board now reports **0 open tasks**.
+
+### Mobile reference corrections
+- Grid tracks are three equal `minmax(0, 1fr)` columns. Mobile outer padding is
+  8px and column gap is 5px (calibrated from the owner reference); the Home
+  container hard-clips horizontal overflow and disables browser text inflation.
+- 29 Home typography rules use smaller viewport-aware `clamp()` sizing. The
+  mobile greeting is the compact reference-style `Hello, Ikenna`.
+- AI chat history is a separate card from the avatar, bounded to 168px, scrolls
+  internally, and clamps each preview message to two lines.
+- AI Tools are 3-across, live inside the greeting card like the reference, and
+  safely ellipsize narrow labels. The crushed mobile command field is hidden;
+  command entry remains in Chat and desktop Home.
+- Home voice orb is 96px with richer radial lighting, three rings, and a 34px
+  mic; the global voice FAB now uses a dark luminous ring treatment.
+- SVG hologram gained finer hair strands, deeper shadow-side contrast, brighter
+  halo/rim light, and retains its dependency-free floating animation.
+
+### Backlog completions
+- **D2-6:** learned top prompts now appear under Smart Shortcuts when real
+  usage exists; honest empty behavior when `prompt_usage` has no rows.
+- **D2-7:** Profile now uploads/downscales/removes the owner avatar via the
+  existing validated local API; Home displays it beside AI Assistant.
+- **D2-8:** Trending uses live DEV Community AI articles with real cover images,
+  30-minute server cache, fixed upstream URL validation, and honest 502/UI error.
+- **D2-9:** Insights productivity now counts distinct completed tasks or tasks
+  with saved run output—not messages/task touches. Score is done/total.
+- **D2-10:** `/tools` is now an Apps page. Availability is derived from the real
+  gateway tool list (73 tools at verification); disconnected apps remain honestly
+  labeled. Toggles persist only local enable/pause preferences and do not mimic OAuth.
+- **D2-12:** the low-cost floating-human-avatar request is satisfied by the
+  animated, hand-built SVG hologram; no WebGL/three.js dependency added.
+
+### Verification
+- ✅ Backend strict TypeScript and frontend Vite builds pass
+- ✅ `julie.service` restarted; `/api/health` 200, gateway connected (2026.10.5)
+- ✅ Real `/api/tools` gateway round-trip returned 73 tools
+- ✅ Live `/api/trending` returned 3 DEV articles with validated real thumbnails
+- ✅ `/api/insights` returned task-evidence metrics; app preference toggle round-trip passed
+- ✅ All 3 live thumbnail URLs returned HTTP 200; cache reused the same `fetchedAt`
+- ✅ `scripts/test-phase-c.mjs`: 9/9 pass (its stale TypeScript-in-MJS syntax was fixed)
+- ✅ Julie task board: 0 rows outside `done`
+
+### Honest limitation
+The phone composition is CSS-corrected and deployed, but final aesthetic approval
+still belongs to the owner on the physical target device. No claim is made that a
+hand-built SVG is a photorealistic 3D-rendered model.
+
+---
+
 ## Status: Phase D-3 (Mobile 3-column density + 3D hologram avatar)
 **Date:** 2026-10-27
 

@@ -5,6 +5,7 @@ import { Router, type Request, type Response } from "express";
 import { db, getSetting, setSetting, TASK_STATUSES, type TaskStatus } from "./db.js";
 import { gateway } from "./gateway.js";
 import { getWeather } from "./weather.js";
+import { getTrending } from "./trending.js";
 import { loginHandler, logoutHandler, requireAuth, parseCookies, SESSION_COOKIE, safeEqual } from "./auth.js";
 import { config } from "./config.js";
 
@@ -87,6 +88,43 @@ api.get("/tools", async (_req, res) => {
   }
 });
 
+// ---- local app enable/disable preferences ----
+// Connection/availability is always derived from the real gateway tool list in
+// the frontend. These settings only let the owner pause an available app; they
+// never claim to connect an external account or perform OAuth.
+const APP_IDS = new Set(["gmail", "x", "facebook", "browser", "files", "github"]);
+function appPreferences(): Record<string, boolean> {
+  try {
+    const parsed = JSON.parse(getSetting("app_preferences") ?? "{}");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed).filter(([id, enabled]) => APP_IDS.has(id) && typeof enabled === "boolean")
+    ) as Record<string, boolean>;
+  } catch {
+    return {};
+  }
+}
+
+api.get("/apps/preferences", (_req, res) => {
+  res.json({ ok: true, preferences: appPreferences() });
+});
+
+api.patch("/apps/:id", (req, res) => {
+  const id = String(req.params.id ?? "");
+  if (!APP_IDS.has(id)) {
+    res.status(404).json({ ok: false, error: "unknown app" });
+    return;
+  }
+  if (typeof req.body?.enabled !== "boolean") {
+    res.status(400).json({ ok: false, error: "enabled must be boolean" });
+    return;
+  }
+  const preferences = appPreferences();
+  preferences[id] = req.body.enabled;
+  setSetting("app_preferences", JSON.stringify(preferences));
+  res.json({ ok: true, id, enabled: preferences[id], preferences });
+});
+
 // ---- analytics (aggregated from local SQLite only) ----
 api.get("/analytics", (_req, res) => {
   const q = (sql: string) => db.prepare(sql).all() as any[];
@@ -119,6 +157,20 @@ api.get("/weather", async (_req, res) => {
   }
 });
 
+// ---- trending AI reads (live DEV API, real thumbnails, 30-min cache) ----
+api.get("/trending", async (_req, res) => {
+  try {
+    res.json(await getTrending());
+  } catch (e: any) {
+    res.status(502).json({
+      ok: false,
+      items: [],
+      error: e.message ?? "trending fetch failed",
+      source: "DEV Community",
+    });
+  }
+});
+
 // ---- connected devices (real gateway data: node.list / system-presence) ----
 // Fallback is a single honest row ("This device") — never invented nodes or percentages.
 api.get("/devices", async (_req, res) => {
@@ -146,37 +198,54 @@ api.get("/devices", async (_req, res) => {
   }
 });
 
-// ---- insights for the Home dashboard (all computed from local SQLite) ----
+// ---- insights for the Home dashboard (all computed from real task evidence) ----
 api.get("/insights", (_req, res) => {
   const one = (sql: string) => (db.prepare(sql).get() as any)?.count ?? 0;
+  // A work event is a distinct task that was either completed or has real run
+  // output on that UTC day. UNION de-duplicates a task completed after its run,
+  // so one task cannot inflate the chart twice on the same day.
   const rows = db
-    .prepare("SELECT date(created_at) as day, COUNT(*) as count FROM messages WHERE created_at >= date('now', '-13 days') GROUP BY day")
+    .prepare(`
+      SELECT day, COUNT(*) AS count
+      FROM (
+        SELECT id, date(updated_at) AS day
+        FROM tasks
+        WHERE status = 'done' AND updated_at >= date('now', '-13 days')
+        UNION
+        SELECT id, date(COALESCE(run_started_at, updated_at)) AS day
+        FROM tasks
+        WHERE trim(COALESCE(last_run_output, '')) <> ''
+          AND COALESCE(run_started_at, updated_at) >= date('now', '-13 days')
+      )
+      GROUP BY day
+    `)
     .all() as Array<{ day: string; count: number }>;
   const byDay = new Map(rows.map((r) => [r.day, r.count]));
-  // Full 14-day series (UTC day buckets, zero-filled) for the spark chart.
+  // Full 14-day task-work series (UTC day buckets, zero-filled).
   const spark: Array<{ day: string; count: number }> = [];
   for (let i = 13; i >= 0; i--) {
     const day = new Date(Date.now() - i * 86400000).toISOString().slice(0, 10);
     spark.push({ day, count: byDay.get(day) ?? 0 });
   }
-  const msgsToday = one("SELECT COUNT(*) AS count FROM messages WHERE date(created_at) = date('now')");
-  const msgsYesterday = one("SELECT COUNT(*) AS count FROM messages WHERE date(created_at) = date('now', '-1 day')");
-  const tasksToday = one("SELECT COUNT(*) AS count FROM tasks WHERE date(updated_at) = date('now')");
-  const tasksYesterday = one("SELECT COUNT(*) AS count FROM tasks WHERE date(updated_at) = date('now', '-1 day')");
-  // Productivity: message activity today vs yesterday (task touches as secondary signal).
-  const today = msgsToday + tasksToday;
-  const yesterday = msgsYesterday + tasksYesterday;
+
+  const today = byDay.get(new Date().toISOString().slice(0, 10)) ?? 0;
+  const yesterdayKey = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  const yesterday = byDay.get(yesterdayKey) ?? 0;
   const pct = yesterday > 0 ? Math.round(((today - yesterday) / yesterday) * 100) : null;
-  // Score ring: (done + in_progress) / total tasks. null = no tasks yet.
+  const completedToday = one("SELECT COUNT(*) AS count FROM tasks WHERE status = 'done' AND date(updated_at) = date('now')");
+  const evidencedRunsToday = one("SELECT COUNT(*) AS count FROM tasks WHERE trim(COALESCE(last_run_output, '')) <> '' AND date(COALESCE(run_started_at, updated_at)) = date('now')");
+
+  // Score ring is the real task completion rate. In-progress work is not
+  // counted as complete, and no task data is represented as null.
   const totalTasks = one("SELECT COUNT(*) AS count FROM tasks");
   const doneTasks = one("SELECT COUNT(*) AS count FROM tasks WHERE status = 'done'");
   const inProgressTasks = one("SELECT COUNT(*) AS count FROM tasks WHERE status = 'in_progress'");
-  const score = totalTasks > 0 ? Math.round(((doneTasks + inProgressTasks) / totalTasks) * 100) : null;
+  const score = totalTasks > 0 ? Math.round((doneTasks / totalTasks) * 100) : null;
   res.json({
     ok: true,
     insights: {
       spark,
-      productivity: { today, yesterday, pct },
+      productivity: { today, yesterday, pct, completedToday, evidencedRunsToday },
       score,
       totals: { totalTasks, doneTasks, inProgressTasks },
     },

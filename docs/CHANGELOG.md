@@ -1,5 +1,36 @@
 # Changelog
 
+## Phase D-3.1 — Mobile stabilization & backlog closure (2026-10-27)
+### Fixed
+- Phone grid overflow: 3 equal `minmax(0, 1fr)` tracks, 8px outer gutter, and
+  5px gaps; Home clips overflow and disables mobile text auto-inflation.
+- Replaced fixed mobile type sizes with 29 compact viewport-aware `clamp()` rules.
+- Split chat history from the avatar into its own card; bounded it to 168px with
+  internal scrolling and two-line messages.
+- AI Tools now fit 3-across inside the greeting card; labels safely ellipsize.
+- Voice orb/FAB ring treatment refined; hologram shadow, strands, rim light, and halo refined.
+
+### Added
+- Owner avatar upload/downscale/remove UI in Profile; Home owner-avatar chip.
+- Learned frequent prompts surfaced in Smart Shortcuts from `/api/prompt-usage`.
+- Live `GET /api/trending` backed by DEV Community, real thumbnails, strict URL
+  validation, 30-minute cache, and honest errors.
+- Apps redesign for `/tools`: real gateway-derived availability plus persisted
+  local pause/enable toggles; no simulated account connections.
+
+### Changed
+- Productivity uses distinct completed/evidenced tasks per day; score is the real
+  done/total percentage. Message volume no longer masquerades as productivity.
+- Julie SQLite task board audited and cleared: all D2 and D3 correction tasks done.
+
+### Verification
+- Strict backend + frontend builds pass; service health 200; gateway connected.
+- Real gateway tool round-trip: 73 tools. Live trending: 3 validated articles.
+- App preference write/restore round-trip passed; task board open count = 0.
+- Phase C regression suite: 9/9 pass; all 3 live thumbnail URLs return HTTP 200.
+
+---
+
 ## Phase D-1 — Home Dashboard Redesign (2026-10-26)
 ### Added
 - **Home dashboard per owner reference**: deep near-black/navy glass panels, cyan/blue + violet hologram accents, 3-column desktop / 2-column tablet / single-column mobile (reference order)

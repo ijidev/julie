@@ -69,8 +69,8 @@ describe("API Shape & Data", () => {
 });
 
 describe("Task Card Run Output (Phase D-2 Chunk B)", () => {
-  let wsId: number | null = null;
-  let taskId: number | null = null;
+  let wsId = null;
+  let taskId = null;
 
   test("PATCH /api/tasks/:id accepts last_run_output and run_started_at", async () => {
     const ws = await fetch(`${BASE}/api/workspaces`, { headers: { Cookie: authCookie } }).then(r => r.json());
@@ -93,7 +93,7 @@ describe("Task Card Run Output (Phase D-2 Chunk B)", () => {
     assert.strictEqual(patched.task.run_started_at, "2026-10-26T18:00:00.000Z");
 
     const list = await fetch(`${BASE}/api/tasks?workspaceId=${wsId}`, { headers: { Cookie: authCookie } }).then(r => r.json());
-    const row = list.tasks.find((t: any) => t.id === taskId);
+    const row = list.tasks.find((t) => t.id === taskId);
     assert.strictEqual(row.last_run_output, "E2E run evidence line");
   });
 

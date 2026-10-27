@@ -6,7 +6,7 @@ import { VoiceFab, requestVoiceCapture } from "./voice-fab";
 import { useSpeaking, speakWithTracking } from "./speaking";
 import { Wave } from "./wave";
 import { speechSupported, startSpeechRecognition, submitVoiceText, type VoiceState } from "./voice";
-import { api, type Conversation, type GatewayStatus, type Message, type Task, type Workspace, type Agent, type Tool, type Analytics, type Weather, type Device, type Insights, TASK_STATUSES } from "./api";
+import { api, type Conversation, type GatewayStatus, type Message, type Task, type Workspace, type Agent, type Tool, type Analytics, type Weather, type Device, type Insights, type TrendingItem, TASK_STATUSES } from "./api";
 
 // --- Router Hook ---
 function useRoute(): [string, (to: string) => void] {
@@ -182,14 +182,7 @@ const SMART_SHORTCUTS: Array<{ title: string; sub: string; icon: string; tone: "
   { title: "Plan My Day", sub: "Schedule & prioritize", icon: "◷", tone: "violet", prompt: "Review my open tasks and plan my day: propose a prioritized schedule with time blocks." },
 ];
 
-// Curated public reads (plain URLs, open in a new tab). Titles verified 2026-10-26 (HTTP 200);
-// read times computed from live word counts at ~200 wpm. These are curated links, not analytics.
-const TRENDING: Array<{ title: string; category: string; readTime: string; url: string; grad: string }> = [
-  { title: "What Is Artificial Intelligence?", category: "Technology", readTime: "15 min read", url: "https://www.ibm.com/think/topics/what-is-artificial-intelligence", grad: "linear-gradient(135deg,#FF9A3D,#E05E00)" },
-  { title: "What Is Generative AI?", category: "Technology", readTime: "23 min read", url: "https://aws.amazon.com/what-is/generative-ai/", grad: "linear-gradient(135deg,#FFB36B,#FF7A1A)" },
-  { title: "AI News & Analysis — The Verge", category: "News", readTime: "13 min read", url: "https://www.theverge.com/ai-artificial-intelligence", grad: "linear-gradient(135deg,#E8590C,#FF8C33)" },
-];
-const TRENDING_HUB = "https://www.ibm.com/think/ai";
+const TRENDING_HUB = "https://dev.to/t/ai";
 
 function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1).trimEnd() + "…" : s;
@@ -293,8 +286,8 @@ function HologramBust() {
         {/* ambient aura behind the figure */}
         <ellipse cx="110" cy="170" rx="98" ry="128" fill="url(#hvAura)" />
         {/* halo rings behind head */}
-        <circle cx="110" cy="98" r="56" fill="none" stroke="#FFB36B" strokeOpacity="0.28" strokeWidth="1.1" />
-        <circle cx="110" cy="98" r="65" fill="none" stroke="#FF8C33" strokeOpacity="0.14" strokeWidth="1" />
+        <circle cx="110" cy="98" r="56" fill="none" stroke="#FFB36B" strokeOpacity="0.4" strokeWidth="1.2" />
+        <circle cx="110" cy="98" r="65" fill="none" stroke="#FF8C33" strokeOpacity="0.2" strokeWidth="1" />
 
         {/* hologram figure (bottom dissolves) */}
         <g mask="url(#hvDissolve)">
@@ -304,8 +297,15 @@ function HologramBust() {
           {/* hair — inner flow strands (volume) */}
           <path d="M 74 96 C 72 124 68 152 58 182 M 84 80 C 80 110 78 140 70 172 M 146 96 C 148 124 152 152 162 182 M 136 80 C 140 110 142 140 150 172"
             stroke="#FFC08A" strokeOpacity="0.5" strokeWidth="1" fill="none" />
-          {/* hair highlight streak (light catch, upper-left) */}
+          {/* D-3 M6: finer strands for readable texture */}
+          <path d="M 80 88 C 76 116 72 146 64 176 M 90 74 C 86 104 84 134 76 166 M 95 66 C 92 96 90 126 84 156 M 140 88 C 144 116 148 146 156 176 M 130 74 C 134 104 136 134 144 166 M 125 66 C 128 96 130 126 136 156"
+            stroke="#FFD9B0" strokeOpacity="0.3" strokeWidth="0.7" fill="none" />
+          {/* D-3 M6: hair highlight streak (light catch, upper-left) */}
           <path d="M 84 74 C 80 96 78 124 74 152" stroke="#FFEFDC" strokeOpacity="0.55" strokeWidth="1.8" fill="none" strokeLinecap="round" />
+          {/* D-3 M6: shadow side (right) — deeper lit/shadow contrast for 3D */}
+          <path d="M 110 45 C 128 46 144 62 142 94 C 141 112 136 128 128 138 C 124 142 118 144 114 145 C 124 138 132 128 134 112 C 137 88 130 64 110 45 Z"
+            fill="#B85005" fillOpacity="0.3" filter="url(#hvSoft2)" />
+          <path d="M 143 108 C 149 148 145 178 159 208 C 147 202 138 184 136 158 Z" fill="#B85005" fillOpacity="0.28" />
           {/* torso with drape */}
           <path d="M 40 268 C 44 220 58 196 84 186 C 92 183 99 180 103 176 L 105 154 C 108 156 112 156 115 154 L 117 176 C 121 180 128 183 136 186 C 162 196 176 220 180 268 Z"
             fill="url(#hvBody)" stroke="#FFC99B" strokeOpacity="0.75" strokeWidth="1.3" />
@@ -381,7 +381,7 @@ function Sparkline({ points }: { points: number[] }) {
   const line = points.map((p, i) => `${i === 0 ? "M" : "L"} ${x(i).toFixed(1)} ${y(p).toFixed(1)}`).join(" ");
   const area = `${line} L ${x(n - 1).toFixed(1)} ${h - pad} L ${x(0).toFixed(1)} ${h - pad} Z`;
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} className="hv-spark" preserveAspectRatio="none" role="img" aria-label="Messages per day, last 14 days">
+    <svg viewBox={`0 0 ${w} ${h}`} className="hv-spark" preserveAspectRatio="none" role="img" aria-label="Completed or evidenced tasks per day, last 14 days">
       <defs>
         <linearGradient id="hvSparkFill" x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor="#FF9A3D" stopOpacity="0.35" />
@@ -429,9 +429,14 @@ function HomePage({ navigate, gw }: { navigate: (to: string) => void; gw: Gatewa
   const [weatherError, setWeatherError] = useState("");
   const [devices, setDevices] = useState<Device[] | null>(null);
   const [devicesSource, setDevicesSource] = useState<"" | "gateway" | "fallback">("");
+  const [ownerAvatar, setOwnerAvatar] = useState<string | null>(null);
+  const [trending, setTrending] = useState<TrendingItem[] | null>(null);
+  const [trendingError, setTrendingError] = useState("");
   const [insights, setInsights] = useState<Insights | null>(null);
   const [cmd, setCmd] = useState("");
   const [posting, setPosting] = useState<string | null>(null);
+  // D2-6: top frequent prompts learned from the owner's real usage history
+  const [learned, setLearned] = useState<Array<{ prompt_hash: string; prompt: string; uses: number }>>([]);
 
   const greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
 
@@ -444,6 +449,9 @@ function HomePage({ navigate, gw }: { navigate: (to: string) => void; gw: Gatewa
     api.devices().then((d) => { setDevices(d.devices); setDevicesSource(d.source); })
       .catch(() => setDevices([{ id: "this-device", name: "This device", connected: true, detail: "This device", lastSeenAtMs: null }]));
     api.insights().then((d) => setInsights(d.insights)).catch(() => {});
+    api.avatar().then((d) => setOwnerAvatar(d.avatar)).catch(() => {});
+    api.promptUsage(3).then((d) => setLearned(d.prompts.slice(0, 3))).catch(() => {});
+    api.trending().then((d) => setTrending(d.items)).catch((e) => setTrendingError(e.message));
   }, []);
 
   useEffect(() => {
@@ -509,7 +517,7 @@ function HomePage({ navigate, gw }: { navigate: (to: string) => void; gw: Gatewa
         <div className="home-col">
           {/* 1. Greeting */}
           <section className="hv-card card-greeting">
-            <h2 className="hv-greeting-title">{greeting}, {OWNER_NAME}</h2>
+            <h2 className="hv-greeting-title">Hello, {OWNER_NAME}</h2>
             <p className="hv-greeting-sub">What would you like to accomplish today?</p>
             <Wave bars={24} className="hv-waveform" />
             <form className="hv-cmd" onSubmit={(e) => { e.preventDefault(); if (cmd.trim() && !posting) postToConversation(cmd.trim(), "cmd"); }}>
@@ -517,10 +525,8 @@ function HomePage({ navigate, gw }: { navigate: (to: string) => void; gw: Gatewa
               <button className="hv-cmd-send" type="submit" disabled={!cmd.trim() || !!posting} aria-label="Send">➤</button>
             </form>
             {gw && !gw.connected && <div className="hv-empty" style={{ padding: "8px 0 0" }}>Gateway offline — responses may be delayed.</div>}
-          </section>
-
-          {/* 2. AI tools */}
-          <section className="hv-card card-aitools">
+            {/* 2. AI tools live inside the greeting card as in the reference. */}
+            <div className="hv-inline-tools">
             <div className="hv-card-head"><span className="hv-card-title">AI TOOLS</span></div>
             <div className="hv-tiles">
               {AI_TOOLS.map((t) => (
@@ -531,11 +537,28 @@ function HomePage({ navigate, gw }: { navigate: (to: string) => void; gw: Gatewa
               ))}
             </div>
             <button className="hv-link" onClick={() => navigate("/tools")}>Explore all tools →</button>
+            </div>
           </section>
 
-          {/* 3. Smart shortcuts */}
+          {/* 3. Smart shortcuts — static set + learned prompts (D2-6) */}
           <section className="hv-card card-shortcuts">
             <div className="hv-card-head"><span className="hv-card-title">SMART SHORTCUTS</span></div>
+            {learned.length > 0 && (
+              <>
+                <div className="hv-learned-cap">FROM YOUR HISTORY</div>
+                {learned.map((l) => (
+                  <button key={l.prompt_hash} className="hv-row" disabled={!!posting}
+                    title={`${l.prompt} — used ${l.uses}×`} onClick={() => postToConversation(l.prompt, `learned:${l.prompt_hash}`)}>
+                    <span className="hv-row-icon hv-icon-violet">↺</span>
+                    <span className="hv-row-body">
+                      <span className="hv-row-title">{l.prompt}</span>
+                      <span className="hv-row-sub">Learned from your usage</span>
+                    </span>
+                    <span className="hv-row-chev">{l.uses}×</span>
+                  </button>
+                ))}
+              </>
+            )}
             {SMART_SHORTCUTS.map((s) => (
               <button key={s.title} className="hv-row" disabled={!!posting} onClick={() => postToConversation(s.prompt, s.title)}>
                 <span className={`hv-row-icon hv-icon-${s.tone}`}>{s.icon}</span>
@@ -570,7 +593,10 @@ function HomePage({ navigate, gw }: { navigate: (to: string) => void; gw: Gatewa
         <div className="home-col">
           {/* 5. AI assistant panel */}
           <section className="hv-card card-ai">
-            <div className="hv-panel-head"><span className="hv-panel-title">AI ASSISTANT</span></div>
+            <div className="hv-panel-head">
+              {ownerAvatar && <img className="hv-owner-chip" src={ownerAvatar} alt="Owner" />}
+              <span className="hv-panel-title">AI ASSISTANT</span>
+            </div>
             <HologramBust />
             <div className="hv-bubble">
               {greeting}, {OWNER_NAME}. How can I help you today?
@@ -579,6 +605,11 @@ function HomePage({ navigate, gw }: { navigate: (to: string) => void; gw: Gatewa
                 ? `You have ${pendingTasks} pending ${pendingTasks === 1 ? "task" : "tasks"} and ${convs.length} open ${convs.length === 1 ? "conversation" : "conversations"}.`
                 : "You're all caught up."}
             </div>
+          </section>
+
+          {/* Chat history is its own bounded card, matching the reference. It
+              cannot stretch the avatar panel when message content is long. */}
+          <section className="hv-card card-chat-preview">
             <div className="hv-chat-label">{lastMsg ? msgTimeLabel(lastMsg) : "CHAT PREVIEW"}</div>
             <div className="hv-chat-preview">
               {messages.length === 0 && <div className="hv-empty">No messages yet — start from the command bar, a tool tile, or the quick replies.</div>}
@@ -603,7 +634,7 @@ function HomePage({ navigate, gw }: { navigate: (to: string) => void; gw: Gatewa
           <section className="hv-card card-voice">
             <button className="hv-voice-orb" onClick={() => requestVoiceCapture()} aria-label="Start voice conversation">
               <span className="hv-orb-ring" /><span className="hv-orb-ring hv-orb-ring-2" /><span className="hv-orb-ring hv-orb-ring-3" />
-              <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#FFE8D6" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+              <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#FFE8D6" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true">
                 <rect x="9" y="3" width="6" height="11" rx="3" />
                 <path d="M5 11a7 7 0 0 0 14 0" />
                 <path d="M12 18v3" />
@@ -658,9 +689,13 @@ function HomePage({ navigate, gw }: { navigate: (to: string) => void; gw: Gatewa
                   <div className="hv-prod">
                     <span className="hv-prod-label">Productivity</span>
                     <span className={`hv-prod-delta ${prodClass}`}>
-                      {prod && prod.pct != null ? `${prod.pct > 0 ? "↑" : prod.pct < 0 ? "↓" : "→"} ${Math.abs(prod.pct)}%` : "No data yet"}
+                      {prod && prod.pct != null
+                        ? `${prod.pct > 0 ? "↑" : prod.pct < 0 ? "↓" : "→"} ${Math.abs(prod.pct)}%`
+                        : prod && prod.today > 0 ? `${prod.today} done` : "No work yet"}
                     </span>
-                    <span className="hv-prod-sub">vs yesterday</span>
+                    <span className="hv-prod-sub" title="Completed tasks and tasks with saved run output today">
+                      {prod ? `${prod.completedToday} completed · ${prod.evidencedRunsToday} verified` : "Real task evidence"}
+                    </span>
                   </div>
                   <div className="hv-score">
                     <div className="hv-score-ring-wrap">
@@ -695,15 +730,26 @@ function HomePage({ navigate, gw }: { navigate: (to: string) => void; gw: Gatewa
             <button className="hv-link" onClick={() => navigate("/tasks")}>View full calendar →</button>
           </section>
 
-          {/* 10. Trending for you (curated public AI reads; plain URLs, new tab) */}
+          {/* 10. Trending for you (live DEV API; real article thumbnails) */}
           <section className="hv-card card-trending">
             <div className="hv-card-head"><span className="hv-card-title">TRENDING FOR YOU</span></div>
-            {TRENDING.map((a) => (
-              <a key={a.url} className="hv-row hv-trend-row" href={a.url} target="_blank" rel="noopener noreferrer">
-                <span className="hv-trend-thumb" style={{ background: a.grad }}><span aria-hidden="true">◆</span></span>
+            {trending == null && !trendingError && <div className="hv-empty">Loading live AI reads…</div>}
+            {trendingError && (
+              <div className="hv-empty">
+                <div>Live reads unavailable</div>
+                <p>DEV Community could not be reached.</p>
+                <button className="hv-link" onClick={() => {
+                  setTrendingError("");
+                  api.trending().then((d) => setTrending(d.items)).catch((e) => setTrendingError(e.message));
+                }}>Retry →</button>
+              </div>
+            )}
+            {(trending ?? []).map((a) => (
+              <a key={a.id} className="hv-row hv-trend-row" href={a.url} target="_blank" rel="noopener noreferrer">
+                <img className="hv-trend-thumb" src={a.thumbnail} alt="" loading="lazy" referrerPolicy="no-referrer" />
                 <span className="hv-row-body">
                   <span className="hv-row-title">{a.title}</span>
-                  <span className="hv-row-sub">{a.category} · {a.readTime}</span>
+                  <span className="hv-row-sub">{a.category} · {a.readTimeMinutes} min read</span>
                 </span>
               </a>
             ))}
@@ -859,29 +905,97 @@ function AgentsPage() {
   );
 }
 
-// --- Tools Page ---
+// --- Apps Page (connection truth comes from the real gateway tool list) ---
+type AppDefinition = {
+  id: "gmail" | "x" | "facebook" | "browser" | "files" | "github";
+  name: string;
+  icon: string;
+  description: string;
+  matches: (tool: Tool) => boolean;
+};
+
+function toolText(tool: Tool): string {
+  return [tool.id, tool.name, tool.description, tool.group].map((value) => String(value ?? "").toLowerCase()).join(" ");
+}
+
+const APP_CATALOG: AppDefinition[] = [
+  { id: "gmail", name: "Gmail", icon: "✉", description: "Read, draft, and organize email", matches: (t) => /\bgmail\b|google mail/.test(toolText(t)) },
+  { id: "x", name: "X / Twitter", icon: "𝕏", description: "Search and work with public posts", matches: (t) => t.id === "x_search" || /\btwitter\b/.test(toolText(t)) },
+  { id: "facebook", name: "Facebook", icon: "f", description: "Pages, posts, and messages", matches: (t) => /\bfacebook\b|\bmeta[_ -]/.test(toolText(t)) },
+  { id: "browser", name: "Browser", icon: "◎", description: "Browse and interact with the web", matches: (t) => t.id === "browser" || t.id === "screen" },
+  { id: "files", name: "Files", icon: "▣", description: "Read and manage local or paired-node files", matches: (t) => /^(ls|read|write|edit|apply_patch|file_|dir_)/.test(t.id) || /\bfiles?\b|file-transfer/.test(toolText(t)) },
+  { id: "github", name: "GitHub", icon: "⌘", description: "Identity, repositories, and publishing", matches: (t) => t.id.startsWith("github_") },
+];
+
 function ToolsPage() {
-  const [tools, setTools] = useState<Tool[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [tools, setTools] = useState<Tool[] | null>(null);
+  const [preferences, setPreferences] = useState<Record<string, boolean> | null>(null);
+  const [saving, setSaving] = useState<string | null>(null);
   const [error, setError] = useState("");
 
   useEffect(() => {
-    api.tools().then(d => { setTools(d.tools); setLoading(false); }).catch(e => { setError(e.message); setLoading(false); });
+    Promise.all([api.tools(), api.appPreferences()])
+      .then(([toolData, preferenceData]) => {
+        setTools(toolData.tools);
+        setPreferences(preferenceData.preferences);
+      })
+      .catch((e) => setError(e.message));
   }, []);
 
-  if (loading) return <div className="empty-state">Enumerating tools…</div>;
-  if (error) return <div className="empty-state"><div>Tools unavailable: {error}</div></div>;
+  const setEnabled = async (id: AppDefinition["id"], enabled: boolean) => {
+    setSaving(id);
+    try {
+      const data = await api.setAppEnabled(id, enabled);
+      setPreferences(data.preferences);
+    } catch (e: any) {
+      setError(e?.message ?? "Could not update app preference");
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  if (error && tools == null) return <div className="empty-state"><div>Apps unavailable: {error}</div><p className="text-dim">Gateway availability could not be verified.</p></div>;
+  if (tools == null || preferences == null) return <div className="empty-state">Checking app connections…</div>;
 
   return (
-    <div className="dashboard-grid">
-      {tools.length === 0 && <div className="empty-state">No tools reported.</div>}
-      {tools.map(t => (
-        <div className="card" key={t.id}>
-          <div className="card-title">{t.name || t.id}</div>
-          <div className="card-content">{t.description || "No description provided."}</div>
-          <div className="mt-4 text-dim" style={{ fontSize: "0.8rem" }}>Status: {t.status || "Unknown"}</div>
+    <div className="apps-page">
+      <div className="apps-head">
+        <div>
+          <h2>Apps</h2>
+          <p>External apps and capabilities reported by the live OpenClaw Gateway.</p>
         </div>
-      ))}
+        <span className="apps-source"><span className="hv-dot on" /> Gateway live · {tools.length} tools</span>
+      </div>
+      {error && <div className="apps-error">{error}</div>}
+      <div className="apps-grid">
+        {APP_CATALOG.map((app) => {
+          const matches = tools.filter(app.matches);
+          const connected = matches.length > 0;
+          const enabled = connected && preferences[app.id] !== false;
+          const state = !connected ? "Not connected" : enabled ? "Available via gateway" : "Paused locally";
+          return (
+            <section className={`app-card${connected ? " connected" : ""}`} key={app.id}>
+              <div className="app-icon" aria-hidden="true">{app.icon}</div>
+              <div className="app-copy">
+                <h3>{app.name}</h3>
+                <p>{app.description}</p>
+                <div className={`app-status ${connected ? enabled ? "on" : "paused" : "off"}`}>
+                  <span className="hv-dot" /> {state}
+                </div>
+                {connected && <div className="app-tools">{matches.slice(0, 3).map((t) => t.name || t.id).join(" · ")}{matches.length > 3 ? ` +${matches.length - 3}` : ""}</div>}
+              </div>
+              <label className={`app-toggle${!connected ? " disabled" : ""}`} title={connected ? `${enabled ? "Pause" : "Enable"} ${app.name}` : `${app.name} has no gateway integration`}>
+                <input type="checkbox" checked={enabled} disabled={!connected || saving === app.id}
+                  onChange={(e) => setEnabled(app.id, e.target.checked)} />
+                <span aria-hidden="true" />
+              </label>
+            </section>
+          );
+        })}
+      </div>
+      <div className="apps-note">
+        A toggle controls Julie's local use of a capability that the gateway actually reports. It does not simulate a connection. OAuth setup for disconnected accounts remains out of scope.
+      </div>
     </div>
   );
 }
@@ -937,16 +1051,73 @@ function AnalyticsPage() {
 }
 
 // --- Profile Page ---
+// D2-7 helper: read an image file, downscale to `size`px (max side), return
+// jpeg dataURL — keeps avatars small enough for the settings API without
+// any canvas complexity on the server.
+async function downscaleImage(file: File, size = 256): Promise<string> {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise<HTMLImageElement>((res, rej) => {
+      const el = new Image();
+      el.onload = () => res(el);
+      el.onerror = () => rej(new Error("Not a readable image file"));
+      el.src = url;
+    });
+    const scale = Math.min(1, size / Math.max(img.width, img.height));
+    const w = Math.max(1, Math.round(img.width * scale));
+    const h = Math.max(1, Math.round(img.height * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Canvas not available");
+    ctx.drawImage(img, 0, 0, w, h);
+    return canvas.toDataURL("image/jpeg", 0.9);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
 function ProfilePage() {
   const [session, setSession] = useState<{authenticated: boolean; gateway?: any} | null>(null);
   const [workspaces, setWorkspaces] = useState<{id: number; name: string; description: string}[]>([]);
   const [newWsName, setNewWsName] = useState("");
   const [newWsDesc, setNewWsDesc] = useState("");
+  const [avatar, setAvatar] = useState<string | null>(null);
+  const [avatarMsg, setAvatarMsg] = useState("");
 
   useEffect(() => {
     api.session().then(setSession).catch(() => {});
     api.workspaces().then(d => setWorkspaces(d.workspaces)).catch(() => {});
+    api.avatar().then(d => setAvatar(d.avatar)).catch(() => {});
   }, []);
+
+  // D2-7: owner avatar — pick a file, downscale to a 256px JPEG dataURL client
+  // side (keeps the payload well under the ~1MB API cap), PUT to the server.
+  const onAvatarFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setAvatarMsg("Processing…");
+    try {
+      const dataUrl = await downscaleImage(file, 256);
+      const d = await api.setAvatar(dataUrl);
+      setAvatar(d.avatar);
+      setAvatarMsg("Avatar saved.");
+    } catch (err: any) {
+      setAvatarMsg(err?.message ?? "Could not save avatar.");
+    }
+  };
+
+  const clearAvatar = async () => {
+    try {
+      const d = await api.setAvatar(null);
+      setAvatar(d.avatar);
+      setAvatarMsg("Avatar removed.");
+    } catch (err: any) {
+      setAvatarMsg(err?.message ?? "Could not remove avatar.");
+    }
+  };
 
   const createWorkspace = async () => {
     if (!newWsName.trim()) return;
@@ -968,6 +1139,24 @@ function ProfilePage() {
         <div className="card-content" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <div><span className="text-dim">Session:</span> {session?.authenticated ? "Authenticated" : "Anonymous"}</div>
           <div><span className="text-dim">Gateway:</span> {session?.gateway?.connected ? "Connected" : "Disconnected"}</div>
+        </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: 20 }}>
+        <div className="card-title">Owner Avatar</div>
+        <div className="card-content" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            {avatar
+              ? <img src={avatar} alt="Owner avatar" style={{ width: 56, height: 56, borderRadius: "50%", border: "1px solid var(--accent-border)", objectFit: "cover" }} />
+              : <div style={{ width: 56, height: 56, borderRadius: "50%", border: "1px dashed var(--border-soft)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-dim)", fontSize: "0.7rem" }}>none</div>}
+            <label className="btn" style={{ padding: "8px 14px", fontSize: "0.8rem", cursor: "pointer" }}>
+              Choose photo
+              <input type="file" accept="image/jpeg,image/png,image/webp" style={{ display: "none" }} onChange={onAvatarFile} />
+            </label>
+            {avatar && <button className="icon-btn" onClick={clearAvatar} title="Remove avatar">✕</button>}
+          </div>
+          {avatarMsg && <div className="text-dim" style={{ fontSize: "0.75rem" }}>{avatarMsg}</div>}
+          <div className="text-dim" style={{ fontSize: "0.7rem" }}>Stored locally on this machine (settings store). Shown beside the AI Assistant panel.</div>
         </div>
       </div>
 

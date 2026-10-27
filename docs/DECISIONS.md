@@ -61,3 +61,19 @@ Date: 2026-10-26
 `ufw` is inactive on this host; opening port 3000 required no rule. We deliberately
 did NOT touch Caddy (:80/:443) — JULIE is reachable over plain HTTP :3000 for the
 MVP; TLS termination is backlog item B-2.
+
+## D-010 — Live Trending source: DEV Community public API
+Date: 2026-10-27
+`GET /api/trending` fetches the fixed DEV Community AI endpoint and returns only
+validated `https://dev.to` / `*.dev.to` article and image URLs. Successful data
+is cached in memory for 30 minutes. Fetch/parse/no-image failures return an honest
+502; the UI does not substitute invented articles. Rationale: live, no-key data
+with genuine article cover images and reading-time metadata, without a dependency.
+
+## D-011 — Apps toggles are local preferences, never fake connections
+Date: 2026-10-27
+The Apps page derives availability from the real OpenClaw gateway tool list.
+Gmail/Facebook/etc. show `Not connected` unless a matching gateway capability is
+actually reported. A toggle only persists a local enable/pause preference in the
+existing settings table; it does not perform or imply OAuth. External account
+connection flows remain out of scope until implemented for real.

@@ -36,10 +36,16 @@ export const api = {
   sendMessage: (conversationId: number, text: string) => jfetch(`/api/conversations/${conversationId}/messages`, { method: "POST", body: JSON.stringify({ text }) }),
   agents: () => jfetch("/api/agents"),
   tools: () => jfetch("/api/tools"),
+  appPreferences: () => jfetch<{ ok: boolean; preferences: Record<string, boolean> }>("/api/apps/preferences"),
+  setAppEnabled: (id: string, enabled: boolean) => jfetch<{ ok: boolean; id: string; enabled: boolean; preferences: Record<string, boolean> }>(`/api/apps/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify({ enabled }) }),
   analytics: () => jfetch("/api/analytics"),
   weather: () => jfetch("/api/weather"),
+  trending: () => jfetch<TrendingResponse>("/api/trending"),
   devices: () => jfetch("/api/devices"),
   insights: () => jfetch<InsightsResponse>("/api/insights"),
+  promptUsage: (limit = 3) => jfetch<{ ok: boolean; prompts: Array<{ prompt_hash: string; prompt: string; uses: number; last_used: string }>; total: number }>(`/api/prompt-usage?limit=${limit}`),
+  avatar: () => jfetch<{ ok: boolean; avatar: string | null }>("/api/settings/avatar"),
+  setAvatar: (image: string | null) => jfetch<{ ok: boolean; avatar: string | null }>("/api/settings/avatar", { method: "PUT", body: JSON.stringify({ image }) }),
 };
 
 export type Agent = { id: string; name?: string; model?: string; status?: string; [key: string]: unknown };
@@ -73,9 +79,26 @@ export type Weather = {
 };
 export type Device = { id: string; name: string; connected: boolean; detail: string; lastSeenAtMs: number | null };
 export type Devices = { ok: boolean; source: string; error?: string; devices: Device[] };
+export type TrendingItem = {
+  id: number;
+  title: string;
+  url: string;
+  thumbnail: string;
+  category: string;
+  readTimeMinutes: number;
+  publishedAt: string;
+  reactions: number;
+};
+export type TrendingResponse = { ok: true; items: TrendingItem[]; fetchedAt: string; source: string };
 export type Insights = {
   spark: Array<{ day: string; count: number }>;
-  productivity: { today: number; yesterday: number; pct: number | null };
+  productivity: {
+    today: number;
+    yesterday: number;
+    pct: number | null;
+    completedToday: number;
+    evidencedRunsToday: number;
+  };
   score: number | null;
   totals: { totalTasks: number; doneTasks: number; inProgressTasks: number };
 };
