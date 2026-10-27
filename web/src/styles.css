@@ -384,7 +384,7 @@ input:focus { border-color: var(--accent-primary); box-shadow: 0 0 0 2px rgba(25
 /* --- 3-column grid: same structure at every width --- */
 .home-grid {
   display: grid;
-  grid-template-columns: 1fr 1.12fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.12fr) minmax(0, 1fr);
   gap: 10px;
   align-items: start;
 }

@@ -256,8 +256,8 @@ function HologramBust() {
             <stop offset="100%" stopColor="#B85005" />
           </linearGradient>
           <linearGradient id="hvBody" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#FF9A3D" stopOpacity="0.34" />
-            <stop offset="100%" stopColor="#D35400" stopOpacity="0.1" />
+            <stop offset="0%" stopColor="#FF9A3D" stopOpacity="0.44" />
+            <stop offset="100%" stopColor="#D35400" stopOpacity="0.15" />
           </linearGradient>
           <radialGradient id="hvAura" cx="50%" cy="55%" r="60%">
             <stop offset="0%" stopColor="#FF9A3D" stopOpacity="0.22" />
@@ -300,13 +300,15 @@ function HologramBust() {
         <g mask="url(#hvDissolve)">
           {/* hair — back silhouette with flowing tips */}
           <path d="M 110 34 C 74 36 60 62 63 94 C 65 124 59 158 48 194 C 62 186 72 168 77 148 C 76 122 76 100 80 86 C 86 70 96 62 110 62 C 124 62 134 70 140 86 C 144 100 144 122 143 148 C 148 168 158 186 172 194 C 161 158 155 124 157 94 C 160 62 146 36 110 34 Z"
-            fill="url(#hvHair)" fillOpacity="0.42" stroke="#FF9A3D" strokeOpacity="0.55" strokeWidth="1.1" />
+            fill="url(#hvHair)" fillOpacity="0.68" stroke="#FFC08A" strokeOpacity="0.7" strokeWidth="1.1" />
           {/* hair — inner flow strands (volume) */}
           <path d="M 74 96 C 72 124 68 152 58 182 M 84 80 C 80 110 78 140 70 172 M 146 96 C 148 124 152 152 162 182 M 136 80 C 140 110 142 140 150 172"
-            stroke="#FFC08A" strokeOpacity="0.4" strokeWidth="1" fill="none" />
+            stroke="#FFC08A" strokeOpacity="0.5" strokeWidth="1" fill="none" />
+          {/* hair highlight streak (light catch, upper-left) */}
+          <path d="M 84 74 C 80 96 78 124 74 152" stroke="#FFEFDC" strokeOpacity="0.55" strokeWidth="1.8" fill="none" strokeLinecap="round" />
           {/* torso with drape */}
           <path d="M 40 268 C 44 220 58 196 84 186 C 92 183 99 180 103 176 L 105 154 C 108 156 112 156 115 154 L 117 176 C 121 180 128 183 136 186 C 162 196 176 220 180 268 Z"
-            fill="url(#hvBody)" stroke="#FFB36B" strokeOpacity="0.6" strokeWidth="1.3" />
+            fill="url(#hvBody)" stroke="#FFC99B" strokeOpacity="0.75" strokeWidth="1.3" />
           {/* collarbone shading */}
           <path d="M 90 202 C 99 209 121 209 130 202 M 104 196 L 110 202 L 116 196"
             stroke="#FFD9B0" strokeOpacity="0.4" strokeWidth="1" fill="none" />
@@ -350,8 +352,8 @@ function HologramBust() {
           <path d="M 78 94 C 75 62 92 46 110 45 C 128 46 145 62 142 94 C 136 74 129 64 117 60 C 112 74 95 82 83 79 C 80 83 79 89 78 94 Z"
             fill="url(#hvHair)" fillOpacity="0.85" stroke="#FFC08A" strokeOpacity="0.7" strokeWidth="1.2" />
           {/* side strands falling over shoulders */}
-          <path d="M 77 108 C 71 148 75 178 61 208 C 73 202 82 184 84 158 L 86 116 Z" fill="url(#hvHair)" fillOpacity="0.6" stroke="#FF9A3D" strokeOpacity="0.5" strokeWidth="1" />
-          <path d="M 143 108 C 149 148 145 178 159 208 C 147 202 138 184 136 158 L 134 116 Z" fill="url(#hvHair)" fillOpacity="0.6" stroke="#FF9A3D" strokeOpacity="0.5" strokeWidth="1" />
+          <path d="M 77 108 C 71 148 75 178 61 208 C 73 202 82 184 84 158 L 86 116 Z" fill="url(#hvHair)" fillOpacity="0.72" stroke="#FFC08A" strokeOpacity="0.6" strokeWidth="1" />
+          <path d="M 143 108 C 149 148 145 178 159 208 C 147 202 138 184 136 158 L 134 116 Z" fill="url(#hvHair)" fillOpacity="0.72" stroke="#FFC08A" strokeOpacity="0.6" strokeWidth="1" />
           {/* rim light — left edge for 3D pop */}
           <path d="M 79 92 C 79 68 93 56 110 56" stroke="#FFEFD9" strokeOpacity="0.95" strokeWidth="1.7" fill="none" strokeLinecap="round" />
           <path d="M 63 94 C 64 122 58 158 48 194" stroke="#FFEFD9" strokeOpacity="0.5" strokeWidth="1.2" fill="none" strokeLinecap="round" />
