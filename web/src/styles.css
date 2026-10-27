@@ -910,3 +910,128 @@ input:focus { border-color: var(--accent-primary); box-shadow: 0 0 0 2px rgba(25
   .md-pre { font-size: 11px; }
   .md-table { font-size: 11px; }
 }
+
+/* ===================================================================
+   Phase D-2 Chunk B — shared wave + global floating voice button
+   =================================================================== */
+
+/* --- ONE shared wave (web/src/wave.tsx). Owner rule: NO wave at idle.
+   Idle  → display:none (zero bars, no animation, no layout space).
+   Speaking (shared store, set by speechSynthesis onstart/onend) → bars appear + animate. --- */
+.wave { display: none; }
+.wave.speaking { display: flex; gap: 2px; align-items: center; height: 14px; }
+.wave.speaking span {
+  width: 2.5px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, var(--accent-bright), var(--accent-deep));
+  height: 30%;
+  opacity: 0.95;
+  animation: waveSpeak 1.05s ease-in-out infinite;
+}
+@keyframes waveSpeak { 0%, 100% { height: 18%; } 50% { height: 95%; } }
+
+/* Contextual sizing (the wave element itself is the shared component) */
+.wave.hv-waveform { margin: 8px 1px 9px; }
+.wave.orb-wave { height: 16px; margin: 10px auto 0; width: 100%; justify-content: center; }
+.wave.voice-page-wave { height: 20px; margin-top: 14px; }
+.wave.chat-speaking-wave { height: 12px; }
+.wave.voice-fab-wave { height: 20px; width: 36px; justify-content: center; }
+
+/* Chat "AI speaking" indicator — only rendered while the shared store is true */
+.chat-speaking-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 2px 8px;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  color: var(--accent-bright);
+  text-transform: uppercase;
+}
+
+/* --- Global floating voice button (web/src/voice-fab.tsx) — mounted once in the shell --- */
+/* Container holds the shared wave (above) + the FAB button; fixed above bottom nav */
+.voice-fab-container {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(70px + env(safe-area-inset-bottom));
+  z-index: 150;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  pointer-events: none;
+}
+.voice-fab-container > * { pointer-events: auto; }
+.voice-fab {
+  position: static;
+  transform: none;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  border: 1px solid var(--accent-border);
+  background: radial-gradient(circle at 35% 30%, rgba(255, 236, 219, 0.95), rgba(255, 122, 26, 0.45) 45%, rgba(224, 94, 0, 0.6));
+  color: var(--on-accent);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45), 0 0 18px var(--accent-glow);
+  transition: box-shadow 0.25s ease, transform 0.15s ease;
+}
+.voice-fab:hover { transform: scale(1.06); }
+/* listening = orange glow + animated pulse (accent system) */
+.voice-fab.listening {
+  animation: voiceFabPulse 1.4s ease-in-out infinite;
+  box-shadow: 0 0 0 5px var(--accent-soft), 0 0 0 11px rgba(255, 122, 26, 0.08), 0 0 44px var(--accent-glow);
+}
+@keyframes voiceFabPulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.08); }
+}
+.voice-fab.processing { opacity: 0.85; }
+.voice-fab-spin {
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgba(26, 14, 2, 0.25);
+  border-top-color: var(--on-accent);
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+
+/* --- Compact reply sheet (off-/chat pages only; never forces navigation) --- */
+.voice-sheet {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(140px + env(safe-area-inset-bottom));
+  z-index: 160;
+  width: min(420px, calc(100vw - 28px));
+  background: rgba(13, 18, 32, 0.96);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border: 1px solid var(--accent-border);
+  border-radius: 16px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6), 0 0 24px var(--accent-glow);
+  padding: 14px 16px;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+.voice-sheet-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  color: var(--accent-bright);
+  text-transform: uppercase;
+  font-weight: 600;
+}
+.voice-sheet-close { background: none; border: none; color: var(--text-dim); font-size: 18px; cursor: pointer; line-height: 1; }
+.voice-sheet-body { font-size: 13.5px; line-height: 1.55; color: var(--text-main); word-break: break-word; }
+.voice-sheet-error { color: #FB8C84; }
+.voice-sheet-actions { display: flex; gap: 8px; margin-top: 12px; }
+.voice-sheet-actions .btn { padding: 8px 16px; font-size: 0.85rem; }

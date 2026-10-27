@@ -2,6 +2,10 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import { Markdown } from "./markdown";
+import { VoiceFab, requestVoiceCapture } from "./voice-fab";
+import { useSpeaking, speakWithTracking } from "./speaking";
+import { Wave } from "./wave";
+import { speechSupported, startSpeechRecognition, submitVoiceText, type VoiceState } from "./voice";
 import { api, type Conversation, type GatewayStatus, type Message, type Task, type Workspace, type Agent, type Tool, type Analytics, type Weather, type Device, type Insights, TASK_STATUSES } from "./api";
 
 // --- Router Hook ---
@@ -80,13 +84,21 @@ function Shell({ route, navigate, onLogout }: { route: string; navigate: (to: st
     return () => { alive = false; clearInterval(t); };
   }, []);
 
-  const NAV = [
+  // Center "AI" item starts inline voice capture from ANY page (Phase D-2 Chunk B);
+  // it no longer navigates. /voice stays routable for deep links only.
+  const NAV: Array<{ path: string; label: string; icon: string; action?: "voice" }> = [
     { path: "/", label: "Home", icon: "◈" },
     { path: "/chat", label: "Chat", icon: "◉" },
-    { path: "/voice", label: "AI", icon: "◉" },
+    { path: "/voice", label: "AI", icon: "◉", action: "voice" },
     { path: "/tools", label: "Tools", icon: "⚙" },
     { path: "/profile", label: "Profile", icon: "▣" },
   ];
+
+  const onNav = (item: { path: string; action?: "voice" }) => {
+    if (item.action === "voice") { requestVoiceCapture(); return; }
+    navigate(item.path);
+    setMenuOpen(false);
+  };
 
   const renderView = () => {
     if (route === "/") return <HomePage navigate={navigate} gw={gw} />;
@@ -112,7 +124,7 @@ function Shell({ route, navigate, onLogout }: { route: string; navigate: (to: st
         <div className="section-label">Command Center</div>
         {NAV.map(item => (
           <button key={item.path} className={`nav-item${route === item.path ? " active" : ""}`}
-            onClick={() => { navigate(item.path); setMenuOpen(false); }}>
+            onClick={() => onNav(item)}>
             <span>{item.icon}</span> {item.label}
           </button>
         ))}
@@ -132,12 +144,15 @@ function Shell({ route, navigate, onLogout }: { route: string; navigate: (to: st
       <nav className="bottom-nav">
         {NAV.map(item => (
           <button key={item.path} className={route === item.path ? "active" : ""}
-            onClick={() => navigate(item.path)}>
+            onClick={() => onNav(item)}>
             <span className="icon">{item.icon}</span>
             {item.label}
           </button>
         ))}
       </nav>
+
+      {/* Global floating voice button — mounted once, present on every route (Phase D-2 Chunk B) */}
+      <VoiceFab route={route} onOpenChat={() => navigate("/chat")} />
     </div>
   );
 }
@@ -415,9 +430,7 @@ function HomePage({ navigate, gw }: { navigate: (to: string) => void; gw: Gatewa
           <section className="hv-card card-greeting">
             <h2 className="hv-greeting-title">{greeting}, {OWNER_NAME}</h2>
             <p className="hv-greeting-sub">What would you like to accomplish today?</p>
-            <div className="hv-waveform" aria-hidden="true">
-              {Array.from({ length: 24 }).map((_, i) => <span key={i} style={{ animationDelay: `${(i % 8) * 0.13}s` }} />)}
-            </div>
+            <Wave bars={24} className="hv-waveform" />
             <form className="hv-cmd" onSubmit={(e) => { e.preventDefault(); if (cmd.trim() && !posting) postToConversation(cmd.trim(), "cmd"); }}>
               <input value={cmd} onChange={(e) => setCmd(e.target.value)} placeholder="Ask Julie anything…" aria-label="Command input" />
               <button className="hv-cmd-send" type="submit" disabled={!cmd.trim() || !!posting} aria-label="Send">➤</button>
@@ -504,9 +517,10 @@ function HomePage({ navigate, gw }: { navigate: (to: string) => void; gw: Gatewa
             )}
           </section>
 
-          {/* 6. Voice orb — opens the existing voice flow, which reuses the current conversation (Phase C.1) */}
+          {/* 6. Voice orb — starts the GLOBAL inline voice capture (no navigation, Phase D-2 Chunk B). */}
+          {/* Reuses the current conversation (Phase C.1); the shared wave appears only while the AI speaks. */}
           <section className="hv-card card-voice">
-            <button className="hv-voice-orb" onClick={() => navigate("/voice?start=1")} aria-label="Start voice conversation">
+            <button className="hv-voice-orb" onClick={() => requestVoiceCapture()} aria-label="Start voice conversation">
               <span className="hv-orb-ring" /><span className="hv-orb-ring hv-orb-ring-2" /><span className="hv-orb-ring hv-orb-ring-3" />
               <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#FFE8D6" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
                 <rect x="9" y="3" width="6" height="11" rx="3" />
@@ -514,6 +528,7 @@ function HomePage({ navigate, gw }: { navigate: (to: string) => void; gw: Gatewa
                 <path d="M12 18v3" />
               </svg>
             </button>
+            <Wave bars={24} className="orb-wave" />
             <div className="hv-voice-label">Tap to speak</div>
             <div className="hv-voice-sub">Voice lands in your current conversation</div>
           </section>
@@ -619,136 +634,89 @@ function HomePage({ navigate, gw }: { navigate: (to: string) => void; gw: Gatewa
   );
 }
 
-// --- Voice Chat Page ---
+// --- Voice Chat Page (deep-link only; inline capture is handled by the global VoiceFab) ---
+// Shares the exact capture + submit code path with the global voice button:
+// web/src/voice.ts (Phase C.1 convId pattern: current conversation, never
+// auto-created). The /voice route is kept for deep links; it never auto-starts.
 function VoicePage() {
-  const [status, setStatus] = useState<"idle" | "listening" | "processing" | "speaking" | "error">("idle");
+  const [status, setStatus] = useState<VoiceState>("idle");
   const [transcript, setTranscript] = useState("");
   const [response, setResponse] = useState("");
-  const [supported, setSupported] = useState(false);
+  const [supported] = useState(() => speechSupported());
   const [ttsEnabled, setTtsEnabled] = useState(true);
-  const [convId, setConvId] = useState<number | null>(null);
-  const [conversations, setConversations] = useState<Conversation[]>([]);
-  const recRef = useRef<any>(null);
-  const [activeWorkspaceId, setActiveWorkspaceId] = useState<number>(1);
+  const stopRef = useRef<(() => void) | null>(null);
+  const busyRef = useRef(false);
 
-  // Load workspaces and get active workspace on mount
-  useEffect(() => {
-    api.workspaces().then(d => {
-      if (d.workspaces.length > 0) {
-        const activeId = d.activeWorkspaceId || d.workspaces[0].id;
-        setActiveWorkspaceId(activeId);
-        // Load conversations for active workspace
-        api.conversations(activeId).then(convData => setConversations(convData.conversations));
-      }
-    }).catch(() => {});
-
-    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    setSupported(Boolean(SR));
-  }, []);
-
-  // Auto-start listening when arriving from the Home voice orb (orb tap = user gesture).
-  // The flow below still targets the CURRENT conversation (Phase C.1 convId reuse).
-  const [autoStartOnce] = useState(() => new URLSearchParams(window.location.search).get("start") === "1");
-  useEffect(() => {
-    if (!autoStartOnce || !supported) return;
-    const t = setTimeout(() => startListening(), 250);
-    return () => clearTimeout(t);
-    // startListening is stable per-mount; re-run only when support flag flips on.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoStartOnce, supported]);
-
-  // Load conversations when workspace changes
-  useEffect(() => {
-    api.conversations(activeWorkspaceId).then(d => setConversations(d.conversations));
-  }, [activeWorkspaceId]);
-
-  // Ensure we have a conversation to use
-  useEffect(() => {
-    if (conversations.length > 0 && !convId) {
-      // Use the most recent conversation
-      setConvId(conversations[0].id);
-    }
-  }, [conversations, convId]);
+  useEffect(
+    () => () => {
+      stopRef.current?.();
+    },
+    []
+  );
 
   const startListening = () => {
-    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SR) { setStatus("error"); return; }
-    try {
-      const rec = new SR();
-      rec.continuous = false;
-      rec.interimResults = false;
-      rec.lang = "en-US";
-      rec.onstart = () => setStatus("listening");
-      rec.onresult = (e: any) => {
-        const text = e.results[0][0].transcript;
+    const stop = startSpeechRecognition({
+      onState: (s) => {
+        if (s === "listening") setStatus("listening");
+        if (s === "error" && !busyRef.current) setStatus("error");
+        if (s === "ended" && !busyRef.current) setStatus((cur) => (cur === "listening" ? "idle" : cur));
+      },
+      onResult: (text) => {
+        busyRef.current = true;
         setTranscript(text);
-        submitVoice(text);
-      };
-      rec.onerror = (e: any) => { setStatus("error"); console.error(e); };
-      rec.onend = () => setStatus((s) => (s === "listening" ? "idle" : s));
-      recRef.current = rec;
-      rec.start();
-    } catch (e) { setStatus("error"); }
+        setStatus("processing");
+        submitVoiceText(text)
+          .then((r) => {
+            if (r.reply) {
+              setResponse(r.reply);
+              if (ttsEnabled) speakWithTracking(r.reply);
+            }
+            setStatus("idle");
+          })
+          .catch((e: any) => {
+            console.error("Voice submission error:", e);
+            setStatus("error");
+          })
+          .finally(() => {
+            busyRef.current = false;
+          });
+      },
+    });
+    if (!stop) {
+      setStatus("error");
+      return;
+    }
+    stopRef.current = stop;
+    setStatus("listening");
   };
 
-  const stopListening = () => { recRef.current?.stop(); };
+  const stopListening = () => {
+    stopRef.current?.();
+    stopRef.current = null;
+    setStatus((cur) => (cur === "listening" ? "idle" : cur));
+  };
 
   const speak = (text: string) => {
-    if (!ttsEnabled || !("speechSynthesis" in window)) return;
-    const u = new SpeechSynthesisUtterance(text);
-    u.onstart = () => setStatus("speaking");
-    u.onend = () => setStatus("idle");
-    window.speechSynthesis.speak(u);
-  };
-
-  const submitVoice = async (text: string) => {
-    setStatus("processing");
-    try {
-      // Ensure we have a conversation ID
-      let currentConvId: number | null = convId;
-      if (!currentConvId || conversations.length === 0) {
-        // Create or get conversation (always fetch the fresh list)
-        const convData = await api.conversations(activeWorkspaceId);
-        if (convData.conversations.length > 0) {
-          currentConvId = convData.conversations[0].id;
-          setConvId(currentConvId);
-        } else {
-          const d = await api.createConversation(activeWorkspaceId, "Voice conversation");
-          currentConvId = d.conversation.id;
-          setConvId(currentConvId);
-          setConversations(prev => [d.conversation, ...prev]);
-        }
-      }
-
-      // Send message to current conversation
-      if (currentConvId == null) throw new Error("No conversation to send voice to");
-      await api.sendMessage(currentConvId, text);
-      
-      // Fetch updated messages to get the assistant response
-      const msgs = await api.messages(currentConvId);
-      const last = msgs.messages[msgs.messages.length - 1];
-      if (last) { 
-        setResponse(last.text); 
-        speak(last.text); 
-        setStatus("idle");
-      } else {
-        setStatus("idle");
-      }
-    } catch (e: any) { 
-      setStatus("error"); 
-      console.error("Voice submission error:", e);
-    }
+    if (!ttsEnabled) return;
+    speakWithTracking(text);
   };
 
   return (
     <div className="card" style={{ display: "flex", flexDirection: "column", alignItems: "center", padding: 40 }}>
       <div className={`orb ${status}`} style={{ width: 150, height: 150 }} />
+      <Wave bars={28} className="voice-page-wave" />
       <div className="mt-4 text-dim" style={{ fontSize: "1.2rem", textTransform: "capitalize" }}>{status}</div>
       {!supported && <div className="error-text mt-4">SpeechRecognition not supported in this browser. Please use text input below.</div>}
       <div className="mt-4" style={{ display: "flex", gap: 10, width: "100%", maxWidth: 400 }}>
         <input placeholder="Text fallback input…" value={transcript} onChange={e => setTranscript(e.target.value)}
-          onKeyDown={e => e.key === "Enter" && transcript.trim() && submitVoice(transcript)} />
-        <button className="btn" onClick={() => transcript.trim() && submitVoice(transcript)} disabled={!transcript.trim()}>Send</button>
+          onKeyDown={e => e.key === "Enter" && transcript.trim() && submitVoiceText(transcript)
+            .then(r => { if (r.reply) { setResponse(r.reply); speak(r.reply); } })
+            .catch((err) => { console.error("Voice submission error:", err); setStatus("error"); })}
+          />
+        <button className="btn" onClick={() => transcript.trim() && submitVoiceText(transcript)
+          .then(r => { if (r.reply) { setResponse(r.reply); speak(r.reply); } })
+          .catch((err) => { console.error("Voice submission error:", err); setStatus("error"); })}
+          disabled={!transcript.trim()}>Send</button>
       </div>
       <div className="mt-4" style={{ display: "flex", gap: 10 }}>
         {status === "listening" ? (
@@ -1042,6 +1010,18 @@ function ChatView() {
     else setMessages([]);
   }, [convId]);
 
+  // Shared speaking store → "AI speaking" indicator with the one shared wave (Phase D-2 Chunk B).
+  const speaking = useSpeaking();
+
+  // Keep the log in sync when the global voice button posts into this conversation.
+  useEffect(() => {
+    const onVoice = () => {
+      if (convId) api.messages(convId).then((d) => setMessages(d.messages)).catch(() => {});
+    };
+    window.addEventListener("julie:voice-message-sent", onVoice);
+    return () => window.removeEventListener("julie:voice-message-sent", onVoice);
+  }, [convId]);
+
   useEffect(() => { logRef.current?.scrollTo({ top: logRef.current.scrollHeight }); }, [messages]);
 
   const send = async () => {
@@ -1078,6 +1058,12 @@ function ChatView() {
             setConvId(d.conversation.id);
           }}>+</button>
         </div>
+        {speaking && (
+          <div className="chat-speaking-indicator">
+            <Wave bars={14} className="chat-speaking-wave" />
+            Julie is speaking…
+          </div>
+        )}
         <div className="chat-log" ref={logRef} style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 12 }}>
           {messages.map(m => (
             <div key={m.id} className={`msg ${m.role}`}>
