@@ -1,5 +1,6 @@
 // REST API routes.
 import crypto from "node:crypto";
+import { createHash } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import { db, getSetting, setSetting, TASK_STATUSES, type TaskStatus } from "./db.js";
 import { gateway } from "./gateway.js";
@@ -8,6 +9,35 @@ import { loginHandler, logoutHandler, requireAuth, parseCookies, SESSION_COOKIE,
 import { config } from "./config.js";
 
 export const api = Router();
+
+// ---- prompt usage learning (Phase D-2 Chunk C, card 9) ----
+// Every real user message is normalized (trim, collapse whitespace, lowercase),
+// hashed (sha1), and upserted into prompt_usage. The table stays bounded: once
+// distinct prompts exceed 200, everything outside the top-100 by uses is pruned.
+function normalizePrompt(text: string): string {
+  return text.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function recordPromptUsage(raw: string): void {
+  const norm = normalizePrompt(raw);
+  if (!norm) return;
+  const hash = createHash("sha1").update(norm).digest("hex");
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO prompt_usage (prompt_hash, prompt, uses, last_used) VALUES (?, ?, 1, ?)
+     ON CONFLICT(prompt_hash) DO UPDATE SET uses = uses + 1, last_used = excluded.last_used`
+  ).run(hash, norm, now);
+  const { n } = db.prepare("SELECT COUNT(*) AS n FROM prompt_usage").get() as { n: number };
+  if (n > 200) {
+    db.prepare(
+      `DELETE FROM prompt_usage
+       WHERE prompt_hash NOT IN (
+         SELECT prompt_hash FROM prompt_usage
+         ORDER BY uses DESC, last_used DESC LIMIT 100
+       )`
+    ).run();
+  }
+}
 
 // ---- public (non-mutating) ----
 api.get("/health", (_req, res) => {
@@ -232,8 +262,14 @@ api.patch("/tasks/:id", (req, res) => {
   const description = typeof req.body?.description === "string" ? req.body.description.trim().slice(0, 5000) : task.description;
   const status = TASK_STATUSES.includes(req.body?.status) ? (req.body.status as TaskStatus) : task.status;
   const priority = Number.isInteger(req.body?.priority) ? Math.min(3, Math.max(1, req.body.priority)) : task.priority;
-  db.prepare("UPDATE tasks SET title = ?, description = ?, status = ?, priority = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?")
-    .run(title, description, status, priority, req.params.id);
+  // Optional run-evidence fields (backward compatible): last_run_output is a string,
+  // run_started_at is nullable (an explicit null clears it, an empty string is ignored).
+  const lastRunOutput = typeof req.body?.last_run_output === "string" ? req.body.last_run_output.slice(0, 20000) : task.last_run_output;
+  const runStartedAt = req.body?.run_started_at === null
+    ? null
+    : (typeof req.body?.run_started_at === "string" && req.body.run_started_at ? req.body.run_started_at : task.run_started_at);
+  db.prepare("UPDATE tasks SET title = ?, description = ?, status = ?, priority = ?, last_run_output = ?, run_started_at = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?")
+    .run(title, description, status, priority, lastRunOutput, runStartedAt, req.params.id);
   res.json({ ok: true, task: db.prepare("SELECT * FROM tasks WHERE id = ?").get(req.params.id) });
 });
 
@@ -279,6 +315,7 @@ api.post("/conversations/:id/messages", async (req, res) => {
 
   db.prepare("INSERT INTO messages (conversation_id, role, text) VALUES (?, 'user', ?)").run(conv.id, text);
   db.prepare("UPDATE conversations SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?").run(conv.id);
+  recordPromptUsage(text);
 
   try {
     const reply = await gateway.chat(conv.gateway_session_key, text);
@@ -388,6 +425,53 @@ api.post("/tasks/:id/run", (req, res) => {
 });
 
 // ---- settings ----
+
+// ---- learned prompt usage (Phase D-2 Chunk C, card 9): top prompts by frequency ----
+api.get("/prompt-usage", (req, res) => {
+  const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? "12"), 10) || 12, 1), 50);
+  const rows = db.prepare(
+    "SELECT prompt_hash, prompt, uses, last_used FROM prompt_usage ORDER BY uses DESC, last_used DESC LIMIT ?"
+  ).all(limit);
+  const { n } = db.prepare("SELECT COUNT(*) AS n FROM prompt_usage").get() as { n: number };
+  res.json({ ok: true, prompts: rows, total: n });
+});
+
+// ---- owner avatar (Phase D-2 Chunk C, card 10) ----
+// Stored as a base64 dataURL in settings (single-owner app; avoids file handling).
+const AVATAR_MAX_CHARS = 1_500_000; // ~1MB binary image as base64 (≈1.37M chars) + headroom
+const AVATAR_RE = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$/;
+
+function avatarDataUrlError(v: unknown): string | null {
+  if (typeof v !== "string") return "image must be a dataURL string";
+  if (v.length > AVATAR_MAX_CHARS) return "image too large (max ~1MB)";
+  if (!AVATAR_RE.test(v)) return "image must be a jpeg, png, or webp dataURL";
+  const b64 = v.slice(v.indexOf(",") + 1);
+  const buf = Buffer.from(b64, "base64");
+  const isJpeg = buf.length > 2 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff;
+  const isPng = buf.length > 4 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47;
+  const isWebp = buf.length > 12 && buf.toString("ascii", 0, 4) === "RIFF" && buf.toString("ascii", 8, 12) === "WEBP";
+  if (!isJpeg && !isPng && !isWebp) return "image bytes do not match the declared type";
+  return null;
+}
+
+api.get("/settings/avatar", (_req, res) => {
+  const avatar = getSetting("owner_avatar");
+  res.json({ ok: true, avatar: avatar ?? null });
+});
+
+api.put("/settings/avatar", (req, res) => {
+  const image = req.body?.image;
+  if (image === null || image === "none" || image === "") {
+    db.prepare("DELETE FROM settings WHERE key = 'owner_avatar'").run();
+    res.json({ ok: true, avatar: null });
+    return;
+  }
+  const err = avatarDataUrlError(image);
+  if (err) { res.status(400).json({ ok: false, error: err }); return; }
+  setSetting("owner_avatar", image as string);
+  res.json({ ok: true, avatar: image });
+});
+
 api.get("/settings", (_req, res) => {
   const rows = db.prepare("SELECT key, value FROM settings").all();
   res.json({ ok: true, settings: Object.fromEntries(rows.map((r: any) => [r.key, r.value])) });

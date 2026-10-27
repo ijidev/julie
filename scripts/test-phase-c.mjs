@@ -67,3 +67,52 @@ describe("API Shape & Data", () => {
     assert.ok(Array.isArray(d.analytics.messagesPerDay));
   });
 });
+
+describe("Task Card Run Output (Phase D-2 Chunk B)", () => {
+  let wsId: number | null = null;
+  let taskId: number | null = null;
+
+  test("PATCH /api/tasks/:id accepts last_run_output and run_started_at", async () => {
+    const ws = await fetch(`${BASE}/api/workspaces`, { headers: { Cookie: authCookie } }).then(r => r.json());
+    wsId = ws.activeWorkspaceId || ws.workspaces[0].id;
+    const created = await fetch(`${BASE}/api/tasks`, {
+      method: "POST",
+      headers: { Cookie: authCookie, "Content-Type": "application/json" },
+      body: JSON.stringify({ workspaceId: wsId, title: "E2E: task run output field (auto-cleanup)", status: "backlog" }),
+    }).then(r => r.json());
+    assert.strictEqual(created.ok, true);
+    taskId = created.task.id;
+
+    const patched = await fetch(`${BASE}/api/tasks/${taskId}`, {
+      method: "PATCH",
+      headers: { Cookie: authCookie, "Content-Type": "application/json" },
+      body: JSON.stringify({ last_run_output: "E2E run evidence line", run_started_at: "2026-10-26T18:00:00.000Z" }),
+    }).then(r => r.json());
+    assert.strictEqual(patched.ok, true);
+    assert.strictEqual(patched.task.last_run_output, "E2E run evidence line");
+    assert.strictEqual(patched.task.run_started_at, "2026-10-26T18:00:00.000Z");
+
+    const list = await fetch(`${BASE}/api/tasks?workspaceId=${wsId}`, { headers: { Cookie: authCookie } }).then(r => r.json());
+    const row = list.tasks.find((t: any) => t.id === taskId);
+    assert.strictEqual(row.last_run_output, "E2E run evidence line");
+  });
+
+  test("PATCH without new fields is backward compatible (keeps previous values)", async () => {
+    if (taskId == null) throw new Error("setup failed");
+    const patched = await fetch(`${BASE}/api/tasks/${taskId}`, {
+      method: "PATCH",
+      headers: { Cookie: authCookie, "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "done" }),
+    }).then(r => r.json());
+    assert.strictEqual(patched.ok, true);
+    assert.strictEqual(patched.task.last_run_output, "E2E run evidence line");
+    assert.strictEqual(patched.task.run_started_at, "2026-10-26T18:00:00.000Z");
+  });
+
+  test("cleanup: test card deleted", async () => {
+    if (taskId == null) throw new Error("setup failed");
+    const del = await fetch(`${BASE}/api/tasks/${taskId}`, { method: "DELETE", headers: { Cookie: authCookie } }).then(r => r.json());
+    assert.strictEqual(del.ok, true);
+    taskId = null;
+  });
+});
