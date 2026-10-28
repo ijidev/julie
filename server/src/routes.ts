@@ -1,11 +1,19 @@
 // REST API routes.
 import crypto from "node:crypto";
 import { createHash } from "node:crypto";
-import { Router, type Request, type Response } from "express";
+import { Router, raw as rawBody, type Request, type Response } from "express";
 import { db, getSetting, setSetting, TASK_STATUSES, type TaskStatus } from "./db.js";
 import { gateway } from "./gateway.js";
 import { getWeather } from "./weather.js";
 import { getTrending } from "./trending.js";
+import { getAgentOverview, invalidateAgentOverview } from "./agent-overview.js";
+import { AgentNotFoundError, getAgentDetail, invalidateAgentDetail } from "./agent-detail.js";
+import { AgentChatTargetError, getAgentSessionHistory, sendAgentMessage } from "./agent-chat.js";
+import { AgentOnboardingInputError, createOnboardedAgent, getAgentOnboardingOptions } from "./agent-onboarding.js";
+import { AgentUpdateInputError, updateManagedAgent } from "./agent-update.js";
+import { AgentAssignmentInputError, getWorkspaceAgentAssignments, replaceWorkspaceAgentAssignments } from "./agent-assignments.js";
+import { isAgentAssignedToWorkspace } from "./agent-profiles.js";
+import { AgentAvatarError, addAgentAvatarModelUrl, applyAgentAvatar, applyAgentAvatarUrl, buildAgentFallbackSvg, generateAgentAvatar, getAgentAvatarStudio, importAgentAvatarImage, importAgentAvatarModel, previewAgentAvatar, readAgentAvatarAsset, readAgentAvatarModel } from "./agent-avatar.js";
 import { loginHandler, logoutHandler, requireAuth, parseCookies, SESSION_COOKIE, safeEqual } from "./auth.js";
 import { config } from "./config.js";
 
@@ -40,6 +48,16 @@ function recordPromptUsage(raw: string): void {
   }
 }
 
+function requireActiveWorkspaceAgent(agentId: string, res: Response): boolean {
+  const workspaceId = Number(getSetting("active_workspace_id") ?? 0);
+  const workspace = workspaceId ? db.prepare("SELECT id FROM workspaces WHERE id = ?").get(workspaceId) : null;
+  if (!workspace || !isAgentAssignedToWorkspace(agentId, workspaceId)) {
+    res.status(404).json({ ok: false, error: "agent not found", source: "local" });
+    return false;
+  }
+  return true;
+}
+
 // ---- public (non-mutating) ----
 api.get("/health", (_req, res) => {
   const g = gateway.getStatus();
@@ -71,10 +89,438 @@ api.get("/gateway/status", async (_req, res) => {
 // ---- agents (real gateway data; honest error states) ----
 api.get("/agents", async (_req, res) => {
   try {
-    const agents = await gateway.listAgents();
+    const agents = (await gateway.listAgents()).map((agent) => ({
+      id: agent.id,
+      name: agent.name,
+      identity: agent.identity ? {
+        name: agent.identity.name,
+        theme: agent.identity.theme,
+        emoji: agent.identity.emoji,
+        avatar: typeof agent.identity.avatar === "string" && (/^https:\/\//i.test(agent.identity.avatar) || /^data:image\/(?:png|jpeg|webp);base64,/i.test(agent.identity.avatar))
+          ? agent.identity.avatar
+          : undefined,
+      } : undefined,
+      model: agent.model,
+      utilityModel: agent.utilityModel,
+      agentRuntime: agent.agentRuntime,
+      thinkingDefault: agent.thinkingDefault,
+      defaultPermissionMode: agent.defaultPermissionMode,
+      workspaceGit: agent.workspaceGit,
+      createdVia: agent.createdVia,
+      creatorAgentId: agent.creatorAgentId,
+      createdAt: agent.createdAt,
+      kind: agent.kind,
+    }));
+    res.setHeader("Cache-Control", "no-store");
     res.json({ ok: true, agents, source: "gateway" });
   } catch (e: any) {
     res.status(503).json({ ok: false, agents: [], error: e.message, source: "gateway" });
+  }
+});
+
+api.post("/agents", async (req, res) => {
+  try {
+    const result = await createOnboardedAgent(req.body);
+    res.setHeader("Cache-Control", "no-store");
+    res.status(201).json(result);
+  } catch (e: any) {
+    if (e instanceof AgentOnboardingInputError) {
+      res.status(e.status).json({ ok: false, error: e.message, source: "gateway+local" });
+      return;
+    }
+    const message = typeof e?.message === "string" ? e.message : "agent creation failed";
+    const status = /already exists|already-exists/i.test(message) ? 409 : 502;
+    res.status(status).json({ ok: false, error: message, source: "gateway" });
+  }
+});
+
+api.get("/agents/onboarding/options", async (req, res) => {
+  try {
+    const options = await getAgentOnboardingOptions(req.query.refresh === "1");
+    res.setHeader("Cache-Control", "no-store");
+    res.json(options);
+  } catch (e: any) {
+    res.status(503).json({ ok: false, error: e.message, source: "gateway+local" });
+  }
+});
+
+api.get("/agents/overview", async (req, res) => {
+  try {
+    const workspaceId = Number(req.query.workspaceId ?? getSetting("active_workspace_id") ?? 0);
+    const workspace = db.prepare("SELECT id, name FROM workspaces WHERE id = ?").get(workspaceId) as { id: number; name: string } | undefined;
+    if (!workspace) {
+      res.status(400).json({ ok: false, error: "valid active workspace required", source: "local" });
+      return;
+    }
+    const force = req.query.refresh === "1";
+    const overview = await getAgentOverview(workspace.id, workspace.name, force);
+    res.setHeader("Cache-Control", "no-store");
+    res.json(overview);
+  } catch (e: any) {
+    res.status(503).json({ ok: false, agents: [], error: e.message, source: "gateway" });
+  }
+});
+
+api.get("/agents/assignments", async (req, res) => {
+  const workspaceId = Number(req.query.workspaceId ?? getSetting("active_workspace_id") ?? 0);
+  try {
+    const result = await getWorkspaceAgentAssignments(workspaceId);
+    res.setHeader("Cache-Control", "no-store");
+    res.json(result);
+  } catch (e: any) {
+    if (e instanceof AgentAssignmentInputError) {
+      res.status(e.status).json({ ok: false, error: e.message, source: "gateway+local" });
+      return;
+    }
+    res.status(503).json({ ok: false, error: e.message, source: "gateway+local" });
+  }
+});
+
+api.put("/agents/assignments", async (req, res) => {
+  if (req.body?.confirmed !== true) {
+    res.status(400).json({ ok: false, error: "assignment confirmation required", source: "local" });
+    return;
+  }
+  const workspaceId = Number(req.body?.workspaceId ?? getSetting("active_workspace_id") ?? 0);
+  try {
+    const result = await replaceWorkspaceAgentAssignments(workspaceId, req.body?.agentIds);
+    res.setHeader("Cache-Control", "no-store");
+    res.json(result);
+  } catch (e: any) {
+    if (e instanceof AgentAssignmentInputError) {
+      res.status(e.status).json({ ok: false, error: e.message, source: "gateway+local" });
+      return;
+    }
+    res.status(503).json({ ok: false, error: e.message, source: "gateway+local" });
+  }
+});
+
+api.get("/agents/:id/avatar", async (req, res) => {
+  const agentId = typeof req.params.id === "string" ? req.params.id.trim() : "";
+  if (!agentId || agentId.length > 200) {
+    res.status(400).json({ ok: false, error: "valid agent id required", source: "gateway+local" });
+    return;
+  }
+  if (!requireActiveWorkspaceAgent(agentId, res)) return;
+  try {
+    const result = await getAgentAvatarStudio(agentId, req.query.refresh === "1");
+    res.setHeader("Cache-Control", "no-store");
+    res.json(result);
+  } catch (e: any) {
+    if (e instanceof AgentAvatarError) {
+      res.status(e.status).json({ ok: false, error: e.message, source: "gateway+local" });
+      return;
+    }
+    res.status(503).json({ ok: false, error: e.message, source: "gateway+local" });
+  }
+});
+
+api.post("/agents/:id/avatar/preview", async (req, res) => {
+  const agentId = typeof req.params.id === "string" ? req.params.id.trim() : "";
+  if (!agentId || agentId.length > 200) {
+    res.status(400).json({ ok: false, error: "valid agent id required", source: "gateway+local" });
+    return;
+  }
+  if (!requireActiveWorkspaceAgent(agentId, res)) return;
+  try {
+    const result = await previewAgentAvatar(agentId, req.body);
+    res.setHeader("Cache-Control", "no-store");
+    res.json(result);
+  } catch (e: any) {
+    if (e instanceof AgentAvatarError) {
+      res.status(e.status).json({ ok: false, error: e.message, source: "gateway+local" });
+      return;
+    }
+    res.status(503).json({ ok: false, error: e.message, source: "gateway+local" });
+  }
+});
+
+api.post("/agents/:id/avatar/generate", async (req, res) => {
+  const agentId = typeof req.params.id === "string" ? req.params.id.trim() : "";
+  if (!agentId || agentId.length > 200) {
+    res.status(400).json({ ok: false, error: "valid agent id required", source: "gateway+local" });
+    return;
+  }
+  if (!requireActiveWorkspaceAgent(agentId, res)) return;
+  try {
+    const result = await generateAgentAvatar(agentId, req.body);
+    res.setHeader("Cache-Control", "no-store");
+    res.status(201).json(result);
+  } catch (e: any) {
+    if (e instanceof AgentAvatarError) {
+      res.status(e.status).json({ ok: false, error: e.message, source: "gateway+local" });
+      return;
+    }
+    res.status(502).json({ ok: false, error: e.message, source: "gateway+local" });
+  }
+});
+
+api.post("/agents/:id/avatar/apply", async (req, res) => {
+  const agentId = typeof req.params.id === "string" ? req.params.id.trim() : "";
+  const assetId = Number(req.body?.assetId);
+  if (!agentId || agentId.length > 200 || !Number.isInteger(assetId) || assetId <= 0) {
+    res.status(400).json({ ok: false, error: "valid agent and avatar asset ids required", source: "gateway+local" });
+    return;
+  }
+  if (!requireActiveWorkspaceAgent(agentId, res)) return;
+  try {
+    const result = await applyAgentAvatar(agentId, assetId, req.body?.confirmed === true);
+    invalidateAgentDetail(agentId);
+    invalidateAgentOverview();
+    res.setHeader("Cache-Control", "no-store");
+    res.json(result);
+  } catch (e: any) {
+    if (e instanceof AgentAvatarError) {
+      res.status(e.status).json({ ok: false, error: e.message, source: "gateway+local" });
+      return;
+    }
+    res.status(502).json({ ok: false, error: e.message, source: "gateway+local" });
+  }
+});
+
+api.post("/agents/:id/avatar/import", async (req, res) => {
+  const agentId = typeof req.params.id === "string" ? req.params.id.trim() : "";
+  if (!agentId || agentId.length > 200) {
+    res.status(400).json({ ok: false, error: "valid agent id required", source: "local" });
+    return;
+  }
+  if (!requireActiveWorkspaceAgent(agentId, res)) return;
+  try {
+    const result = await importAgentAvatarImage(agentId, req.body);
+    res.setHeader("Cache-Control", "no-store");
+    res.status(201).json(result);
+  } catch (e: any) {
+    if (e instanceof AgentAvatarError) {
+      res.status(e.status).json({ ok: false, error: e.message, source: "local" });
+      return;
+    }
+    res.status(500).json({ ok: false, error: e.message, source: "local" });
+  }
+});
+
+api.post("/agents/:id/avatar/apply-url", async (req, res) => {
+  const agentId = typeof req.params.id === "string" ? req.params.id.trim() : "";
+  if (!agentId || agentId.length > 200) {
+    res.status(400).json({ ok: false, error: "valid agent id required", source: "gateway+owner_input" });
+    return;
+  }
+  if (!requireActiveWorkspaceAgent(agentId, res)) return;
+  try {
+    const result = await applyAgentAvatarUrl(agentId, req.body?.url, req.body?.confirmed === true);
+    invalidateAgentDetail(agentId);
+    invalidateAgentOverview();
+    res.setHeader("Cache-Control", "no-store");
+    res.json(result);
+  } catch (e: any) {
+    if (e instanceof AgentAvatarError) {
+      res.status(e.status).json({ ok: false, error: e.message, source: "gateway+owner_input" });
+      return;
+    }
+    res.status(502).json({ ok: false, error: e.message, source: "gateway+owner_input" });
+  }
+});
+
+api.post("/agents/:id/avatar/model", rawBody({ type: ["model/gltf-binary", "application/octet-stream"], limit: "8mb" }), async (req, res) => {
+  const agentId = typeof req.params.id === "string" ? req.params.id.trim() : "";
+  if (!agentId || agentId.length > 200) {
+    res.status(400).json({ ok: false, error: "valid agent id required", source: "local" });
+    return;
+  }
+  if (!requireActiveWorkspaceAgent(agentId, res)) return;
+  try {
+    const result = await importAgentAvatarModel(agentId, Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0), req.get("X-Julie-Confirm") === "true");
+    res.setHeader("Cache-Control", "no-store");
+    res.status(201).json(result);
+  } catch (e: any) {
+    if (e instanceof AgentAvatarError) {
+      res.status(e.status).json({ ok: false, error: e.message, source: "local" });
+      return;
+    }
+    res.status(500).json({ ok: false, error: e.message, source: "local" });
+  }
+});
+
+api.post("/agents/:id/avatar/model-url", async (req, res) => {
+  const agentId = typeof req.params.id === "string" ? req.params.id.trim() : "";
+  if (!agentId || agentId.length > 200) {
+    res.status(400).json({ ok: false, error: "valid agent id required", source: "owner_input" });
+    return;
+  }
+  if (!requireActiveWorkspaceAgent(agentId, res)) return;
+  try {
+    const result = await addAgentAvatarModelUrl(agentId, req.body?.url, req.body?.confirmed === true);
+    res.setHeader("Cache-Control", "no-store");
+    res.status(201).json(result);
+  } catch (e: any) {
+    if (e instanceof AgentAvatarError) {
+      res.status(e.status).json({ ok: false, error: e.message, source: "owner_input" });
+      return;
+    }
+    res.status(500).json({ ok: false, error: e.message, source: "owner_input" });
+  }
+});
+
+api.get("/agents/:id/avatar/assets/:assetId", async (req, res) => {
+  const agentId = typeof req.params.id === "string" ? req.params.id.trim() : "";
+  const assetId = Number(req.params.assetId);
+  if (!agentId || agentId.length > 200 || !Number.isInteger(assetId) || assetId <= 0) {
+    res.status(400).json({ ok: false, error: "valid agent and avatar asset ids required", source: "local" });
+    return;
+  }
+  if (!requireActiveWorkspaceAgent(agentId, res)) return;
+  try {
+    const asset = await readAgentAvatarAsset(agentId, assetId);
+    res.setHeader("Content-Type", asset.mimeType);
+    res.setHeader("Cache-Control", "private, max-age=3600, immutable");
+    res.setHeader("ETag", `"${asset.sha256}"`);
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.send(asset.bytes);
+  } catch (e: any) {
+    if (e instanceof AgentAvatarError) {
+      res.status(e.status).json({ ok: false, error: e.message, source: "local" });
+      return;
+    }
+    res.status(500).json({ ok: false, error: e.message, source: "local" });
+  }
+});
+
+api.get("/agents/:id/avatar/fallback.svg", async (req, res) => {
+  const agentId = typeof req.params.id === "string" ? req.params.id.trim() : "";
+  if (!agentId || agentId.length > 200) {
+    res.status(400).json({ ok: false, error: "valid agent id required", source: "local" });
+    return;
+  }
+  if (!requireActiveWorkspaceAgent(agentId, res)) return;
+  try {
+    const fallback = await buildAgentFallbackSvg(agentId);
+    const etag = `"${fallback.etag}"`;
+    if (req.headers["if-none-match"] === etag) {
+      res.status(304).end();
+      return;
+    }
+    res.setHeader("Content-Type", "image/svg+xml; charset=utf-8");
+    res.setHeader("Cache-Control", "private, max-age=3600");
+    res.setHeader("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("ETag", etag);
+    res.send(fallback.svg);
+  } catch (e: any) {
+    if (e instanceof AgentAvatarError) {
+      res.status(e.status).json({ ok: false, error: e.message, source: "local" });
+      return;
+    }
+    res.status(503).json({ ok: false, error: e.message, source: "gateway+local" });
+  }
+});
+
+api.get("/agents/:id/avatar/models/:modelId", async (req, res) => {
+  const agentId = typeof req.params.id === "string" ? req.params.id.trim() : "";
+  const modelId = Number(req.params.modelId);
+  if (!agentId || agentId.length > 200 || !Number.isInteger(modelId) || modelId <= 0) {
+    res.status(400).json({ ok: false, error: "valid agent and 3D model ids required", source: "local" });
+    return;
+  }
+  if (!requireActiveWorkspaceAgent(agentId, res)) return;
+  try {
+    const model = await readAgentAvatarModel(agentId, modelId);
+    res.setHeader("Content-Type", model.mimeType);
+    res.setHeader("Content-Disposition", `attachment; filename="julie-avatar-model-${modelId}.glb"`);
+    res.setHeader("Cache-Control", "private, max-age=3600, immutable");
+    res.setHeader("ETag", `"${model.sha256}"`);
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.send(model.bytes);
+  } catch (e: any) {
+    if (e instanceof AgentAvatarError) {
+      res.status(e.status).json({ ok: false, error: e.message, source: "local" });
+      return;
+    }
+    res.status(500).json({ ok: false, error: e.message, source: "local" });
+  }
+});
+
+api.get("/agents/:id", async (req, res) => {
+  const agentId = typeof req.params.id === "string" ? req.params.id.trim() : "";
+  if (!agentId || agentId.length > 200) {
+    res.status(400).json({ ok: false, error: "valid agent id required", source: "gateway" });
+    return;
+  }
+  if (!requireActiveWorkspaceAgent(agentId, res)) return;
+  try {
+    const force = req.query.refresh === "1";
+    const detail = await getAgentDetail(agentId, force);
+    res.setHeader("Cache-Control", "no-store");
+    res.json(detail);
+  } catch (e: any) {
+    if (e instanceof AgentNotFoundError) {
+      res.status(404).json({ ok: false, error: "agent not found", source: "gateway" });
+      return;
+    }
+    res.status(503).json({ ok: false, error: e.message, source: "gateway" });
+  }
+});
+
+api.patch("/agents/:id", async (req, res) => {
+  const agentId = typeof req.params.id === "string" ? req.params.id.trim() : "";
+  if (!agentId || agentId.length > 200) {
+    res.status(400).json({ ok: false, error: "valid agent id required", source: "gateway+local" });
+    return;
+  }
+  if (!requireActiveWorkspaceAgent(agentId, res)) return;
+  try {
+    const result = await updateManagedAgent(agentId, req.body);
+    res.setHeader("Cache-Control", "no-store");
+    res.json(result);
+  } catch (e: any) {
+    if (e instanceof AgentUpdateInputError) {
+      res.status(e.status).json({ ok: false, error: e.message, source: "gateway+local" });
+      return;
+    }
+    res.status(502).json({ ok: false, error: e.message, source: "gateway" });
+  }
+});
+
+api.get("/agents/:id/sessions/:sessionId/history", async (req, res) => {
+  const agentId = typeof req.params.id === "string" ? req.params.id.trim() : "";
+  const sessionId = typeof req.params.sessionId === "string" ? req.params.sessionId.trim() : "";
+  if (!agentId || agentId.length > 200 || !sessionId || sessionId.length > 200) {
+    res.status(400).json({ ok: false, error: "valid agent and session ids required", source: "gateway" });
+    return;
+  }
+  if (!requireActiveWorkspaceAgent(agentId, res)) return;
+  try {
+    const history = await getAgentSessionHistory(agentId, sessionId);
+    res.setHeader("Cache-Control", "no-store");
+    res.json(history);
+  } catch (e: any) {
+    if (e instanceof AgentChatTargetError) {
+      res.status(e.status).json({ ok: false, error: e.message, source: "gateway" });
+      return;
+    }
+    res.status(503).json({ ok: false, error: e.message, source: "gateway" });
+  }
+});
+
+api.post("/agents/:id/chat", async (req, res) => {
+  const agentId = typeof req.params.id === "string" ? req.params.id.trim() : "";
+  const sessionId = req.body?.sessionId == null ? null : (typeof req.body.sessionId === "string" ? req.body.sessionId.trim() : "");
+  const message = typeof req.body?.text === "string" ? req.body.text : "";
+  if (!agentId || agentId.length > 200 || sessionId === "" || (sessionId && sessionId.length > 200)) {
+    res.status(400).json({ ok: false, error: "valid agent and optional session ids required", source: "gateway" });
+    return;
+  }
+  if (!requireActiveWorkspaceAgent(agentId, res)) return;
+  try {
+    const result = await sendAgentMessage(agentId, sessionId, message);
+    invalidateAgentDetail(agentId);
+    invalidateAgentOverview();
+    res.setHeader("Cache-Control", "no-store");
+    res.json(result);
+  } catch (e: any) {
+    if (e instanceof AgentChatTargetError) {
+      res.status(e.status).json({ ok: false, error: e.message, source: "gateway" });
+      return;
+    }
+    res.status(502).json({ ok: false, error: e.message, source: "gateway" });
   }
 });
 

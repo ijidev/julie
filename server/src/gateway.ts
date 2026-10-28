@@ -45,11 +45,44 @@ export interface GatewayStatus {
   error?: string;
 }
 
+export interface GatewayAgentIdentity {
+  name?: string;
+  theme?: string;
+  emoji?: string;
+  avatar?: string;
+}
+
+export interface GatewayAgent {
+  id: string;
+  name?: string;
+  identity?: GatewayAgentIdentity;
+  model?: string | { primary?: string; fallbacks?: string[] };
+  utilityModel?: string;
+  agentRuntime?: { id?: string; source?: string; cloudPlacementSupported?: boolean; devicePlacementSupported?: boolean };
+  thinkingDefault?: string;
+  defaultPermissionMode?: string;
+  workspaceGit?: boolean;
+  createdVia?: string;
+  creatorAgentId?: string | null;
+  createdAt?: number;
+  kind?: string;
+  [key: string]: unknown;
+}
+
+export interface GatewayAgentRoster {
+  agents: GatewayAgent[];
+  defaultId?: string;
+  mainKey?: string;
+  ownership?: string;
+  scope?: string;
+  selectionRequired?: boolean;
+}
+
 interface ChatEventPayload {
   runId?: string;
   sessionKey?: string;
   state?: string;
-  message?: { role: string; content?: Array<{ type: string; text?: string }> };
+  message?: { role: string; content?: unknown };
   deltaText?: string;
   replace?: boolean;
   stopReason?: string;
@@ -66,13 +99,25 @@ export interface ChatStreamEvent {
   text: string | null; // full final text on final state
 }
 
-function extractText(content: Array<{ type: string; text?: string }> | undefined): string {
-  if (!content) return "";
-  return content
-    .filter((p) => p.type === "text" && typeof p.text === "string")
-    .map((p) => p.text!)
-    .join("")
-    .trim();
+function extractText(content: unknown): string {
+  if (typeof content === "string") return content.trim();
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (!part || typeof part !== "object") return "";
+        const row = part as { type?: unknown; text?: unknown; content?: unknown };
+        if ((row.type === "text" || row.type === "input_text" || row.type === "output_text") && typeof row.text === "string") return row.text;
+        return row.content !== undefined ? extractText(row.content) : "";
+      })
+      .join("")
+      .trim();
+  }
+  if (content && typeof content === "object") {
+    const row = content as { text?: unknown; content?: unknown };
+    if (typeof row.text === "string") return row.text.trim();
+    if (row.content !== undefined) return extractText(row.content);
+  }
+  return "";
 }
 
 export class GatewayClient {
@@ -99,7 +144,7 @@ export class GatewayClient {
       if (state === "delta") {
         // Per protocol: a message snapshot on a frame is authoritative and already
         // includes deltaText — never append on top of a snapshot.
-        const hasSnapshot = Array.isArray(payload.message?.content) && payload.message!.content!.length > 0;
+          const hasSnapshot = payload.message?.content !== undefined && extractText(payload.message.content).length > 0;
         handler({
           sessionKey: payload.sessionKey,
           state: "delta",
@@ -328,7 +373,7 @@ export class GatewayClient {
       this.onEvent(listener);
       const poll = setInterval(async () => {
         try {
-          const h = await this.rpc<{ messages?: Array<{ role: string; content?: Array<{ type: string; text?: string }> }> }>(
+          const h = await this.rpc<{ messages?: Array<{ role: string; content?: unknown }> }>(
             "chat.history", { sessionKey }, 15000
           );
           const last = h.messages?.[h.messages.length - 1];
@@ -349,36 +394,49 @@ export class GatewayClient {
 
   async chatHistory(sessionKey: string): Promise<Array<{ role: string; text: string; timestamp?: number }>> {
     await this.ensureConnected();
-    const h = await this.rpc<{ messages?: Array<{ role: string; content?: Array<{ type: string; text?: string }>; timestamp?: number }> }>(
+    const h = await this.rpc<{ messages?: Array<{ role: string; content?: unknown; timestamp?: number }> }>(
       "chat.history", { sessionKey }, 15000
     );
     return (h.messages ?? []).map((m) => ({ role: m.role, text: extractText(m.content), timestamp: m.timestamp }));
   }
 
-  async listAgents(): Promise<Array<{ id: string; name?: string; model?: string; status?: string }>> {
+  async getAgentRoster(): Promise<GatewayAgentRoster> {
     await this.ensureConnected();
     try {
       const res = await this.rpc<any>("agents.list", {}, 15000);
-      return Array.isArray(res) ? res : (res?.agents ?? []);
+      if (Array.isArray(res)) return { agents: res };
+      return {
+        agents: Array.isArray(res?.agents) ? res.agents : [],
+        defaultId: typeof res?.defaultId === "string" ? res.defaultId : undefined,
+        mainKey: typeof res?.mainKey === "string" ? res.mainKey : undefined,
+        ownership: typeof res?.ownership === "string" ? res.ownership : undefined,
+        scope: typeof res?.scope === "string" ? res.scope : undefined,
+        selectionRequired: typeof res?.selectionRequired === "boolean" ? res.selectionRequired : undefined,
+      };
     } catch {
       try {
         const res = await this.rpc<any>("sessions.list", {}, 15000);
-        return Array.isArray(res) ? res : (res?.sessions ?? []).map((s: any) => ({
+        const sessions = Array.isArray(res) ? res : (res?.sessions ?? []);
+        return { agents: sessions.map((s: any) => ({
           id: s.key ?? s.id,
           name: s.agentId ?? s.name ?? s.key,
           status: s.status ?? "unknown",
           model: s.model ?? "unknown",
-        }));
+        })) };
       } catch (e: any) {
         throw new Error(`Gateway agents listing unavailable: ${e.message}`);
       }
     }
   }
 
-  async listTools(): Promise<Array<{ id: string; name?: string; description?: string; status?: string; group?: string }>> {
+  async listAgents(): Promise<GatewayAgent[]> {
+    return (await this.getAgentRoster()).agents;
+  }
+
+  async listTools(agentId = "main"): Promise<Array<{ id: string; name?: string; description?: string; status?: string; group?: string }>> {
     await this.ensureConnected();
     try {
-      const res = await this.rpc<any>("tools.catalog", { agentId: "main", includePlugins: true }, 15000);
+      const res = await this.rpc<any>("tools.catalog", { agentId, includePlugins: true }, 15000);
       if (Array.isArray(res?.groups)) {
         // Flatten grouped tool catalog (e.g. { groups: [{ id: 'fs', tools: [...] }] })
         return res.groups.flatMap((g: any) =>
@@ -395,6 +453,89 @@ export class GatewayClient {
     } catch (e: any) {
       throw new Error(`Gateway tools listing unavailable: ${e.message}`);
     }
+  }
+
+  async listSkills(agentId: string): Promise<any> {
+    await this.ensureConnected();
+    return this.rpc<any>("skills.status", { agentId }, 30000);
+  }
+
+  async listSessions(params: Record<string, unknown>): Promise<any> {
+    await this.ensureConnected();
+    return this.rpc<any>("sessions.list", params, 30000);
+  }
+
+  async getSessionsUsage(params: Record<string, unknown>): Promise<any> {
+    await this.ensureConnected();
+    return this.rpc<any>("sessions.usage", params, 60000);
+  }
+
+  async getAgentIdentity(agentId: string): Promise<any> {
+    await this.ensureConnected();
+    return this.rpc<any>("agent.identity.get", { agentId }, 15000);
+  }
+
+  async listAgentFiles(agentId: string): Promise<any> {
+    await this.ensureConnected();
+    return this.rpc<any>("agents.files.list", { agentId }, 15000);
+  }
+
+  async getAgentFile(agentId: string, name: string): Promise<any> {
+    await this.ensureConnected();
+    return this.rpc<any>("agents.files.get", { agentId, name }, 15000);
+  }
+
+  async listCommands(agentId: string): Promise<any> {
+    await this.ensureConnected();
+    return this.rpc<any>("commands.list", { agentId, includeArgs: false }, 30000);
+  }
+
+  async listModels(): Promise<any> {
+    await this.ensureConnected();
+    return this.rpc<any>("models.list", { view: "configured", includeDetails: true }, 60000);
+  }
+
+  async invokeTool(params: {
+    name: string;
+    agentId: string;
+    sessionKey: string;
+    args: Record<string, unknown>;
+    confirm?: boolean;
+    timeoutMs?: number;
+  }): Promise<any> {
+    await this.ensureConnected();
+    return this.rpc<any>("tools.invoke", {
+      name: params.name,
+      agentId: params.agentId,
+      sessionKey: params.sessionKey,
+      args: params.args,
+      ...(params.confirm === true ? { confirm: true } : {}),
+    }, params.timeoutMs ?? 60000);
+  }
+
+  async createAgent(params: { name: string; model?: string; emoji?: string; avatar?: string }): Promise<any> {
+    await this.ensureConnected();
+    return this.rpc<any>("agents.create", params, 120000);
+  }
+
+  async updateAgent(params: { agentId: string; name?: string; model?: string | null; emoji?: string; avatar?: string }): Promise<any> {
+    await this.ensureConnected();
+    return this.rpc<any>("agents.update", params, 120000);
+  }
+
+  async setAgentFile(agentId: string, name: string, content: string, expectedHash?: string, expectedMissing = false): Promise<any> {
+    await this.ensureConnected();
+    return this.rpc<any>("agents.files.set", {
+      agentId,
+      name,
+      content,
+      ...(expectedHash ? { expectedHash } : expectedMissing ? { expectedMissing: true } : {}),
+    }, 30000);
+  }
+
+  async deleteAgent(agentId: string, deleteFiles = true): Promise<any> {
+    await this.ensureConnected();
+    return this.rpc<any>("agents.delete", { agentId, deleteFiles }, 120000);
   }
 
   // Real paired-node/presence data for the Home dashboard "Connected devices" widget.

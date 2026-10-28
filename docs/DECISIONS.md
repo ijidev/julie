@@ -87,3 +87,108 @@ it and receives listening/processing/error state through a local browser event.
 Rationale: satisfy the single-microphone UI while avoiding duplicated capture
 implementations or changing the proven audio path. The deep `/voice` route is
 retained for direct links but is not another shell navigation control.
+
+## D-013 — Agent activity comes from sessions, never roster inference
+Date: 2026-10-28
+`agents.list` is configuration identity, not presence. Julie labels an agent
+`Working` only when a complete visible `sessions.list` snapshot contains
+`hasActiveRun: true` for that agent. Other closed states are `No active run
+reported`, `No visible sessions`, and `Unknown`; none implies off-duty status.
+The archive endpoint aggregates roster, session, usage, tool, and skill reads on
+the backend, tolerates partial capability failures, and caches snapshots for 30
+seconds. It removes host paths, session keys, usage storage paths, and raw run
+IDs before browser delivery. Usage reports are refreshed explicitly and are not
+polled as an activity signal.
+
+## D-014 — Agent profiles expose safe projections, not raw Gateway records
+Date: 2026-10-28
+Single-agent pages are assembled by an allowlisted Julie backend endpoint rather
+than a generic RPC proxy. Session keys, active run IDs, host workspace paths,
+usage database paths, bootstrap hashes, and raw file content stay server-side.
+`SOUL.md` contributes only bounded section names and a short prose excerpt after
+code/frontmatter removal and secret-pattern filtering. Formal role, Julie
+workspace assignment, and task history remain explicit unavailable states until
+Julie owns schemas for them. Unknown IDs return 404 and never fall back to the
+default agent.
+
+## D-015 — Per-agent chat resolves opaque sessions on the backend
+Date: 2026-10-28
+Agent communication routes accept only the configured agent ID and an opaque
+Gateway session ID. Julie rereads the agent-scoped session inventory, verifies
+ownership, and keeps the real session key server-side. A send without a session
+creates an agent-qualified key on the backend and waits for the documented final
+chat result. History is bounded to 120 non-empty user/assistant text messages,
+supports legacy and current content shapes, and redacts common credential forms
+and OpenClaw host paths. There is no arbitrary RPC, session-key, or run-ID API.
+
+## D-016 — Agent onboarding separates Gateway state from Julie HR context
+Date: 2026-10-28
+The documented `agents.create` RPC accepts name, model, emoji/avatar, and an
+optional host workspace; it does not configure role, duty schedule, Julie
+workspace membership, tools, or skills. Julie therefore applies only supported
+identity/model fields to OpenClaw, writes the reviewed personality through a
+hash-guarded `agents.files.set` SOUL update, and stores explicit HR/assignment /
+capability-request metadata in local SQLite. The UI labels tool and skill choices
+as requests and never claims policy changed. Creation requires owner auth plus a
+final confirmation. Partial post-create writes return warnings rather than
+pretending rollback or total success.
+
+## D-017 — Agent edits are source-aware and SOUL merges are non-destructive
+Date: 2026-10-28
+The edit surface sends only changed display-name, emoji, or model fields through
+`agents.update`; role-only edits never resubmit an unchanged model. Julie-owned
+HR and assignment fields remain in SQLite. Personality synchronization owns only
+the section between `<!-- JULIE-HR:START -->` and `<!-- JULIE-HR:END -->`; when
+markers are absent it appends that block instead of replacing existing SOUL.
+Every write uses the Gateway file hash or expected-missing precondition. The UI
+shows field ownership, requires final confirmation, and reports partial warnings.
+
+## D-018 — Agent visibility uses explicit many-to-many workspace membership
+Date: 2026-10-28
+OpenClaw workspace filesystem paths are not Julie workspace assignments. Julie
+owns a `workspace_agents` join table and scopes its ordinary agent archive,
+detail, history, chat, and edit APIs to the globally active Julie workspace.
+Agents in multiple rows are explicitly shared; no path or identity heuristic
+creates membership. A separate authenticated assignment endpoint may inspect the
+full Gateway roster and replace membership for one workspace after confirmation.
+Removing membership never deletes or reconfigures the OpenClaw agent. The legacy
+single `agent_profiles.workspace_id` column is a synchronized compatibility hint,
+not the authority.
+
+## D-019 — Office locations require closed evidence rules
+Date: 2026-10-28
+The Office may place an agent at a generic desk only from
+`sessions.list.hasActiveRun === true`. Missing sessions, a complete no-active-run
+snapshot, or session-read failure all stay in the non-semantic roster lobby;
+none means off duty. Library, lounge, and home require a future exact event or
+explicit duty source and remain unused until then. Each backend placement carries
+its classification and evidence text, and frontend coordinates only visualize
+that projection rather than deriving activity independently.
+
+## D-020 — Avatar generation is reviewed, bounded, and separated from apply
+Date: 2026-10-28
+Julie may inspect only the allowlisted `image_generate action=list` projection;
+provider auth hints and raw capability records stay server-side. Avatar prompts
+are rebuilt from bounded safe identity/HR/marked-SOUL context and explicitly do
+not infer human demographic or real-person traits. Owner visual notes are marked
+as explicit input. Because the current Gateway catalog exposes no per-call cost,
+the UI says cost is not reported and requires a separate unknown-cost checkbox.
+Each approved call fixes `count=1`, square 1K/1024 geometry, low quality when the
+model supports it, and an explicit provider/model (preventing fallback retries).
+The returned image is magic-byte/hash/size checked and stored privately under
+Julie data. Generation never changes identity. Applying a reviewed asset is a
+second confirmed `agents.update` action and is capped at 2 MB. A deterministic
+local SVG is the no-cost fallback.
+
+## D-021 — Avatar provider names are never aliases; 3D is a companion asset
+Date: 2026-10-28
+The owner selected OmniRoute instead of OpenRouter for avatar generation. Julie
+therefore excludes OpenRouter from its avatar allowlist. The installed Gateway's
+`image_generate` registry has no OmniRoute provider even though the normal model
+catalog has OmniRoute text rows; Julie presents `OmniRoute / not_supported` and
+does not relabel or route it through OpenRouter. Provider configuration presence
+is separate from a verified successful generation. Owner-uploaded raster images
+and public HTTPS image URLs may still become OpenClaw image avatars after exact
+review. GLB 2.0 uploads and HTTPS references are stored only as private/local
+Julie companion assets: `agents.update` accepts image avatars, and no 3D viewer
+or rendered fallback is claimed until a separate viewer/render capability exists.

@@ -6,7 +6,7 @@ import { VoiceFab, VOICE_STATE_EVENT, requestVoiceCapture } from "./voice-fab";
 import { useSpeaking, speakWithTracking } from "./speaking";
 import { Wave } from "./wave";
 import { speechSupported, startSpeechRecognition, submitVoiceText, type VoiceState } from "./voice";
-import { api, type Conversation, type GatewayStatus, type Message, type Task, type Workspace, type Agent, type Tool, type Analytics, type Weather, type Device, type Insights, type TrendingItem, TASK_STATUSES } from "./api";
+import { api, type Conversation, type GatewayStatus, type Message, type Task, type Workspace, type AgentOverviewItem, type AgentOverviewResponse, type AgentDetailResponse, type AgentChatMessage, type AgentOnboardingInput, type AgentOnboardingOptions, type AgentUpdateInput, type AgentUpdateResult, type AgentAssignmentsResponse, type AgentAvatarAsset, type AgentAvatarDirection, type AgentAvatarPreview, type AgentAvatarStudioResponse, type Tool, type Analytics, type Weather, type Device, type Insights, type TrendingItem, TASK_STATUSES } from "./api";
 
 // --- Router Hook ---
 function useRoute(): [string, (to: string) => void] {
@@ -169,7 +169,14 @@ function Shell({ route, navigate, onLogout }: { route: string; navigate: (to: st
     if (route === "/chat") return <ChatView />;
     if (route === "/voice") return <VoicePage />;
     if (route === "/tools") return <ToolsPage />;
-    if (route === "/agents") return <AgentsPage />;
+    if (route === "/agents/new") return <AgentOnboardingPage navigate={navigate} />;
+    if (route === "/agents") return <AgentsPage navigate={navigate} />;
+    if (route.startsWith("/agents/")) {
+      const encoded = route.slice("/agents/".length);
+      let agentId = encoded;
+      try { agentId = decodeURIComponent(encoded); } catch { /* API will return an honest not-found state */ }
+      return <AgentDetailPage agentId={agentId} navigate={navigate} />;
+    }
     if (route === "/analytics") return <AnalyticsPage />;
     if (route === "/terminal") return <TerminalPage />;
     if (route === "/tasks") return <BoardView />;
@@ -1025,55 +1032,1458 @@ function VoicePage() {
   );
 }
 
-// --- Agents Page ---
-function AgentsPage() {
-  const [agents, setAgents] = useState<Agent[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  const [selected, setSelected] = useState<string | null>(null);
+// --- Agent archive (all facts come from the real Gateway overview endpoint) ---
+const compactNumber = new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 });
 
-  const loadAgents = useCallback(() => {
-    setLoading(true);
+function formatCount(value: number | null | undefined): string {
+  return typeof value === "number" && Number.isFinite(value) ? compactNumber.format(value) : "—";
+}
+
+function formatUsd(value: number | null | undefined): string {
+  return typeof value === "number" && Number.isFinite(value)
+    ? new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: value < 0.01 ? 4 : 2 }).format(value)
+    : "—";
+}
+
+function relativeAgentTime(value: number | null | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "No activity time";
+  const elapsed = Math.max(0, Date.now() - value);
+  const minutes = Math.floor(elapsed / 60_000);
+  if (minutes < 1) return "Just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return days < 30 ? `${days}d ago` : new Date(value).toLocaleDateString();
+}
+
+function agentStateCopy(state: AgentOverviewItem["activity"]["state"]) {
+  if (state === "working") return { label: "Working", detail: "Active Gateway run reported" };
+  if (state === "no_active_run") return { label: "No active run", detail: "Visible sessions report no direct run" };
+  if (state === "no_sessions") return { label: "No visible sessions", detail: "Configured agent; no session rows reported" };
+  return { label: "Activity unknown", detail: "Session activity could not be verified" };
+}
+
+function AgentAvatar({ agent }: { agent: AgentOverviewItem }) {
+  const [fallbackFailed, setFallbackFailed] = useState(false);
+  if (agent.identity.avatar) return <img className="agent-archive-avatar" src={agent.identity.avatar} alt="" />;
+  const initials = agent.displayName.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase()).join("") || agent.id.slice(0, 2).toUpperCase();
+  if (!fallbackFailed) return <img className="agent-archive-avatar avatar-svg-fallback" src={api.agentAvatarFallbackUrl(agent.id)} alt="" onError={() => setFallbackFailed(true)} />;
+  return <div className="agent-archive-avatar fallback" aria-hidden="true">
+    <span>{agent.identity.emoji || initials}</span><i />
+  </div>;
+}
+
+function AgentAssignmentDialog({ workspace, onClose, onSaved }: {
+  workspace: { id: number; name: string };
+  onClose: () => void;
+  onSaved: (data: AgentAssignmentsResponse) => void;
+}) {
+  const [data, setData] = useState<AgentAssignmentsResponse | null>(null);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [query, setQuery] = useState("");
+  const [confirmed, setConfirmed] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    api.agentAssignments(workspace.id).then((result) => {
+      setData(result);
+      setSelected(result.agents.filter((agent) => agent.assigned).map((agent) => agent.id));
+    }).catch((requestError) => setError(requestError.message)).finally(() => setLoading(false));
+  }, [workspace.id]);
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape" && !saving) onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose, saving]);
+
+  const save = async () => {
+    if (!confirmed || saving) { setError("Confirm the workspace membership change."); return; }
+    setSaving(true);
     setError("");
-    api.agents()
-      .then((data) => setAgents(data.agents))
-      .catch((requestError) => setError(requestError.message))
-      .finally(() => setLoading(false));
+    try { onSaved(await api.setAgentAssignments(workspace.id, selected)); }
+    catch (requestError: any) { setError(requestError?.message ?? "Could not save workspace assignments."); }
+    finally { setSaving(false); }
+  };
+
+  const needle = query.trim().toLowerCase();
+  const rows = (data?.agents ?? []).filter((agent) => !needle || [agent.id, agent.displayName, agent.role, agent.model].some((value) => value?.toLowerCase().includes(needle)));
+  return (
+    <div className="dialog-backdrop" onMouseDown={() => !saving && onClose()}>
+      <section className="workspace-agent-dialog" role="dialog" aria-modal="true" aria-labelledby="workspace-agent-title" onMouseDown={(event) => event.stopPropagation()}>
+        <header><div className="chat-eyebrow">Workspace roster</div><h2 id="workspace-agent-title">Manage {workspace.name}</h2><p>Only checked agents appear in this workspace archive. Membership in multiple workspaces is explicit sharing.</p><button className="dialog-close" onClick={onClose} aria-label="Close">×</button></header>
+        {loading ? <PageState kind="loading" title="Loading Gateway roster" detail="Preparing current and unassigned agent memberships." /> : data && (
+          <>
+            <div className="workspace-agent-toolbar"><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search Gateway agents" /><span>{selected.length} assigned · {data.summary.gatewayRosterTotal} total</span><button onClick={() => setSelected(data.agents.map((agent) => agent.id))}>Select all</button><button onClick={() => setSelected([])}>Clear</button></div>
+            <div className="workspace-agent-list">{rows.map((agent) => {
+              const otherAssignments = agent.assignments.filter((assignment) => assignment.id !== workspace.id);
+              return <label key={agent.id} className={selected.includes(agent.id) ? "selected" : ""}>
+                <input type="checkbox" checked={selected.includes(agent.id)} onChange={() => setSelected((current) => current.includes(agent.id) ? current.filter((id) => id !== agent.id) : [...current, agent.id])} />
+                <span className="workspace-agent-avatar">{agent.emoji || agent.displayName.slice(0, 2).toUpperCase()}</span>
+                <span className="workspace-agent-copy"><strong>{agent.displayName}{agent.isDefault ? " · Primary" : ""}</strong><code>{agent.id}</code><small>{agent.role || "Julie role not configured"} · {agent.model || "Model not reported"}</small></span>
+                <span className="workspace-agent-sharing">{otherAssignments.length ? `Also in ${otherAssignments.map((item) => item.name).join(", ")}` : agent.assignments.length === 0 ? "Unassigned" : "Only here"}</span>
+              </label>;
+            })}</div>
+            <label className="onboarding-confirm workspace-agent-confirm"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} /><span>I reviewed the active-workspace roster and any explicit shared memberships.</span></label>
+          </>
+        )}
+        {error && <div className="chat-alert" role="alert">{error}</div>}
+        <footer><span>Removing an agent here does not delete it from OpenClaw or another workspace.</span><div><button className="btn-secondary" onClick={onClose} disabled={saving}>Cancel</button><button className="btn" onClick={save} disabled={loading || saving || !confirmed}>{saving ? "Saving…" : "Save roster"}</button></div></footer>
+      </section>
+    </div>
+  );
+}
+
+const OFFICE_ROSTER_SPOTS = [
+  [37, 36], [47, 32], [57, 36], [67, 32], [42, 49], [52, 45], [62, 49], [47, 60], [57, 58], [67, 61], [37, 58], [72, 47],
+];
+const OFFICE_ZONE_SPOTS: Record<AgentOverviewItem["office"]["zone"], number[][]> = {
+  desk: [[34, 34], [48, 28], [62, 34], [38, 57], [54, 52], [68, 58]],
+  library: [[18, 45], [23, 52]],
+  lounge: [[79, 47], [83, 57]],
+  home: [[43, 84], [49, 87], [56, 84], [63, 87]],
+  staging: OFFICE_ROSTER_SPOTS,
+};
+
+function AgentOfficeMvp({ agents, workspace, navigate }: {
+  agents: AgentOverviewItem[];
+  workspace: { id: number; name: string };
+  navigate: (to: string) => void;
+}) {
+  const zoneCounters: Record<AgentOverviewItem["office"]["zone"], number> = { desk: 0, library: 0, lounge: 0, home: 0, staging: 0 };
+  const placements = new Map<string, { left: number; top: number; zone: AgentOverviewItem["office"]["zone"] }>();
+  for (const agent of agents) {
+    const zone = agent.office.zone;
+    const spots = OFFICE_ZONE_SPOTS[zone];
+    const index = zoneCounters[zone]++;
+    const base = spots[index % spots.length];
+    const cycle = Math.floor(index / spots.length);
+    placements.set(agent.id, { left: base[0] + cycle * 1.5, top: base[1] + cycle * 1.2, zone });
+  }
+  const zoneCounts = agents.reduce((counts, agent) => {
+    counts[agent.office.zone] = (counts[agent.office.zone] ?? 0) + 1;
+    return counts;
+  }, {} as Record<string, number>);
+  const deskPlacements = agents.filter((agent) => agent.office.zone === "desk").map((agent) => placements.get(agent.id)!);
+  return (
+    <section className="agent-office-section">
+      <header className="agent-office-head"><div><span>Evidence-mapped canvas</span><h3>{workspace.name} Office</h3><p>Responsive CSS/SVG environment with an accessible roster. Only an exact active-run fact changes an agent's room placement.</p></div><b>{agents.length} assigned</b></header>
+      <div className="agent-office-world">
+        <svg className="agent-office-scene" viewBox="0 0 1000 610" role="img" aria-label={`Stylized office floor for ${workspace.name}`}>
+          <defs>
+            <linearGradient id="officeFloor" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stopColor="#18253A" /><stop offset="1" stopColor="#0A101C" /></linearGradient>
+            <linearGradient id="officeWall" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#243550" /><stop offset="1" stopColor="#101827" /></linearGradient>
+            <linearGradient id="officeGlow" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stopColor="#FFB56F" stopOpacity=".8" /><stop offset="1" stopColor="#FF6A00" stopOpacity=".25" /></linearGradient>
+            <filter id="officeShadow"><feDropShadow dx="0" dy="10" stdDeviation="10" floodColor="#000" floodOpacity=".45" /></filter>
+          </defs>
+          <polygon points="80,170 500,35 920,170 500,570" fill="url(#officeFloor)" stroke="#33445E" strokeWidth="2" filter="url(#officeShadow)" />
+          <polygon points="80,170 500,35 500,87 80,222" fill="url(#officeWall)" stroke="#33445E" />
+          <polygon points="500,35 920,170 920,222 500,87" fill="#111B2B" stroke="#33445E" />
+          <path d="M500 88v482M80 222l420 348M920 222 500 570" stroke="#24334A" strokeWidth="2" opacity=".7" />
+          <path d="m230 221 270-87 270 87-270 257Z" fill="rgba(255,122,26,.025)" stroke="rgba(255,122,26,.2)" strokeDasharray="7 8" />
+
+          <g className="office-room-label"><rect x="122" y="190" width="132" height="31" rx="12" /><text x="188" y="210">LIBRARY</text></g>
+          <g className="office-room-label"><rect x="747" y="190" width="125" height="31" rx="12" /><text x="809" y="210">LOUNGE</text></g>
+          <g className="office-room-label active"><rect x="420" y="111" width="160" height="34" rx="13" /><text x="500" y="133">ROSTER LOBBY</text></g>
+          <g className="office-room-label"><rect x="422" y="518" width="156" height="31" rx="12" /><text x="500" y="538">OFF-DUTY EXIT</text></g>
+
+          <g className="office-library" transform="translate(128 238)">
+            <polygon points="0,18 107,0 107,127 0,150" fill="#111A29" stroke="#3A4B64" />
+            {[24, 54, 84, 114].map((y) => <line key={y} x1="6" y1={y} x2="101" y2={y - 17} stroke="#52627A" />)}
+            {[12, 31, 50, 69, 88].map((x, index) => <rect key={x} x={x} y={28 + (index % 2) * 22} width="9" height="25" fill={index % 2 ? "#FF9142" : "#7185A0"} transform={`rotate(-9 ${x} ${28 + (index % 2) * 22})`} />)}
+          </g>
+
+          <g className="office-lounge" transform="translate(735 256)">
+            <polygon points="0,35 95,58 95,111 0,86" fill="#2A1B24" stroke="#5A3541" />
+            <polygon points="0,35 28,21 122,44 95,58" fill="#643440" stroke="#855063" />
+            <polygon points="95,58 122,44 122,94 95,111" fill="#3F2630" stroke="#65404C" />
+            <ellipse cx="25" cy="110" rx="27" ry="11" fill="#111827" stroke="#334155" /><circle cx="25" cy="99" r="13" fill="#FF7A1A" opacity=".16" />
+          </g>
+
+          <g className="office-desks">
+            {[[300, 210], [445, 170], [590, 210], [345, 345], [510, 320], [650, 350]].map(([x, y], index) => <g key={`${x}-${y}`} transform={`translate(${x} ${y})`}>
+              <polygon points="0,27 68,6 112,26 43,49" fill="#25344B" stroke="#4A5E78" />
+              <path d="M43 49v34M105 28v31M7 29v29" stroke="#40516A" strokeWidth="5" />
+              <polygon points="36,4 75,-7 91,1 52,13" fill="#07101C" stroke="#6B7D95" />
+              <polygon points="52,13 91,1 91,28 52,40" fill="#0A1523" stroke="#53677F" />
+              <rect x="60" y="12" width="23" height="3" fill={index % 2 ? "#7CA9D0" : "#FF8B35"} opacity=".75" transform="rotate(-17 60 12)" />
+            </g>)}
+          </g>
+          <g className="office-live-desk-glows">
+            {deskPlacements.map((spot, index) => <ellipse key={`${spot.left}-${spot.top}-${index}`} cx={spot.left * 10} cy={spot.top * 6.1 + 25} rx="34" ry="12" fill="rgba(74,222,128,.13)" stroke="rgba(74,222,128,.48)" strokeDasharray="4 4" />)}
+          </g>
+
+          <g className="office-roster-platform">
+            <ellipse cx="500" cy="305" rx="177" ry="89" fill="rgba(255,122,26,.035)" stroke="rgba(255,122,26,.28)" strokeDasharray="6 7" />
+            <ellipse cx="500" cy="315" rx="117" ry="52" fill="none" stroke="rgba(255,161,78,.13)" />
+            <text x="500" y="309" textAnchor="middle" fill="#6E7D92" fontSize="13" letterSpacing="3">STAGING — NO ACTIVITY LOCATION YET</text>
+          </g>
+
+          <g className="office-home-pods">
+            {[390, 470, 550, 630].map((x) => <g key={x} transform={`translate(${x} 493)`}><polygon points="0,18 28,0 57,18 29,38" fill="#182336" stroke="#3D4D64" /><path d="M9 15v28l20 12 19-12V15" fill="#101827" stroke="#34445B" /><rect x="24" y="31" width="10" height="17" fill="#FF7A1A" opacity=".17" /></g>)}
+          </g>
+        </svg>
+
+        <div className="office-agent-stage" aria-hidden="true">
+          {agents.map((agent) => {
+            const placement = placements.get(agent.id)!;
+            const state = agentStateCopy(agent.activity.state);
+            return <div key={agent.id} className={`office-agent-token ${agent.activity.state} zone-${placement.zone}`} style={{ left: `${placement.left}%`, top: `${placement.top}%` }} title={`${agent.displayName} — ${agent.office.label}. ${agent.office.evidence}`}>
+              <i className="office-agent-head">{agent.identity.emoji || agent.displayName.slice(0, 1)}</i><i className="office-agent-body" /><span>{agent.displayName}</span>
+            </div>;
+          })}
+        </div>
+      </div>
+      <div className="office-zone-legend"><div className="verified"><i />Desk <strong>{zoneCounts.desk ?? 0}</strong><span>verified active run</span></div><div><i />Library <strong>{zoneCounts.library ?? 0}</strong><span>no exact reading event source</span></div><div><i />Lounge <strong>{zoneCounts.lounge ?? 0}</strong><span>no exact break event source</span></div><div><i />Off-duty <strong>{zoneCounts.home ?? 0}</strong><span>duty state unavailable</span></div><div><i />Roster lobby <strong>{zoneCounts.staging ?? 0}</strong><span>unclassified evidence</span></div></div>
+      <div className="agent-office-truth"><span>Placement policy</span><strong>Evidence only</strong><p>`hasActiveRun=true` places an agent at a generic desk. Library, lounge, and off-duty locations require exact future events; absent evidence stays in the roster lobby.</p></div>
+      <div className="agent-office-accessible" aria-label="Accessible office roster">
+        {agents.map((agent) => {
+          const state = agentStateCopy(agent.activity.state);
+          return <button key={agent.id} onClick={() => navigate(`/agents/${encodeURIComponent(agent.id)}`)} title={agent.office.evidence}><span>{agent.identity.emoji || "◇"}</span><div><strong>{agent.displayName}</strong><small>{agent.role || "Role not configured"} · {agent.office.label}</small></div><i>Open profile →</i></button>;
+        })}
+        {agents.length === 0 && <div className="detail-empty">No agents are assigned to this workspace.</div>}
+      </div>
+    </section>
+  );
+}
+
+function AgentsPage({ navigate }: { navigate: (to: string) => void }) {
+  const [data, setData] = useState<AgentOverviewResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState("");
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [modelFilter, setModelFilter] = useState("all");
+  const [assignmentOpen, setAssignmentOpen] = useState(false);
+  const [assignmentNotice, setAssignmentNotice] = useState("");
+  const [viewMode, setViewMode] = useState<"archive" | "office">("archive");
+
+  const loadAgents = useCallback(async (force = false, initial = false) => {
+    if (initial) setLoading(true);
+    else setRefreshing(true);
+    setError("");
+    try {
+      setData(await api.agentOverview(force));
+    } catch (requestError: any) {
+      setError(requestError?.message ?? "Could not load the Gateway agent snapshot.");
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
   }, []);
 
-  useEffect(loadAgents, [loadAgents]);
+  useEffect(() => { loadAgents(false, true); }, [loadAgents]);
 
-  if (loading) return <PageState kind="loading" title="Scanning agent registry" detail="Requesting the live agent list from OpenClaw Gateway." />;
-  if (error) return <PageState kind="error" title="Agents unavailable" detail={error} onRetry={loadAgents} />;
-  if (agents.length === 0) return <PageState kind="empty" title="No agents reported" detail="The gateway returned an empty agent registry." onRetry={loadAgents} />;
+  if (loading && !data) return <PageState kind="loading" title="Building agent archive" detail="Reading the live roster, sessions, tools, skills, and 30-day usage from OpenClaw Gateway." />;
+  if (error && !data) return <PageState kind="error" title="Agent archive unavailable" detail={error} onRetry={() => loadAgents(true, true)} />;
+  if (!data) return <PageState kind="empty" title="No agent snapshot" detail="The active workspace agent snapshot is unavailable." onRetry={() => loadAgents(true, true)} />;
 
-  const detail = agents.find(a => a.id === selected);
+  const modelOptions = [...new Set(data.agents.map((agent) => agent.model.primary).filter((value): value is string => Boolean(value)))].sort();
+  const needle = query.trim().toLowerCase();
+  const filtered = data.agents
+    .filter((agent) => statusFilter === "all" || agent.activity.state === statusFilter)
+    .filter((agent) => modelFilter === "all" || agent.model.primary === modelFilter)
+    .filter((agent) => !needle || [agent.id, agent.displayName, agent.configuredName, agent.identity.theme, agent.model.primary]
+      .some((value) => value?.toLowerCase().includes(needle)))
+    .sort((a, b) => Number(b.activity.state === "working") - Number(a.activity.state === "working") || a.displayName.localeCompare(b.displayName));
+
+  const usage = data.summary.usage;
   return (
-    <div style={{ display: "grid", gridTemplateColumns: selected ? "1fr 2fr" : "1fr", gap: 20 }}>
-      <div className="card">
-        <div className="card-title">Agent Directory</div>
-        {agents.map(a => (
-          <div key={a.id} className="nav-item" onClick={() => setSelected(a.id)} style={{ cursor: "pointer" }}>
-            <div style={{ flex: 1 }}>
-              <div>{a.name || a.id}</div>
-              <div className="text-dim" style={{ fontSize: "0.8rem" }}>{a.model || "unknown model"}</div>
-            </div>
-            <span className="status-dot" style={{ background: a.status === "active" ? "var(--accent-primary)" : "var(--text-dim)" }} />
-          </div>
-        ))}
+    <section className="agent-archive-page">
+      <header className="agent-archive-head">
+        <div>
+          <div className="chat-eyebrow">OpenClaw roster</div>
+          <h2>Agent Archive · {data.workspace.name}</h2>
+          <p>Only agents explicitly assigned to the active Julie workspace, with exact run state, capabilities, and recorded usage.</p>
+        </div>
+        <div className="agent-head-actions">
+          <div className="agent-view-toggle"><button className={viewMode === "archive" ? "active" : ""} onClick={() => setViewMode("archive")}>Archive</button><button className={viewMode === "office" ? "active" : ""} onClick={() => setViewMode("office")}>Office</button></div>
+          <span className="agent-live-source"><span className="hv-dot on" /> Gateway snapshot · {new Date(data.generatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+          <button className="btn-secondary" onClick={() => loadAgents(true)} disabled={refreshing}>{refreshing ? "Refreshing…" : "Refresh live data"}</button>
+          <button className="btn-secondary" onClick={() => setAssignmentOpen(true)}>Manage roster</button>
+          <button className="btn agent-onboard-button" onClick={() => navigate("/agents/new")}>＋ Onboard agent</button>
+        </div>
+      </header>
+
+      <div className="agent-summary-grid">
+        <div className="agent-summary-card"><span>Assigned here</span><strong>{data.summary.configuredAgents}</strong><small>of {data.summary.gatewayRosterTotal} Gateway agents</small></div>
+        <div className="agent-summary-card working"><span>Working now</span><strong>{data.summary.workingAgents}</strong><small>Exact active runs</small></div>
+        <div className="agent-summary-card"><span>Visible sessions</span><strong>{data.summary.visibleSessions}</strong><small>{data.summary.sessionSnapshotComplete ? "Complete snapshot" : "Partial snapshot"}</small></div>
+        <div className="agent-summary-card"><span>30-day usage</span><strong>{usage.state === "pending" ? "Preparing" : formatCount(usage.totalTokens)}</strong><small>{usage.state === "unavailable" ? "Unavailable" : `${formatUsd(usage.totalCost)} recorded / estimated`}</small></div>
       </div>
-      {detail && (
-        <div className="card">
-          <div className="card-title">Agent Profile: {detail.name || detail.id}</div>
-          <div className="card-content">
-            <div className="mb-4"><span className="text-dim">Identity:</span> {detail.id}</div>
-            <div className="mb-4"><span className="text-dim">Model:</span> {detail.model || "N/A"}</div>
-            <div className="mb-4"><span className="text-dim">Status:</span> {detail.status || "unknown"}</div>
-            <div className="text-dim">Recent tasks and linked projects appear here when synced from the gateway.</div>
-          </div>
+
+      {(usage.models?.length ?? 0) > 0 && (
+        <div className="agent-model-strip">
+          <div className="agent-model-strip-label"><span>30-day model usage</span><small>Gateway-reported · all agents</small></div>
+          {usage.models!.slice(0, 4).map((model) => (
+            <div className="agent-model-strip-item" key={`${model.provider}-${model.model}`} title={`${model.input.toLocaleString()} input · ${model.output.toLocaleString()} output · ${model.cacheRead.toLocaleString()} cache read`}>
+              <strong>{model.model}</strong><span>{formatCount(model.totalTokens)} tokens · {model.calls} calls · {formatUsd(model.totalCost)}</span>
+            </div>
+          ))}
         </div>
       )}
+
+      <div className="agent-workspace-context">
+        <div><span>Workspace chats</span><strong>{data.workspaceContext.conversations}</strong><small>SQLite-scoped conversations</small></div>
+        <div><span>Workspace tasks</span><strong>{data.workspaceContext.tasks.open}/{data.workspaceContext.tasks.total}</strong><small>open / total</small></div>
+        <div><span>Shared agents</span><strong>{data.workspaceContext.policies.sharedAgents}</strong><small>explicit multi-workspace membership</small></div>
+        <div className="unavailable"><span>Project access</span><strong>Not configured</strong><small>awaiting project registry</small></div>
+      </div>
+
+      {error && <div className="chat-alert" role="alert">Refresh failed; showing the previous snapshot. {error}</div>}
+      {assignmentNotice && <div className="agent-update-notice" role="status">{assignmentNotice}</div>}
+      {data.partialErrors.length > 0 && (
+        <div className="agent-partial-note" role="status">Some Gateway reads were unavailable ({data.partialErrors.length}); affected fields are shown as unavailable rather than estimated.</div>
+      )}
+
+      {viewMode === "office" && <AgentOfficeMvp agents={data.agents} workspace={data.workspace} navigate={navigate} />}
+      {viewMode === "archive" && <>
+      <div className="agent-filterbar">
+        <label className="agent-search">
+          <span aria-hidden="true">⌕</span>
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search identity, ID, theme, or model" aria-label="Search agents" />
+        </label>
+        <label><span>Status</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+          <option value="all">All states</option>
+          <option value="working">Working</option>
+          <option value="no_active_run">No active run</option>
+          <option value="no_sessions">No visible sessions</option>
+          <option value="unknown">Unknown</option>
+        </select></label>
+        <label><span>Primary model</span><select value={modelFilter} onChange={(event) => setModelFilter(event.target.value)}>
+          <option value="all">All models</option>
+          {modelOptions.map((model) => <option value={model} key={model}>{model}</option>)}
+        </select></label>
+        <div className="agent-result-count">{filtered.length} of {data.agents.length}</div>
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="agent-no-results"><strong>{data.agents.length === 0 ? `No agents assigned to ${data.workspace.name}` : "No matching agents"}</strong><span>{data.agents.length === 0 ? `${data.summary.unassignedAgents} Gateway agents are currently unassigned. Use Manage roster to add explicit membership.` : "Change the search or filters to restore the workspace roster."}</span>{data.agents.length === 0 && <button className="btn" onClick={() => setAssignmentOpen(true)}>Manage workspace roster</button>}</div>
+      ) : (
+        <div className="agent-archive-grid">
+          {filtered.map((agent) => {
+            const state = agentStateCopy(agent.activity.state);
+            const current = agent.activity.currentSession;
+            const toolState = agent.capabilities.tools;
+            const skillState = agent.capabilities.skills;
+            return (
+              <article className={`agent-archive-card ${agent.activity.state}`} key={agent.id}>
+                <div className="agent-card-top">
+                  <AgentAvatar agent={agent} />
+                  <div className="agent-card-identity">
+                    <div className="agent-name-line"><h3>{agent.displayName}</h3>{agent.isDefault && <span>Primary</span>}</div>
+                    <code>{agent.id}</code>
+                  </div>
+                  <div className={`agent-run-state ${agent.activity.state}`} title={state.detail}><i />{state.label}</div>
+                </div>
+
+                <p className="agent-theme">{agent.identity.theme || "No identity theme reported by the Gateway."}</p>
+
+                <dl className="agent-facts">
+                  <div><dt>Julie role</dt><dd className={agent.role ? "" : "unavailable"}>{agent.role || "Not configured"}</dd></div>
+                  <div><dt>Primary model</dt><dd title={agent.model.primary || "No model reported"}>{agent.model.primary || "Not reported"}</dd></div>
+                  <div><dt>Runtime</dt><dd>{agent.runtime.id || "Not reported"}</dd></div>
+                  <div><dt>Permission</dt><dd>{agent.permissionMode || "Not reported"}</dd></div>
+                </dl>
+
+                <div className="agent-current-work">
+                  <div className="agent-current-head"><span>{current?.hasActiveRun ? "Current session" : "Latest visible session"}</span><small>{relativeAgentTime(current?.lastActivityAt ?? agent.activity.latestActivityAt)}</small></div>
+                  <strong>{current?.displayName || "No visible session"}</strong>
+                  <p>{current ? `${current.status || "Status not reported"} · ${current.model || "Model not reported"}` : state.detail}</p>
+                  <div className="agent-task-link"><span>Current task</span><strong>Not linked</strong></div>
+                </div>
+
+                <div className="agent-most-used-model"><span>Most used · 30d</span><strong title={agent.usage.models?.[0]?.model}>{agent.usage.models?.[0]?.model || (agent.usage.state === "ready" ? "No model usage reported" : "Usage unavailable")}</strong></div>
+
+                <div className="agent-stat-grid">
+                  <div><span>Sessions</span><strong>{agent.activity.visibleSessions}</strong><small>{agent.activity.activeSessions} active</small></div>
+                  <div><span>Tokens · 30d</span><strong>{agent.usage.state === "pending" ? "…" : formatCount(agent.usage.totalTokens)}</strong><small>{agent.usage.state === "ready" ? formatUsd(agent.usage.totalCost) : agent.usage.state.replace("_", " ")}</small></div>
+                  <div><span>Tools</span><strong>{formatCount(toolState.total)}</strong><small>{toolState.state === "ready" ? `${toolState.groups} groups` : "Unavailable"}</small></div>
+                  <div><span>Skills</span><strong>{skillState.state === "ready" ? `${skillState.eligible}/${skillState.total}` : "—"}</strong><small>{skillState.state === "ready" ? "eligible" : "Unavailable"}</small></div>
+                </div>
+
+                <footer className="agent-card-footer">
+                  <span>{agent.hr?.workspaceName ? `${agent.hr.workspaceName} · ` : ""}{agent.model.fallbacks.length} model {agent.model.fallbacks.length === 1 ? "fallback" : "fallbacks"} · {agent.workspaceGit ? "Git workspace" : "Workspace Git not reported"}</span>
+                  <button onClick={() => navigate(`/agents/${encodeURIComponent(agent.id)}`)}>Open profile →</button>
+                </footer>
+              </article>
+            );
+          })}
+        </div>
+      )}
+      </>}
+      {assignmentOpen && <AgentAssignmentDialog workspace={data.workspace} onClose={() => setAssignmentOpen(false)} onSaved={(result) => {
+        setAssignmentOpen(false);
+        setAssignmentNotice(`${result.summary.assigned} agents are now assigned to ${result.workspace.name}; ${result.summary.shared} are explicitly shared across workspaces.`);
+        loadAgents(true);
+      }} />}
+    </section>
+  );
+}
+
+const ONBOARDING_STEPS = ["Identity", "Assignment", "Model", "Capabilities", "Review"] as const;
+
+function onboardingIdPreview(name: string): string {
+  return name.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64) || "pending-name";
+}
+
+function AgentOnboardingPage({ navigate }: { navigate: (to: string) => void }) {
+  const [options, setOptions] = useState<AgentOnboardingOptions | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [step, setStep] = useState(0);
+  const [roleChoice, setRoleChoice] = useState("researcher");
+  const [customRole, setCustomRole] = useState("");
+  const [toolSearch, setToolSearch] = useState("");
+  const [skillSearch, setSkillSearch] = useState("");
+  const [formError, setFormError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [result, setResult] = useState<Awaited<ReturnType<typeof api.createAgent>> | null>(null);
+  const [form, setForm] = useState<AgentOnboardingInput>({
+    name: "",
+    role: "Researcher",
+    personality: "",
+    emoji: "🔎",
+    model: "",
+    scheduleMode: "manual",
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+    workspaceId: null,
+    requestedTools: [],
+    requestedSkills: [],
+    confirmed: false,
+  });
+
+  const loadOptions = useCallback(async (refresh = false) => {
+    setLoading(true);
+    setLoadError("");
+    try {
+      const data = await api.agentOnboardingOptions(refresh);
+      setOptions(data);
+      setForm((current) => ({
+        ...current,
+        model: current.model || data.defaultModel || data.models.find((model) => model.available)?.id || "",
+        workspaceId: current.workspaceId ?? data.workspaces[0]?.id ?? null,
+      }));
+    } catch (requestError: any) {
+      setLoadError(requestError?.message ?? "Could not load onboarding options.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { loadOptions(); }, [loadOptions]);
+
+  if (loading && !options) return <PageState kind="loading" title="Opening HR onboarding" detail="Reading live models, tools, skills, agent IDs, and Julie workspaces." />;
+  if (loadError && !options) return <PageState kind="error" title="Onboarding unavailable" detail={loadError} onRetry={() => loadOptions(true)} />;
+  if (!options) return null;
+
+  const selectedRole = roleChoice === "custom" ? customRole.trim() : options.roles.find((role) => role.id === roleChoice)?.label || "";
+  const selectedModel = options.models.find((model) => model.id === form.model);
+  const selectedWorkspace = options.workspaces.find((workspace) => workspace.id === form.workspaceId);
+  const selectedSchedule = options.schedules.find((schedule) => schedule.id === form.scheduleMode);
+  const toolNeedle = toolSearch.trim().toLowerCase();
+  const skillNeedle = skillSearch.trim().toLowerCase();
+  const visibleTools = options.tools.filter((tool) => !toolNeedle || [tool.id, tool.name, tool.group, tool.description].some((value) => value?.toLowerCase().includes(toolNeedle)));
+  const visibleSkills = options.skills.filter((skill) => !skillNeedle || [skill.id, skill.name, skill.description].some((value) => value?.toLowerCase().includes(skillNeedle)));
+
+  const update = <K extends keyof AgentOnboardingInput>(key: K, value: AgentOnboardingInput[K]) => setForm((current) => ({ ...current, [key]: value }));
+  const toggleRequest = (key: "requestedTools" | "requestedSkills", id: string) => {
+    setForm((current) => {
+      const values = current[key];
+      return { ...current, [key]: values.includes(id) ? values.filter((item) => item !== id) : values.length < 30 ? [...values, id] : values };
+    });
+  };
+
+  const validateStep = (): string => {
+    if (step === 0) {
+      if (!form.name.trim()) return "Enter an agent name.";
+      if (!selectedRole) return "Select or enter a role.";
+      if (options.existingAgentIds.includes(onboardingIdPreview(form.name))) return "An agent with this canonical ID already exists.";
+    }
+    if (step === 1 && !form.timezone.trim()) return "Enter an IANA timezone.";
+    if (step === 2 && (!selectedModel || !selectedModel.available)) return "Choose a model currently reported available by the Gateway catalog.";
+    if (step === 4 && !form.confirmed) return "Confirm the reviewed creation plan.";
+    return "";
+  };
+
+  const next = () => {
+    const error = validateStep();
+    if (error) { setFormError(error); return; }
+    setFormError("");
+    setStep((current) => Math.min(ONBOARDING_STEPS.length - 1, current + 1));
+  };
+
+  const submit = async () => {
+    const error = validateStep();
+    if (error || submitting) { setFormError(error); return; }
+    setSubmitting(true);
+    setFormError("");
+    try {
+      setResult(await api.createAgent({ ...form, role: selectedRole }));
+    } catch (requestError: any) {
+      setFormError(requestError?.message ?? "The Gateway did not create this agent.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (result) return (
+    <section className="onboarding-result">
+      <div className="onboarding-result-orb" aria-hidden="true">{form.emoji || "◇"}</div>
+      <div className="chat-eyebrow">Onboarding complete</div>
+      <h2>{result.agent.name}</h2>
+      <code>{result.agent.id}</code>
+      <p>The Gateway confirmed agent creation. Julie recorded the reviewed HR plan and attempted the guarded SOUL.md write.</p>
+      <div className="onboarding-receipts">
+        <div className="ok"><span>Gateway agent</span><strong>Created</strong></div>
+        <div className={result.applied.profileSaved ? "ok" : "warn"}><span>Julie HR profile</span><strong>{result.applied.profileSaved ? "Saved" : "Needs attention"}</strong></div>
+        <div className={result.applied.soulSaved ? "ok" : "warn"}><span>SOUL.md</span><strong>{result.applied.soulSaved ? "Saved with hash guard" : "Needs attention"}</strong></div>
+        <div><span>Gateway capability policy</span><strong>Unchanged</strong></div>
+      </div>
+      {result.warnings.length > 0 && <div className="agent-partial-note">{result.warnings.join(" ")}</div>}
+      <div className="coming-soon-actions">
+        <button className="btn" onClick={() => navigate(`/agents/${encodeURIComponent(result.agent.id)}`)}>Open agent profile</button>
+        <button className="btn-secondary" onClick={() => navigate("/agents")}>Agent archive</button>
+      </div>
+    </section>
+  );
+
+  return (
+    <section className="agent-onboarding-page">
+      <header className="onboarding-head">
+        <button className="agent-back" onClick={() => navigate("/agents")}>← Agent archive</button>
+        <div className="onboarding-title-row">
+          <div><div className="chat-eyebrow">HR Department</div><h2>Agent onboarding</h2><p>Create a real OpenClaw agent and record Julie-owned assignment context.</p></div>
+          <span><i className="hv-dot on" /> agents.create available</span>
+        </div>
+      </header>
+
+      <div className="onboarding-stepper">
+        {ONBOARDING_STEPS.map((label, index) => <button key={label} className={`${index === step ? "active" : ""}${index < step ? " complete" : ""}`} onClick={() => index < step && setStep(index)}><i>{index < step ? "✓" : index + 1}</i><span>{label}</span></button>)}
+      </div>
+
+      <div className="onboarding-shell">
+        <aside className="onboarding-brief">
+          <div className="onboarding-avatar-preview"><span>{form.emoji || "◇"}</span><i /></div>
+          <h3>{form.name || "New teammate"}</h3>
+          <code>{onboardingIdPreview(form.name)}</code>
+          <p>{selectedRole || "Choose a role"}</p>
+          <dl>
+            <div><dt>Model</dt><dd>{selectedModel?.name || "Not selected"}</dd></div>
+            <div><dt>Workspace</dt><dd>{selectedWorkspace?.name || "Unassigned"}</dd></div>
+            <div><dt>Schedule</dt><dd>{selectedSchedule?.label || "Not selected"}</dd></div>
+            <div><dt>Requests</dt><dd>{form.requestedTools.length} tools · {form.requestedSkills.length} skills</dd></div>
+          </dl>
+        </aside>
+
+        <div className="onboarding-form-card">
+          {step === 0 && <div className="onboarding-step-content">
+            <div className="onboarding-step-copy"><span>01 · Identity</span><h3>Who is joining the team?</h3><p>Name and emoji are applied by OpenClaw. Role and personality become Julie HR context and an owner-reviewed SOUL.md.</p></div>
+            <div className="onboarding-two-col">
+              <label><span>Agent name</span><input autoFocus maxLength={100} value={form.name} onChange={(event) => update("name", event.target.value)} placeholder="e.g. Product Researcher" /></label>
+              <label><span>Visual marker</span><input maxLength={20} value={form.emoji} onChange={(event) => update("emoji", event.target.value)} placeholder="◇" /></label>
+            </div>
+            <label><span>Julie role</span><select value={roleChoice} onChange={(event) => setRoleChoice(event.target.value)}>{options.roles.map((role) => <option value={role.id} key={role.id}>{role.label}</option>)}</select></label>
+            {roleChoice === "custom" && <label><span>Custom role title</span><input maxLength={100} value={customRole} onChange={(event) => setCustomRole(event.target.value)} placeholder="e.g. Product Strategist" /></label>}
+            <div className="role-description">{options.roles.find((role) => role.id === roleChoice)?.description}</div>
+            <label><span>Personality & working style</span><textarea maxLength={2000} rows={5} value={form.personality} onChange={(event) => update("personality", event.target.value)} placeholder="Describe communication style, priorities, and how this agent should approach work. Never enter credentials." /></label>
+          </div>}
+
+          {step === 1 && <div className="onboarding-step-content">
+            <div className="onboarding-step-copy"><span>02 · Assignment</span><h3>Where and when does this agent belong?</h3><p>These are Julie-owned assignment facts. They do not grant autonomous execution or change OpenClaw routing.</p></div>
+            <label><span>Julie workspace</span><select value={form.workspaceId ?? ""} onChange={(event) => update("workspaceId", event.target.value ? Number(event.target.value) : null)}><option value="">Unassigned</option>{options.workspaces.map((workspace) => <option value={workspace.id} key={workspace.id}>{workspace.name}</option>)}</select></label>
+            <div className="onboarding-choice-grid">{options.schedules.map((schedule) => <button key={schedule.id} className={form.scheduleMode === schedule.id ? "selected" : ""} onClick={() => update("scheduleMode", schedule.id)}><strong>{schedule.label}</strong><span>{schedule.description}</span></button>)}</div>
+            <label><span>IANA timezone</span><input value={form.timezone} onChange={(event) => update("timezone", event.target.value)} placeholder="UTC" /></label>
+            <div className="onboarding-policy-note">Schedule is recorded context only. Automation enforcement is tracked separately and is not implied here.</div>
+          </div>}
+
+          {step === 2 && <div className="onboarding-step-content">
+            <div className="onboarding-step-copy"><span>03 · Model</span><h3>Select the primary model</h3><p>Only models currently returned by the configured Gateway catalog can be selected. Catalog availability is not a live reachability probe.</p></div>
+            <div className="onboarding-model-list">{options.models.filter((model) => model.available).map((model) => <button key={model.id} className={form.model === model.id ? "selected" : ""} onClick={() => update("model", model.id)}><div><strong>{model.name}</strong><code>{model.id}</code></div><span>{model.contextWindow ? `${formatCount(model.contextWindow)} context` : "Context not reported"}{model.reasoning ? " · reasoning" : ""}</span></button>)}</div>
+          </div>}
+
+          {step === 3 && <div className="onboarding-step-content capabilities-step">
+            <div className="onboarding-step-copy"><span>04 · Capability requests</span><h3>Record the onboarding plan</h3><p>{options.policyNote}</p></div>
+            <div className="onboarding-cap-tabs">
+              <section><div className="onboarding-cap-head"><div><h4>Tools</h4><span>{form.requestedTools.length} requested</span></div><input value={toolSearch} onChange={(event) => setToolSearch(event.target.value)} placeholder="Search tools" /></div><div className="onboarding-check-list">{visibleTools.map((tool) => <label key={tool.id}><input type="checkbox" checked={form.requestedTools.includes(tool.id)} onChange={() => toggleRequest("requestedTools", tool.id)} /><span><strong>{tool.name}</strong><small>{tool.group || tool.id}</small></span></label>)}</div></section>
+              <section><div className="onboarding-cap-head"><div><h4>Skills</h4><span>{form.requestedSkills.length} requested</span></div><input value={skillSearch} onChange={(event) => setSkillSearch(event.target.value)} placeholder="Search skills" /></div><div className="onboarding-check-list">{visibleSkills.map((skill) => <label className={!skill.eligible ? "disabled" : ""} key={skill.id} title={skill.reason || "Eligible"}><input type="checkbox" disabled={!skill.eligible} checked={form.requestedSkills.includes(skill.id)} onChange={() => toggleRequest("requestedSkills", skill.id)} /><span><strong>{skill.emoji} {skill.name}</strong><small>{skill.eligible ? "Eligible" : skill.reason}</small></span></label>)}</div></section>
+            </div>
+            <div className="onboarding-policy-note warn">Requests are stored for owner review. Gateway tool and skill policy remains unchanged after creation.</div>
+          </div>}
+
+          {step === 4 && <div className="onboarding-step-content review-step">
+            <div className="onboarding-step-copy"><span>05 · Review</span><h3>Approve the creation plan</h3><p>One confirmed action creates the OpenClaw agent, records Julie HR metadata, and writes the reviewed SOUL with a hash precondition.</p></div>
+            <div className="onboarding-review-grid">
+              <section><h4>Applied to OpenClaw</h4><div><span>Name / canonical ID</span><strong>{form.name} / {onboardingIdPreview(form.name)}</strong></div><div><span>Primary model</span><strong>{form.model}</strong></div><div><span>Emoji</span><strong>{form.emoji || "None"}</strong></div><div><span>SOUL.md</span><strong>Guarded write after creation</strong></div></section>
+              <section><h4>Recorded by Julie</h4><div><span>Role</span><strong>{selectedRole}</strong></div><div><span>Workspace</span><strong>{selectedWorkspace?.name || "Unassigned"}</strong></div><div><span>Schedule</span><strong>{selectedSchedule?.label} · {form.timezone}</strong></div><div><span>Capability requests</span><strong>{form.requestedTools.length} tools · {form.requestedSkills.length} skills</strong></div></section>
+            </div>
+            <div className="onboarding-review-warning"><strong>Not changed by this action</strong><span>Gateway tool/skill permissions, autonomous schedules, channel routing, credentials, and spending authority.</span></div>
+            <label className="onboarding-confirm"><input type="checkbox" checked={form.confirmed} onChange={(event) => update("confirmed", event.target.checked)} /><span>I reviewed this plan and authorize creation of the real Gateway agent.</span></label>
+          </div>}
+
+          {formError && <div className="chat-alert" role="alert">{formError}</div>}
+          <footer className="onboarding-actions">
+            <button className="btn-secondary" onClick={() => step === 0 ? navigate("/agents") : (setFormError(""), setStep((current) => current - 1))}>{step === 0 ? "Cancel" : "Back"}</button>
+            <span>Step {step + 1} of {ONBOARDING_STEPS.length}</span>
+            {step < ONBOARDING_STEPS.length - 1
+              ? <button className="btn" onClick={next}>Continue</button>
+              : <button className="btn" onClick={submit} disabled={submitting || !form.confirmed}>{submitting ? "Creating agent…" : "Create real agent"}</button>}
+          </footer>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+type AgentDetailTab = "overview" | "activity" | "chat" | "capabilities";
+
+function detailTabFromHash(): AgentDetailTab {
+  const value = window.location.hash.replace(/^#/, "");
+  return value === "activity" || value === "chat" || value === "capabilities" ? value : "overview";
+}
+
+function AgentDetailAvatar({ agent }: { agent: AgentDetailResponse["agent"] }) {
+  const [fallbackFailed, setFallbackFailed] = useState(false);
+  if (agent.identity.avatar) return <img className="agent-detail-avatar" src={agent.identity.avatar} alt="" />;
+  const initials = agent.displayName.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase()).join("") || agent.id.slice(0, 2).toUpperCase();
+  if (!fallbackFailed) return <img className="agent-detail-avatar avatar-svg-fallback" src={api.agentAvatarFallbackUrl(agent.id)} alt="" onError={() => setFallbackFailed(true)} />;
+  return <div className="agent-detail-avatar fallback" aria-hidden="true">
+    <span>{agent.identity.emoji || agent.identity.effectiveAvatarLabel || initials}</span>
+    <i className="avatar-scan" /><i className="avatar-base" />
+  </div>;
+}
+
+function normalizedAvatarNotes(value: string): string {
+  return value.replace(/[\0\r\n]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 500);
+}
+
+function AgentAvatarStudioDialog({ agent, onClose, onApplied }: {
+  agent: AgentDetailResponse["agent"];
+  onClose: () => void;
+  onApplied: (detail: AgentDetailResponse, notice: string) => void;
+}) {
+  const [studio, setStudio] = useState<AgentAvatarStudioResponse | null>(null);
+  const [preview, setPreview] = useState<AgentAvatarPreview | null>(null);
+  const [direction, setDirection] = useState<AgentAvatarDirection>("synthetic_hologram");
+  const [ownerNotes, setOwnerNotes] = useState("");
+  const [providerId, setProviderId] = useState("");
+  const [modelId, setModelId] = useState("");
+  const [selectedAsset, setSelectedAsset] = useState<AgentAvatarAsset | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [previewing, setPreviewing] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [applying, setApplying] = useState(false);
+  const [costAcknowledged, setCostAcknowledged] = useState(false);
+  const [generationConfirmed, setGenerationConfirmed] = useState(false);
+  const [applyConfirmed, setApplyConfirmed] = useState(false);
+  const [imageUrl, setImageUrl] = useState("");
+  const [remotePreviewUrl, setRemotePreviewUrl] = useState("");
+  const [urlApplyConfirmed, setUrlApplyConfirmed] = useState(false);
+  const [importingImage, setImportingImage] = useState(false);
+  const [modelUrl, setModelUrl] = useState("");
+  const [modelBusy, setModelBusy] = useState(false);
+  const [resultNote, setResultNote] = useState("");
+  const [error, setError] = useState("");
+
+  const load = useCallback(async (refresh = false) => {
+    setLoading(true);
+    setError("");
+    try {
+      const result = await api.agentAvatarStudio(agent.id, refresh);
+      setStudio(result);
+      setPreview(result.preview);
+      setDirection(result.preview.direction);
+      setOwnerNotes(result.preview.ownerNotes);
+      setSelectedAsset(result.assets[0] ?? null);
+      const configured = result.providers.filter((provider) => provider.configured);
+      const provider = configured[0];
+      setProviderId(provider?.id ?? "");
+      setModelId(provider?.models.find((model) => model.isDefault)?.id ?? provider?.models[0]?.id ?? "");
+    } catch (requestError: any) {
+      setError(requestError?.message ?? "Could not read image-generation readiness.");
+    } finally {
+      setLoading(false);
+    }
+  }, [agent.id]);
+
+  useEffect(() => { load(); }, [load]);
+  const busy = loading || previewing || generating || applying || importingImage || modelBusy;
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape" && !busy) onClose(); };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [busy, onClose]);
+
+  const configuredProviders = studio?.providers.filter((provider) => provider.configured) ?? [];
+  const unavailableProviders = studio?.providers.filter((provider) => !provider.configured) ?? [];
+  const selectedProvider = configuredProviders.find((provider) => provider.id === providerId) ?? null;
+  const selectedModel = selectedProvider?.models.find((model) => model.id === modelId) ?? null;
+  const previewStale = !preview || preview.direction !== direction || preview.ownerNotes !== normalizedAvatarNotes(ownerNotes);
+  const previewImage = remotePreviewUrl || selectedAsset?.url || agent.identity.avatar || studio?.fallback.url || api.agentAvatarFallbackUrl(agent.id);
+
+  const changeProvider = (nextId: string) => {
+    setProviderId(nextId);
+    const provider = configuredProviders.find((entry) => entry.id === nextId);
+    setModelId(provider?.models.find((model) => model.isDefault)?.id ?? provider?.models[0]?.id ?? "");
+    setCostAcknowledged(false);
+    setGenerationConfirmed(false);
+  };
+
+  const refreshPreview = async () => {
+    if (previewing) return;
+    setPreviewing(true);
+    setError("");
+    setResultNote("");
+    try {
+      const result = await api.previewAgentAvatar(agent.id, { direction, ownerNotes });
+      setPreview(result.preview);
+      setOwnerNotes(result.preview.ownerNotes);
+      setCostAcknowledged(false);
+      setGenerationConfirmed(false);
+    } catch (requestError: any) {
+      setError(requestError?.message ?? "Could not rebuild the avatar prompt.");
+    } finally {
+      setPreviewing(false);
+    }
+  };
+
+  const generate = async () => {
+    if (!preview || !selectedProvider || !selectedModel || previewStale || !costAcknowledged || !generationConfirmed || generating) return;
+    setGenerating(true);
+    setError("");
+    setResultNote("One bounded Gateway image-generation call is running. The image will be stored locally but not applied automatically.");
+    try {
+      const result = await api.generateAgentAvatar(agent.id, {
+        direction,
+        ownerNotes,
+        promptHash: preview.promptHash,
+        provider: selectedProvider.id,
+        model: selectedModel.id,
+        confirmed: true,
+        costAcknowledged: true,
+      });
+      setSelectedAsset(result.asset);
+      setStudio((current) => current ? { ...current, assets: [result.asset, ...current.assets.filter((asset) => asset.id !== result.asset.id)] } : current);
+      setApplyConfirmed(false);
+      setResultNote(`Image stored locally and not yet applied. ${result.disclosure}`);
+    } catch (requestError: any) {
+      setResultNote("");
+      setError(requestError?.message ?? "The Gateway did not return a generated avatar asset.");
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const apply = async () => {
+    if (!selectedAsset || !selectedAsset.canApply || !applyConfirmed || applying) return;
+    setApplying(true);
+    setError("");
+    try {
+      const result = await api.applyAgentAvatar(agent.id, selectedAsset.id);
+      const detail = await api.agentDetail(agent.id, true);
+      onApplied(detail, `Reviewed avatar #${result.asset.id} was applied through OpenClaw and remains stored privately in Julie.`);
+    } catch (requestError: any) {
+      setError(requestError?.message ?? "The generated image was not applied to the Gateway identity.");
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  const importImage = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file || importingImage) return;
+    if (!/^image\/(?:png|jpeg|webp)$/i.test(file.type)) { setError("Choose a PNG, JPEG, or WebP image."); return; }
+    setImportingImage(true);
+    setError("");
+    setResultNote("Downscaling the selected image locally; it will be stored but not applied.");
+    try {
+      const dataUrl = await downscaleImage(file, 512);
+      const result = await api.importAgentAvatarImage(agent.id, dataUrl);
+      setSelectedAsset(result.asset);
+      setRemotePreviewUrl("");
+      setStudio((current) => current ? { ...current, assets: [result.asset, ...current.assets.filter((asset) => asset.id !== result.asset.id)] } : current);
+      setApplyConfirmed(false);
+      setResultNote(result.disclosure);
+    } catch (requestError: any) {
+      setResultNote("");
+      setError(requestError?.message ?? "Could not store the uploaded image.");
+    } finally {
+      setImportingImage(false);
+    }
+  };
+
+  const previewRemoteImage = () => {
+    try {
+      const url = new URL(imageUrl.trim());
+      if (url.protocol !== "https:") throw new Error("Use a public HTTPS image URL.");
+      setSelectedAsset(null);
+      setRemotePreviewUrl(url.toString());
+      setUrlApplyConfirmed(false);
+      setError("");
+      setResultNote("Remote preview is loaded directly by this browser. It has not been fetched, copied, or applied by Julie.");
+    } catch (requestError: any) {
+      setError(requestError?.message ?? "Use a valid public HTTPS image URL.");
+    }
+  };
+
+  const applyRemoteImage = async () => {
+    if (!remotePreviewUrl || !urlApplyConfirmed || applying) return;
+    setApplying(true);
+    setError("");
+    try {
+      const result = await api.applyAgentAvatarUrl(agent.id, remotePreviewUrl);
+      const detail = await api.agentDetail(agent.id, true);
+      onApplied(detail, `Owner-reviewed HTTPS avatar from ${result.host} was applied. ${result.disclosure}`);
+    } catch (requestError: any) {
+      setError(requestError?.message ?? "The remote image URL was not applied.");
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  const importModel = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file || modelBusy) return;
+    if (!file.name.toLowerCase().endsWith(".glb")) { setError("Choose a GLB 2.0 model file."); return; }
+    if (file.size > 8 * 1024 * 1024) { setError("GLB model must be 8 MB or smaller."); return; }
+    setModelBusy(true);
+    setError("");
+    try {
+      const result = await api.uploadAgentAvatarModel(agent.id, file);
+      setStudio((current) => current ? { ...current, models3d: [result.model, ...current.models3d] } : current);
+      setResultNote(result.boundary);
+    } catch (requestError: any) {
+      setError(requestError?.message ?? "Could not store the GLB model.");
+    } finally {
+      setModelBusy(false);
+    }
+  };
+
+  const addModelUrl = async () => {
+    if (!modelUrl.trim() || modelBusy) return;
+    setModelBusy(true);
+    setError("");
+    try {
+      const result = await api.addAgentAvatarModelUrl(agent.id, modelUrl.trim());
+      setStudio((current) => current ? { ...current, models3d: [result.model, ...current.models3d] } : current);
+      setModelUrl("");
+      setResultNote(result.boundary);
+    } catch (requestError: any) {
+      setError(requestError?.message ?? "Could not store the GLB URL.");
+    } finally {
+      setModelBusy(false);
+    }
+  };
+
+  return (
+    <div className="dialog-backdrop avatar-studio-backdrop" onMouseDown={() => !busy && onClose()}>
+      <section className="avatar-studio-dialog" role="dialog" aria-modal="true" aria-labelledby="avatar-studio-title" onMouseDown={(event) => event.stopPropagation()}>
+        <header className="avatar-studio-head">
+          <div><div className="chat-eyebrow">Personality-derived avatar pipeline</div><h2 id="avatar-studio-title">Avatar Studio · {agent.displayName}</h2><p>Preview is free. Generation and Gateway application are separate, owner-confirmed actions.</p></div>
+          <button className="dialog-close" onClick={onClose} disabled={busy} aria-label="Close">×</button>
+        </header>
+
+        {loading && !studio ? <PageState kind="loading" title="Inspecting image readiness" detail="Reading the allowlisted OpenClaw image catalog and safe identity sources." /> : (
+          <div className="avatar-studio-body">
+            <aside className="avatar-studio-preview">
+              <div className="avatar-studio-image-wrap">
+                <img src={previewImage} alt={`Avatar preview for ${agent.displayName}`} />
+                <span>{remotePreviewUrl ? "Remote URL preview" : selectedAsset ? selectedAsset.applied ? "Applied asset" : "Stored candidate" : agent.identity.avatar ? "Current Gateway avatar" : "Local SVG fallback"}</span>
+              </div>
+              {studio && <div className="avatar-readiness-card">
+                <div><i className={studio.readiness.verifiedUsableProviderCount > 0 ? "ready" : ""} /><span>image_generate</span><strong>{studio.readiness.available ? `${studio.readiness.configuredProviderCount} configured · ${studio.readiness.verifiedUsableProviderCount} verified` : "Unavailable"}</strong></div>
+                <p>{studio.readiness.policy}</p>
+              </div>}
+              {studio && studio.assets.length > 0 && <div className="avatar-asset-history"><span>Local candidates</span><div>{studio.assets.map((asset) => <button key={asset.id} className={selectedAsset?.id === asset.id && !remotePreviewUrl ? "active" : ""} onClick={() => { setSelectedAsset(asset); setRemotePreviewUrl(""); setApplyConfirmed(false); }}><img src={asset.url} alt="" /><i>{asset.applied ? "Applied" : `#${asset.id}`}</i></button>)}</div></div>}
+            </aside>
+
+            <div className="avatar-studio-controls">
+              <section className="avatar-studio-section">
+                <div className="avatar-studio-section-head"><div><span>1 · Visual direction</span><h3>Non-demographic by design</h3></div><b>No billed call</b></div>
+                <div className="avatar-direction-grid">{studio?.directions.map((entry) => <button key={entry.id} className={direction === entry.id ? "selected" : ""} onClick={() => { setDirection(entry.id); setGenerationConfirmed(false); }}><strong>{entry.label}</strong><span>{entry.description}</span></button>)}</div>
+                <label className="avatar-owner-notes"><span>Explicit visual notes · optional</span><textarea rows={3} maxLength={500} value={ownerNotes} onChange={(event) => { setOwnerNotes(event.target.value); setGenerationConfirmed(false); }} placeholder="Motifs, materials, color accents, or non-human symbols. Never enter credentials." /></label>
+                <button className="btn-secondary avatar-preview-button" onClick={refreshPreview} disabled={previewing}>{previewing ? "Rebuilding…" : previewStale ? "Update prompt preview" : "Prompt preview current"}</button>
+              </section>
+
+              <section className="avatar-studio-section">
+                <div className="avatar-studio-section-head"><div><span>2 · Prompt review</span><h3>Safe source projection</h3></div><b>{preview?.sources.length ?? 0} sources</b></div>
+                <textarea className="avatar-prompt-preview" readOnly rows={10} value={preview?.prompt ?? ""} />
+                <div className="avatar-source-row">{preview?.sources.map((source) => <span key={source}>{source}</span>)}</div>
+                <div className="avatar-guardrail"><strong>Appearance guardrail</strong><span>{preview?.guardrail || "No appearance inference is available."}</span></div>
+              </section>
+
+              <section className="avatar-studio-section">
+                <div className="avatar-studio-section-head"><div><span>3 · Provider & cost</span><h3>One bounded image</h3></div><b>{selectedModel ? "1 image" : "Unavailable"}</b></div>
+                {configuredProviders.length ? <div className="avatar-provider-grid">
+                  <label><span>Configured provider</span><select value={providerId} onChange={(event) => changeProvider(event.target.value)}>{configuredProviders.map((provider) => <option value={provider.id} key={provider.id}>{provider.label}{provider.runtimeState === "last_attempt_failed" ? " · last attempt failed" : provider.runtimeState === "generation_succeeded" ? " · verified" : " · unverified"}</option>)}</select></label>
+                  <label><span>Model</span><select value={modelId} onChange={(event) => { setModelId(event.target.value); setCostAcknowledged(false); setGenerationConfirmed(false); }}>{selectedProvider?.models.map((model) => <option value={model.id} key={model.id}>{model.id}{model.isDefault ? " · default" : ""}</option>)}</select></label>
+                </div> : <div className="detail-empty">No configured image provider is reported by OpenClaw. The SVG fallback remains available without billing.</div>}
+                {unavailableProviders.map((provider) => <div className="avatar-provider-unavailable" key={provider.id}><div><strong>{provider.label}</strong><span>{provider.runtimeState.replaceAll("_", " ")}</span></div><p>{provider.unavailableReason || "No image-generation route is available."}</p></div>)}
+                {selectedModel && <div className="avatar-cost-disclosure">
+                  <div><span>Pre-call estimate</span><strong>Not reported</strong></div>
+                  <p>{selectedModel.cost.disclosure}</p>
+                  {selectedProvider?.runtimeState === "last_attempt_failed" && <p><strong>Runtime note:</strong> the most recent generation attempt through this provider failed before Julie received an asset.</p>}
+                  <small>Bounded request: count 1 · square · 1K/1024 · low quality when supported · no automatic retry by Julie.</small>
+                  {selectedModel.cost.pricingUrl && <a href={selectedModel.cost.pricingUrl} target="_blank" rel="noreferrer">Provider pricing reference ↗</a>}
+                </div>}
+                <label className="avatar-review-check"><input type="checkbox" checked={costAcknowledged} onChange={(event) => setCostAcknowledged(event.target.checked)} /><span>I understand the exact charge is unavailable and this call may consume provider quota or billed usage.</span></label>
+                <label className="avatar-review-check"><input type="checkbox" checked={generationConfirmed} onChange={(event) => setGenerationConfirmed(event.target.checked)} /><span>I reviewed the current prompt, provider, and model and authorize exactly one generated image.</span></label>
+                <button className="btn avatar-generate-button" onClick={generate} disabled={!selectedModel || previewStale || !costAcknowledged || !generationConfirmed || generating}>{generating ? "Generating one image…" : "Generate one candidate"}</button>
+              </section>
+
+              <section className="avatar-studio-section avatar-owner-assets">
+                <div className="avatar-studio-section-head"><div><span>4 · Owner-supplied assets</span><h3>Upload, HTTPS image, or GLB model</h3></div><b>No generation call</b></div>
+                <div className="avatar-owner-asset-grid">
+                  <article>
+                    <h4>Upload image</h4><p>PNG, JPEG, or WebP is downscaled to a private 512px JPEG in this browser, then stored as a candidate. It is not applied automatically.</p>
+                    <label className="btn-secondary avatar-file-button">{importingImage ? "Importing…" : "Choose image"}<input type="file" accept="image/png,image/jpeg,image/webp" onChange={importImage} disabled={importingImage} /></label>
+                  </article>
+                  <article>
+                    <h4>HTTPS image URL</h4><p>Julie does not fetch or verify it. Previewing contacts the remote host from this browser; applying stores the URL in OpenClaw identity.</p>
+                    <div className="avatar-url-row"><input value={imageUrl} onChange={(event) => { setImageUrl(event.target.value); setUrlApplyConfirmed(false); }} placeholder="https://…/avatar.png" /><button className="btn-secondary" onClick={previewRemoteImage}>Preview</button></div>
+                    {remotePreviewUrl && <><label className="avatar-review-check"><input type="checkbox" checked={urlApplyConfirmed} onChange={(event) => setUrlApplyConfirmed(event.target.checked)} /><span>I reviewed this exact remote image and accept that clients may request its host.</span></label><button className="btn avatar-apply-button" onClick={applyRemoteImage} disabled={!urlApplyConfirmed || applying}>{applying ? "Applying…" : "Apply HTTPS image URL"}</button></>}
+                  </article>
+                  <article>
+                    <h4>3D companion model</h4><p>Store a GLB 2.0 file (max 8 MB) or public HTTPS `.glb` reference. It remains Julie-only: no viewer is configured and OpenClaw cannot use it as the image avatar.</p>
+                    <label className="btn-secondary avatar-file-button">{modelBusy ? "Storing…" : "Choose GLB"}<input type="file" accept=".glb,model/gltf-binary" onChange={importModel} disabled={modelBusy} /></label>
+                    <div className="avatar-url-row"><input value={modelUrl} onChange={(event) => setModelUrl(event.target.value)} placeholder="https://…/avatar.glb" /><button className="btn-secondary" onClick={addModelUrl} disabled={modelBusy || !modelUrl.trim()}>Store URL</button></div>
+                  </article>
+                </div>
+                {studio && <div className="avatar-model-boundary">{studio.model3dBoundary}</div>}
+                {studio && studio.models3d.length > 0 && <div className="avatar-model-list">{studio.models3d.map((model) => <a key={model.id} href={model.url} target={model.sourceType === "https_url" ? "_blank" : undefined} rel="noreferrer" download={model.sourceType === "upload" ? `agent-avatar-${model.id}.glb` : undefined}><strong>GLB #{model.id}</strong><span>{model.sourceType === "upload" ? `${formatCount(model.sizeBytes)} bytes · private file` : "HTTPS reference"}</span><i>Viewer unavailable</i></a>)}</div>}
+              </section>
+
+              {selectedAsset && <section className="avatar-studio-section avatar-apply-section">
+                <div className="avatar-studio-section-head"><div><span>5 · Owner review</span><h3>Apply stored image candidate</h3></div><b>{selectedAsset.applied ? "Applied" : "Not applied"}</b></div>
+                <dl><div><dt>Provider / model</dt><dd>{selectedAsset.provider} / {selectedAsset.model}</dd></div><div><dt>Stored size</dt><dd>{formatCount(selectedAsset.sizeBytes)} bytes</dd></div><div><dt>Reported cost</dt><dd>{selectedAsset.cost.state === "reported" ? formatUsd(selectedAsset.cost.usd) : "Not reported"}</dd></div><div><dt>Gateway limit</dt><dd>{selectedAsset.canApply ? "Within 2 MB" : "Too large to apply"}</dd></div></dl>
+                {!selectedAsset.applied && <><label className="avatar-review-check"><input type="checkbox" checked={applyConfirmed} onChange={(event) => setApplyConfirmed(event.target.checked)} disabled={!selectedAsset.canApply} /><span>I reviewed this exact image and authorize applying it through OpenClaw agents.update.</span></label><button className="btn avatar-apply-button" onClick={apply} disabled={!selectedAsset.canApply || !applyConfirmed || applying}>{applying ? "Applying…" : "Apply reviewed avatar"}</button></>}
+              </section>}
+
+              {resultNote && <div className="agent-update-notice" role="status">{resultNote}</div>}
+              {error && <div className="chat-alert" role="alert">{error}</div>}
+            </div>
+          </div>
+        )}
+        <footer className="avatar-studio-footer"><span>Generated files stay private under Julie data. No raw SOUL, credentials, or host paths are sent to this page.</span><button className="btn-secondary" onClick={onClose} disabled={busy}>Close</button></footer>
+      </section>
     </div>
+  );
+}
+
+function EditAgentDialog({ agent, onClose, onSaved }: {
+  agent: AgentDetailResponse["agent"];
+  onClose: () => void;
+  onSaved: (detail: AgentDetailResponse, receipt: AgentUpdateResult) => void;
+}) {
+  const [options, setOptions] = useState<AgentOnboardingOptions | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [toolSearch, setToolSearch] = useState("");
+  const [skillSearch, setSkillSearch] = useState("");
+  const [form, setForm] = useState<AgentUpdateInput>({
+    name: agent.displayName,
+    role: agent.role.value || "",
+    personality: agent.hr?.personality || "",
+    emoji: agent.identity.emoji || agent.identity.effectiveAvatarLabel || "◇",
+    model: agent.model.primary || "",
+    scheduleMode: agent.hr?.scheduleMode || "manual",
+    timezone: agent.hr?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+    workspaceIds: agent.workspace.julieAssignments.map((workspace) => workspace.id),
+    requestedTools: agent.hr?.requestedTools || [],
+    requestedSkills: agent.hr?.requestedSkills || [],
+    updateSoul: true,
+    confirmed: false,
+  });
+
+  useEffect(() => {
+    api.agentOnboardingOptions().then(setOptions).catch((requestError) => setError(requestError.message)).finally(() => setLoading(false));
+  }, []);
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape" && !saving) onClose(); };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose, saving]);
+
+  const update = <K extends keyof AgentUpdateInput>(key: K, value: AgentUpdateInput[K]) => setForm((current) => ({ ...current, [key]: value }));
+  const toggle = (key: "requestedTools" | "requestedSkills", id: string) => setForm((current) => {
+    const rows = current[key];
+    return { ...current, [key]: rows.includes(id) ? rows.filter((value) => value !== id) : rows.length < 30 ? [...rows, id] : rows };
+  });
+  const save = async () => {
+    if (!form.name.trim() || !form.role.trim() || !form.model || !form.confirmed || saving) {
+      setError(!form.confirmed ? "Review confirmation is required." : "Name, Julie role, and model are required.");
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      const receipt = await api.updateAgent(agent.id, form);
+      const detail = await api.agentDetail(agent.id, true);
+      onSaved(detail, receipt);
+    } catch (requestError: any) {
+      setError(requestError?.message ?? "Agent update failed.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const toolNeedle = toolSearch.trim().toLowerCase();
+  const skillNeedle = skillSearch.trim().toLowerCase();
+  const tools = (options?.tools ?? []).filter((tool) => !toolNeedle || [tool.id, tool.name, tool.group].some((value) => value?.toLowerCase().includes(toolNeedle)));
+  const skills = (options?.skills ?? []).filter((skill) => !skillNeedle || [skill.id, skill.name].some((value) => value?.toLowerCase().includes(skillNeedle)));
+
+  return (
+    <div className="dialog-backdrop agent-edit-backdrop" onMouseDown={() => !saving && onClose()}>
+      <section className="agent-edit-dialog" role="dialog" aria-modal="true" aria-labelledby="agent-edit-title" onMouseDown={(event) => event.stopPropagation()}>
+        <header className="agent-edit-head">
+          <div><div className="chat-eyebrow">Owner edit</div><h2 id="agent-edit-title">Update {agent.displayName}</h2><p>Gateway-supported fields and Julie-owned HR context are saved to their real sources.</p></div>
+          <button className="dialog-close" onClick={onClose} disabled={saving} aria-label="Close">×</button>
+        </header>
+        {loading ? <PageState kind="loading" title="Loading editable options" detail="Reading live models, tools, skills, and workspaces." /> : (
+          <div className="agent-edit-body">
+            <section className="agent-edit-section">
+              <div className="agent-edit-section-title"><span>OpenClaw identity & model</span><small>Applied with agents.update</small></div>
+              <div className="agent-edit-grid three">
+                <label><span>Display name</span><input value={form.name} maxLength={100} onChange={(event) => update("name", event.target.value)} /></label>
+                <label><span>Emoji</span><input value={form.emoji} maxLength={20} onChange={(event) => update("emoji", event.target.value)} /></label>
+                <label><span>Primary model</span><select value={form.model} onChange={(event) => update("model", event.target.value)}>{options?.models.filter((model) => model.available).map((model) => <option value={model.id} key={model.id}>{model.name} · {model.provider}</option>)}</select></label>
+              </div>
+              <div className="agent-edit-id-note">Stable agent ID: <code>{agent.id}</code> · editing the display name does not rename the ID.</div>
+            </section>
+
+            <section className="agent-edit-section">
+              <div className="agent-edit-section-title"><span>Julie HR profile</span><small>Stored locally and shown in workspace views</small></div>
+              <div className="agent-edit-grid three">
+                <label><span>Julie role</span><input value={form.role} maxLength={100} onChange={(event) => update("role", event.target.value)} placeholder="e.g. Research Lead" /></label>
+                <label><span>Schedule</span><select value={form.scheduleMode} onChange={(event) => update("scheduleMode", event.target.value as AgentUpdateInput["scheduleMode"])}>{options?.schedules.map((schedule) => <option value={schedule.id} key={schedule.id}>{schedule.label}</option>)}</select></label>
+                <label><span>Timezone</span><input value={form.timezone} onChange={(event) => update("timezone", event.target.value)} /></label>
+              </div>
+              <div className="agent-edit-workspaces"><span>Julie workspace assignments</span><div>{options?.workspaces.map((workspace) => <label key={workspace.id}><input type="checkbox" checked={form.workspaceIds.includes(workspace.id)} onChange={() => update("workspaceIds", form.workspaceIds.includes(workspace.id) ? form.workspaceIds.filter((id) => id !== workspace.id) : [...form.workspaceIds, workspace.id])} /><b>{workspace.name}</b></label>)}</div><small>Assigning more than one workspace explicitly marks this agent as shared.</small></div>
+              <label><span>Personality & working style</span><textarea rows={4} maxLength={2000} value={form.personality} onChange={(event) => update("personality", event.target.value)} placeholder="Owner-authored working style. Never enter credentials." /></label>
+              <label className="agent-edit-soul-toggle"><input type="checkbox" checked={form.updateSoul} onChange={(event) => update("updateSoul", event.target.checked)} /><span>Append or replace Julie's marked HR section in SOUL.md using a hash guard. Existing non-Julie content is preserved.</span></label>
+            </section>
+
+            <section className="agent-edit-section">
+              <div className="agent-edit-section-title"><span>Capability requests</span><small>Requests only · Gateway policy unchanged</small></div>
+              <div className="agent-edit-cap-grid">
+                <div><input value={toolSearch} onChange={(event) => setToolSearch(event.target.value)} placeholder={`Filter tools · ${form.requestedTools.length} selected`} /><div className="onboarding-check-list">{tools.map((tool) => <label key={tool.id}><input type="checkbox" checked={form.requestedTools.includes(tool.id)} onChange={() => toggle("requestedTools", tool.id)} /><span><strong>{tool.name}</strong><small>{tool.group || tool.id}</small></span></label>)}</div></div>
+                <div><input value={skillSearch} onChange={(event) => setSkillSearch(event.target.value)} placeholder={`Filter skills · ${form.requestedSkills.length} selected`} /><div className="onboarding-check-list">{skills.map((skill) => <label key={skill.id} className={!skill.eligible ? "disabled" : ""}><input type="checkbox" disabled={!skill.eligible} checked={form.requestedSkills.includes(skill.id)} onChange={() => toggle("requestedSkills", skill.id)} /><span><strong>{skill.emoji} {skill.name}</strong><small>{skill.eligible ? "Eligible" : skill.reason}</small></span></label>)}</div></div>
+              </div>
+            </section>
+
+            <label className="onboarding-confirm agent-edit-confirm"><input type="checkbox" checked={form.confirmed} onChange={(event) => update("confirmed", event.target.checked)} /><span>I reviewed these changes and authorize the real Gateway identity/model update plus Julie HR changes.</span></label>
+            {error && <div className="chat-alert" role="alert">{error}</div>}
+          </div>
+        )}
+        <footer className="agent-edit-actions"><span>Tool/skill policy is not changed by this form.</span><div><button className="btn-secondary" onClick={onClose} disabled={saving}>Cancel</button><button className="btn" onClick={save} disabled={loading || saving || !form.confirmed}>{saving ? "Applying…" : "Apply changes"}</button></div></footer>
+      </section>
+    </div>
+  );
+}
+
+function AgentDetailPage({ agentId, navigate }: { agentId: string; navigate: (to: string) => void }) {
+  const [data, setData] = useState<AgentDetailResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState("");
+  const [tab, setTab] = useState<AgentDetailTab>(() => detailTabFromHash());
+  const [toolQuery, setToolQuery] = useState("");
+  const [skillQuery, setSkillQuery] = useState("");
+  const [skillFilter, setSkillFilter] = useState<"all" | "eligible" | "unavailable">("all");
+  const [editOpen, setEditOpen] = useState(false);
+  const [avatarStudioOpen, setAvatarStudioOpen] = useState(false);
+  const [updateNotice, setUpdateNotice] = useState("");
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null | undefined>(undefined);
+  const [agentMessages, setAgentMessages] = useState<AgentChatMessage[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState("");
+  const [historyTruncated, setHistoryTruncated] = useState(false);
+  const [agentChatInput, setAgentChatInput] = useState("");
+  const [agentChatSending, setAgentChatSending] = useState(false);
+  const [agentChatStatus, setAgentChatStatus] = useState("");
+  const agentChatLogRef = useRef<HTMLDivElement>(null);
+  const historyRequestRef = useRef(0);
+
+  const load = useCallback(async (force = false, initial = false) => {
+    if (initial) setLoading(true);
+    else setRefreshing(true);
+    setError("");
+    try {
+      setData(await api.agentDetail(agentId, force));
+    } catch (requestError: any) {
+      setError(requestError?.status === 404 ? "The Gateway does not report this agent." : requestError?.message ?? "Could not load this agent.");
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, [agentId]);
+
+  useEffect(() => { load(false, true); }, [load]);
+  useEffect(() => {
+    const onHash = () => setTab(detailTabFromHash());
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+
+  useEffect(() => {
+    if (!data || selectedSessionId !== undefined) return;
+    const first = data.agent.activity.sessions.find((session) => session.sessionId)?.sessionId ?? null;
+    setSelectedSessionId(first);
+  }, [data, selectedSessionId]);
+
+  const fetchAgentHistory = useCallback(async (sessionId: string) => {
+    const requestId = ++historyRequestRef.current;
+    setHistoryLoading(true);
+    setHistoryError("");
+    setAgentChatStatus("");
+    try {
+      const history = await api.agentHistory(agentId, sessionId);
+      if (historyRequestRef.current !== requestId) return;
+      setAgentMessages(history.messages);
+      setHistoryTruncated(history.truncated);
+    } catch (requestError: any) {
+      if (historyRequestRef.current === requestId) {
+        setAgentMessages([]);
+        setHistoryError(requestError?.message ?? "Could not load this session history.");
+      }
+    } finally {
+      if (historyRequestRef.current === requestId) setHistoryLoading(false);
+    }
+  }, [agentId]);
+
+  useEffect(() => {
+    if (tab !== "chat" || selectedSessionId === undefined) return;
+    if (selectedSessionId === null) {
+      historyRequestRef.current += 1;
+      setAgentMessages([]);
+      setHistoryError("");
+      setHistoryTruncated(false);
+      setHistoryLoading(false);
+      setAgentChatStatus("");
+      return;
+    }
+    fetchAgentHistory(selectedSessionId);
+  }, [fetchAgentHistory, selectedSessionId, tab]);
+
+  useEffect(() => {
+    agentChatLogRef.current?.scrollTo({ top: agentChatLogRef.current.scrollHeight, behavior: "smooth" });
+  }, [agentMessages, agentChatSending]);
+
+  const chooseTab = (next: AgentDetailTab) => {
+    setTab(next);
+    window.history.replaceState({}, "", `${window.location.pathname}#${next}`);
+  };
+
+  const sendToAgent = async () => {
+    const text = agentChatInput.trim();
+    if (!text || agentChatSending || selectedSessionId === undefined) return;
+    setAgentChatSending(true);
+    setHistoryError("");
+    setAgentChatStatus(selectedSessionId ? "OpenClaw accepted the request; waiting for the final reply…" : "Creating an agent-qualified session; waiting for the final reply…");
+    setAgentChatInput("");
+    try {
+      const result = await api.sendAgentMessage(agentId, text, selectedSessionId);
+      setAgentMessages(result.messages);
+      setHistoryTruncated(result.truncated);
+      if (result.session.sessionId) setSelectedSessionId(result.session.sessionId);
+      setAgentChatStatus("Completed by OpenClaw Gateway.");
+      try {
+        setData(await api.agentDetail(agentId, true));
+      } catch {
+        setAgentChatStatus("Completed by OpenClaw Gateway. Profile refresh is pending.");
+      }
+    } catch (requestError: any) {
+      setAgentChatInput(text);
+      setAgentChatStatus("");
+      setHistoryError(requestError?.message ?? "The Gateway did not complete this message.");
+    } finally {
+      setAgentChatSending(false);
+    }
+  };
+
+  if (loading && !data) return <PageState kind="loading" title="Loading agent profile" detail="Reading identity, sessions, SOUL metadata, tools, skills, commands, and usage from OpenClaw Gateway." />;
+  if (error && !data) return <PageState kind="error" title="Agent profile unavailable" detail={error} onRetry={() => load(true, true)} />;
+  if (!data) return null;
+
+  const agent = data.agent;
+  const state = agentStateCopy(agent.activity.state);
+  const usage = agent.usage;
+  const modelUsage = usage.models ?? [];
+  const maxModelTokens = Math.max(...modelUsage.map((row) => row.totalTokens), 1);
+  const toolNeedle = toolQuery.trim().toLowerCase();
+  const tools = agent.tools.items.filter((tool) => !toolNeedle || [tool.id, tool.name, tool.group, tool.description].some((value) => value?.toLowerCase().includes(toolNeedle)));
+  const skillNeedle = skillQuery.trim().toLowerCase();
+  const skills = agent.skills.items
+    .filter((skill) => skillFilter === "all" || (skillFilter === "eligible" ? skill.eligible : !skill.eligible))
+    .filter((skill) => !skillNeedle || [skill.id, skill.name, skill.description, skill.source, skill.reason].some((value) => value?.toLowerCase().includes(skillNeedle)));
+  const chatSessions = agent.activity.sessions.filter((session): session is typeof session & { sessionId: string } => Boolean(session.sessionId));
+  const selectedChatSession = selectedSessionId ? chatSessions.find((session) => session.sessionId === selectedSessionId) ?? null : null;
+
+  return (
+    <section className="agent-detail-page">
+      <button className="agent-back" onClick={() => navigate("/agents")}>← Agent archive</button>
+
+      <header className="agent-detail-hero">
+        <div className="agent-detail-aura" aria-hidden="true" />
+        <AgentDetailAvatar agent={agent} />
+        <div className="agent-detail-title">
+          <div className="agent-detail-kicker">{agent.isDefault ? "Primary OpenClaw agent" : "OpenClaw agent"}</div>
+          <div className="agent-detail-name-line"><h2>{agent.displayName}</h2><code>{agent.id}</code></div>
+          <p>{agent.identity.theme || "No identity theme reported by the Gateway."}</p>
+          <div className="agent-detail-badges">
+            <span className={`agent-run-state ${agent.activity.state}`} title={state.detail}><i />{state.label}</span>
+            <span>{agent.runtime.id || "Runtime not reported"}</span>
+            <span>{agent.permissionMode || "Permission not reported"}</span>
+          </div>
+        </div>
+        <div className="agent-detail-actions">
+          <span>Gateway snapshot<br /><strong>{new Date(data.generatedAt).toLocaleString()}</strong></span>
+          <div><button className="btn-secondary" onClick={() => load(true)} disabled={refreshing}>{refreshing ? "Refreshing…" : "Refresh"}</button><button className="btn-secondary" onClick={() => setAvatarStudioOpen(true)}>Avatar studio</button><button className="btn" onClick={() => setEditOpen(true)}>Edit profile</button></div>
+        </div>
+      </header>
+
+      {error && <div className="chat-alert" role="alert">Refresh failed; showing the previous snapshot. {error}</div>}
+      {updateNotice && <div className="agent-update-notice" role="status">{updateNotice}</div>}
+      {data.partialErrors.length > 0 && <div className="agent-partial-note">{data.partialErrors.length} profile source{data.partialErrors.length === 1 ? " is" : "s are"} unavailable. Missing fields remain explicitly unavailable.</div>}
+
+      <nav className="agent-detail-tabs" aria-label="Agent profile sections">
+        {(["overview", "activity", "chat", "capabilities"] as AgentDetailTab[]).map((item) => (
+          <button key={item} className={tab === item ? "active" : ""} onClick={() => chooseTab(item)}>{item}</button>
+        ))}
+      </nav>
+
+      {tab === "overview" && (
+        <div className="agent-detail-grid overview">
+          <section className="agent-detail-panel identity-panel">
+            <div className="agent-panel-head"><div><span>Identity</span><h3>Configured profile</h3></div><b>{agent.identity.state}</b></div>
+            <dl className="detail-definition-list">
+              <div><dt>Effective name</dt><dd>{agent.identity.effectiveName || "Not reported"}</dd></div>
+              <div><dt>Name source</dt><dd>{agent.identity.effectiveNameSource || "Not reported"}</dd></div>
+              <div><dt>Configured name</dt><dd>{agent.configuredName || "Not configured"}</dd></div>
+              <div><dt>Julie role</dt><dd className={agent.role.state === "configured" ? "" : "unavailable"}>{agent.role.value || "Not configured"}</dd></div>
+              <div><dt>Schedule</dt><dd className={agent.hr ? "" : "unavailable"}>{agent.hr ? `${agent.hr.scheduleMode.replaceAll("_", " ")} · ${agent.hr.timezone}` : "Not configured"}</dd></div>
+              <div><dt>Created via</dt><dd>{agent.provenance.createdVia || "Not reported"}</dd></div>
+              <div><dt>Created</dt><dd>{agent.provenance.createdAt ? new Date(agent.provenance.createdAt).toLocaleString() : "Not reported"}</dd></div>
+            </dl>
+          </section>
+
+          <section className="agent-detail-panel model-panel">
+            <div className="agent-panel-head"><div><span>Model routing</span><h3>Runtime configuration</h3></div><b>{agent.model.fallbacks.length} fallback{agent.model.fallbacks.length === 1 ? "" : "s"}</b></div>
+            <div className="detail-model-primary"><span>Primary</span><strong>{agent.model.primary || "Not reported"}</strong></div>
+            <div className="detail-model-list">
+              <span>Fallback chain</span>
+              {agent.model.fallbacks.length ? agent.model.fallbacks.map((model, index) => <div key={`${model}-${index}`}><i>{index + 1}</i>{model}</div>) : <p>No fallback models reported.</p>}
+            </div>
+            <dl className="detail-definition-list compact">
+              <div><dt>Utility model</dt><dd>{agent.model.utility || "Not reported"}</dd></div>
+              <div><dt>Thinking default</dt><dd>{agent.thinkingDefault || "Not reported"}</dd></div>
+              <div><dt>Runtime source</dt><dd>{agent.runtime.source || "Not reported"}</dd></div>
+            </dl>
+          </section>
+
+          <section className="agent-detail-panel soul-panel">
+            <div className="agent-panel-head"><div><span>Personality source</span><h3>{agent.soul.title || "SOUL.md"}</h3></div><b>{agent.soul.state}</b></div>
+            {agent.soul.state === "ready" ? (
+              <>
+                <blockquote>{agent.soul.excerpt || "SOUL.md is readable but contains no safe prose excerpt."}</blockquote>
+                <div className="soul-sections">{(agent.soul.sections || []).map((section) => <span key={section}>{section}</span>)}</div>
+                <p className="detail-source-note">Safe summary from {agent.soul.source} · {formatCount(agent.soul.size)} bytes · raw file content is not sent to this page.</p>
+              </>
+            ) : <div className="detail-empty">{agent.soul.state === "missing" ? "No SOUL.md file is present." : "SOUL.md could not be read from the Gateway."}</div>}
+          </section>
+
+          <section className="agent-detail-panel workspace-panel">
+            <div className="agent-panel-head"><div><span>Workspace</span><h3>Scope & bootstrap</h3></div><b>{agent.workspace.git ? "Git" : "No Git fact"}</b></div>
+            <dl className="detail-definition-list compact">
+              <div><dt>Gateway workspace</dt><dd>{agent.workspace.gatewayConfigured ? "Configured" : "Not reported"}</dd></div>
+              <div><dt>Julie assignments</dt><dd className={agent.workspace.assignmentState === "configured" ? "" : "unavailable"}>{agent.workspace.julieAssignments.map((item) => item.name).join(", ") || "Not configured"}</dd></div>
+              <div><dt>Capability requests</dt><dd>{agent.hr ? `${agent.hr.requestedTools.length} tools · ${agent.hr.requestedSkills.length} skills` : "None recorded"}</dd></div>
+            </dl>
+            <div className="bootstrap-files">
+              <span>Bootstrap files</span>
+              {agent.workspace.filesState === "unavailable" ? <p>File inventory unavailable.</p> : agent.workspace.bootstrapFiles.map((file) => (
+                <div key={file.name}><strong>{file.name}</strong><small>{file.missing ? "Missing" : `${formatCount(file.size)} bytes`}</small></div>
+              ))}
+            </div>
+          </section>
+        </div>
+      )}
+
+      {tab === "activity" && (
+        <div className="agent-detail-stack">
+          <div className="detail-usage-grid">
+            <div><span>Input · 30d</span><strong>{usage.state === "pending" ? "…" : formatCount(usage.input)}</strong><small>{formatUsd(usage.inputCost)}</small></div>
+            <div><span>Output · 30d</span><strong>{usage.state === "pending" ? "…" : formatCount(usage.output)}</strong><small>{formatUsd(usage.outputCost)}</small></div>
+            <div><span>Cache read</span><strong>{usage.state === "pending" ? "…" : formatCount(usage.cacheRead)}</strong><small>{formatUsd(usage.cacheReadCost)}</small></div>
+            <div><span>Total tokens</span><strong>{usage.state === "pending" ? "Preparing" : formatCount(usage.totalTokens)}</strong><small>{formatUsd(usage.totalCost)} · {usage.missingCostEntries ?? 0} missing-cost entries</small></div>
+          </div>
+
+          <section className="agent-detail-panel model-usage-panel">
+            <div className="agent-panel-head"><div><span>Recorded model calls</span><h3>Model usage · 30 days</h3></div><b>{modelUsage.length} models</b></div>
+            {usage.state === "pending" ? <div className="detail-empty">Gateway usage is still preparing. Refresh after the cache completes.</div> : modelUsage.length === 0 ? <div className="detail-empty">No model-level usage was reported for this agent and range.</div> : (
+              <div className="model-usage-list">
+                {modelUsage.map((row) => (
+                  <article key={`${row.provider}-${row.model}`}>
+                    <div className="model-usage-copy"><strong>{row.model}</strong><span>{row.provider || "Provider not reported"} · {row.calls} completed model call{row.calls === 1 ? "" : "s"}</span></div>
+                    <div className="model-usage-bar"><i style={{ width: `${Math.max(1, (row.totalTokens / maxModelTokens) * 100)}%` }} /></div>
+                    <div className="model-usage-values"><strong>{formatCount(row.totalTokens)}</strong><span>{formatUsd(row.totalCost)}{row.missingCostEntries > 0 ? ` · ${row.missingCostEntries} missing` : ""}</span></div>
+                  </article>
+                ))}
+              </div>
+            )}
+            <p className="detail-source-note">Token and cost values are Gateway-reported. A zero cost is retained as reported; missing pricing is counted separately and never estimated by Julie.</p>
+          </section>
+
+          <section className="agent-detail-panel session-panel">
+            <div className="agent-panel-head"><div><span>Gateway activity</span><h3>Visible sessions</h3></div><b>{agent.activity.visibleSessions} total · {agent.activity.activeSessions} active</b></div>
+            {agent.activity.sessions.length === 0 ? <div className="detail-empty">No visible sessions are reported for this configured agent.</div> : (
+              <div className="agent-session-list">
+                {agent.activity.sessions.map((session, index) => (
+                  <article key={session.sessionId || `${session.displayName}-${index}`} className={session.hasActiveRun ? "running" : ""}>
+                    <div className="session-state-mark"><i /></div>
+                    <div className="session-main"><strong>{session.displayName}</strong><span>{session.model || "Model not reported"} · {session.channel || session.chatType || "Channel not reported"}</span></div>
+                    <div className="session-usage"><strong>{formatCount(session.totalTokens)}</strong><span>tokens</span></div>
+                    <div className="session-time"><strong>{session.hasActiveRun ? "Active run" : session.status || "Unknown"}</strong><span>{relativeAgentTime(session.lastActivityAt)}</span></div>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
+
+          <section className="agent-detail-panel task-history-panel">
+            <div className="agent-panel-head"><div><span>Julie task evidence</span><h3>Task history</h3></div><b>Not linked</b></div>
+            <div className="detail-empty">{agent.taskHistory.reason} Session activity is not presented as task completion.</div>
+          </section>
+        </div>
+      )}
+
+      {tab === "chat" && (
+        <div className="agent-chat-layout">
+          <aside className="agent-detail-panel agent-chat-sidebar">
+            <div className="agent-panel-head"><div><span>Target</span><h3>Agent session</h3></div><b>{chatSessions.length} visible</b></div>
+            <label className="agent-chat-session-select">
+              <span>Conversation</span>
+              <select value={selectedSessionId ?? ""} onChange={(event) => {
+                setSelectedSessionId(event.target.value || null);
+                setAgentMessages([]);
+                setHistoryError("");
+                setAgentChatStatus("");
+              }} disabled={agentChatSending || selectedSessionId === undefined}>
+                <option value="">＋ New agent conversation</option>
+                {chatSessions.map((session) => <option value={session.sessionId} key={session.sessionId}>{session.hasActiveRun ? "● " : ""}{session.displayName}</option>)}
+              </select>
+            </label>
+            <div className="agent-chat-target-card">
+              <AgentDetailAvatar agent={agent} />
+              <strong>{agent.displayName}</strong>
+              <code>{agent.id}</code>
+              <p>{selectedChatSession
+                ? `${selectedChatSession.hasActiveRun ? "Active run" : selectedChatSession.status || "Status unknown"} · ${selectedChatSession.model || "Model not reported"}`
+                : "A new agent-qualified OpenClaw session will be created on send."}</p>
+            </div>
+            <div className="agent-chat-safety">
+              <strong>Scoped delivery</strong>
+              <p>Julie verifies that the selected session belongs to this agent. Session keys remain server-side.</p>
+            </div>
+          </aside>
+
+          <section className="agent-detail-panel agent-chat-panel">
+            <div className="agent-panel-head">
+              <div><span>OpenClaw history</span><h3>{selectedChatSession?.displayName || "New conversation"}</h3></div>
+              {selectedSessionId && <button className="agent-history-refresh" onClick={() => fetchAgentHistory(selectedSessionId)} disabled={historyLoading || agentChatSending}>Refresh history</button>}
+            </div>
+
+            {historyError && <div className="chat-alert" role="alert">{historyError}</div>}
+            {historyTruncated && <div className="agent-history-note">Showing the latest 120 sanitized user/assistant messages.</div>}
+            <div className="agent-chat-log" ref={agentChatLogRef} aria-live="polite">
+              {historyLoading && <div className="agent-chat-empty">Loading sanitized Gateway history…</div>}
+              {!historyLoading && selectedSessionId === null && agentMessages.length === 0 && <div className="agent-chat-empty"><strong>Start a new conversation</strong><span>Your first message creates an agent-qualified Gateway session.</span></div>}
+              {!historyLoading && selectedSessionId && !historyError && agentMessages.length === 0 && <div className="agent-chat-empty"><strong>No visible messages</strong><span>This session has no sanitized user/assistant text history.</span></div>}
+              {agentMessages.map((message) => (
+                <article className={`agent-chat-message ${message.role}`} key={`${message.id}-${message.timestamp ?? "none"}`}>
+                  <div className="agent-chat-message-head"><span>{message.role === "assistant" ? agent.displayName : "You"}</span><time>{message.timestamp ? new Date(message.timestamp).toLocaleString() : "Time not reported"}</time></div>
+                  {message.role === "assistant" ? <Markdown text={message.text} /> : <div className="msg-plain">{message.text}</div>}
+                </article>
+              ))}
+              {agentChatSending && <div className="agent-chat-waiting"><span className="page-state-spinner" /> Waiting for OpenClaw's final reply…</div>}
+            </div>
+
+            <div className="agent-chat-composer">
+              <textarea value={agentChatInput} onChange={(event) => setAgentChatInput(event.target.value)}
+                onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); sendToAgent(); } }}
+                placeholder={`Message ${agent.displayName}…`} disabled={agentChatSending || selectedSessionId === undefined} rows={2} />
+              <button className="send-btn" onClick={sendToAgent} disabled={agentChatSending || selectedSessionId === undefined || !agentChatInput.trim()}>{agentChatSending ? "Working…" : "Send"}</button>
+            </div>
+            <div className="agent-chat-delivery" role="status">
+              <span>{agentChatStatus || "Messages are owner-authenticated and delivered through the documented Gateway chat RPC."}</span>
+              <small>Shift + Enter for a new line</small>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {tab === "capabilities" && (
+        <div className="agent-capability-layout">
+          <section className="agent-detail-panel capability-panel">
+            <div className="agent-panel-head"><div><span>Gateway catalog</span><h3>Tools</h3></div><b>{agent.tools.total} tools · {agent.tools.groups} groups</b></div>
+            <input className="capability-search" value={toolQuery} onChange={(event) => setToolQuery(event.target.value)} placeholder="Filter tools" aria-label="Filter agent tools" />
+            {agent.tools.state === "unavailable" ? <div className="detail-empty">Tool catalog unavailable.</div> : (
+              <div className="capability-list tools">
+                {tools.map((tool) => <article key={tool.id}><div><strong>{tool.name}</strong><code>{tool.id}</code></div><span>{tool.group || "Ungrouped"}</span><p>{tool.description || "No description reported."}</p></article>)}
+                {tools.length === 0 && <div className="detail-empty">No tools match this filter.</div>}
+              </div>
+            )}
+          </section>
+
+          <section className="agent-detail-panel capability-panel">
+            <div className="agent-panel-head"><div><span>Gateway eligibility</span><h3>Skills</h3></div><b>{agent.skills.eligible}/{agent.skills.total} eligible</b></div>
+            <div className="capability-filters">
+              <input className="capability-search" value={skillQuery} onChange={(event) => setSkillQuery(event.target.value)} placeholder="Filter skills" aria-label="Filter agent skills" />
+              <select value={skillFilter} onChange={(event) => setSkillFilter(event.target.value as typeof skillFilter)}>
+                <option value="all">All</option><option value="eligible">Eligible</option><option value="unavailable">Unavailable</option>
+              </select>
+            </div>
+            {agent.skills.state === "unavailable" ? <div className="detail-empty">Skill inventory unavailable.</div> : (
+              <div className="capability-list skills">
+                {skills.map((skill) => <article className={skill.eligible ? "eligible" : "unavailable"} key={skill.id}>
+                  <div className="skill-title"><span>{skill.emoji || "◇"}</span><strong>{skill.name}</strong><i>{skill.eligible ? "Eligible" : "Unavailable"}</i></div>
+                  <p>{skill.description || "No description reported."}</p>
+                  {!skill.eligible && <small>{skill.reason}</small>}
+                </article>)}
+                {skills.length === 0 && <div className="detail-empty">No skills match this filter.</div>}
+              </div>
+            )}
+          </section>
+
+          <section className="agent-detail-panel capability-panel commands-panel">
+            <div className="agent-panel-head"><div><span>Runtime inventory</span><h3>Commands</h3></div><b>{agent.commands.total} commands</b></div>
+            {agent.commands.state === "unavailable" ? <div className="detail-empty">Command inventory unavailable.</div> : (
+              <div className="command-list">{agent.commands.items.map((command, index) => <div key={`${command.name}-${index}`}><code>/{command.name}</code><span>{command.description || "No description reported."}</span><small>{command.category || command.source || "Uncategorized"}</small></div>)}</div>
+            )}
+          </section>
+        </div>
+      )}
+      {editOpen && <EditAgentDialog agent={agent} onClose={() => setEditOpen(false)} onSaved={(detail, receipt) => {
+        setData(detail);
+        setEditOpen(false);
+        setUpdateNotice(receipt.warnings.length
+          ? `Update applied with warning: ${receipt.warnings.join(" ")}`
+          : receipt.applied.gatewayUpdated
+            ? "Gateway identity/model and Julie HR changes were applied successfully."
+            : "Julie HR and guarded SOUL changes were applied; Gateway identity/model already matched.");
+      }} />}
+      {avatarStudioOpen && <AgentAvatarStudioDialog agent={agent} onClose={() => setAvatarStudioOpen(false)} onApplied={(detail, notice) => {
+        setData(detail);
+        setAvatarStudioOpen(false);
+        setUpdateNotice(notice);
+      }} />}
+    </section>
   );
 }
 

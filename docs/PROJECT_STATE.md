@@ -8,7 +8,7 @@ The first eight Phase E tasks (`E0-01` through `E0-08`, task rows 25–32)
 were completed sequentially. Julie now has one visible voice entry point, a
 stable Chat renderer, real workspace controls, a full navigation shell, and a
 recoverable route boundary. The larger program remains explicitly tracked:
-**27 done / 42 backlog** across the full task board.
+**37 done / 31 backlog / 1 blocked / 1 waiting input / 1 in progress** across the current task board.
 
 ### Delivered
 - **One voice control:** the Home-column orb and floating FAB were removed from
@@ -40,7 +40,7 @@ recoverable route boundary. The larger program remains explicitly tracked:
 ### Verification
 - ✅ Backend strict TypeScript and frontend Vite builds pass
 - ✅ `scripts/test-markdown.tsx`: 2/2 pass
-- ✅ `scripts/test-phase-c.mjs`: 9/9 pass, including authenticated live gateway data
+- ✅ `scripts/test-phase-c.mjs`: 47/47 pass, including workspace-scoped avatar generation/import/model gates and redaction coverage
 - ✅ All 12 shell routes return HTTP 200 through the single Express process
 - ✅ `julie.service` restarted; `/api/health` reports ok and gateway 2026.10.5 connected
 
@@ -48,7 +48,199 @@ recoverable route boundary. The larger program remains explicitly tracked:
 - Projects, Automations, dedicated Settings, and Future Lab are currently
   dependency-aware planned pages. Their controls will not be enabled until the
   corresponding authenticated backend capability exists.
-- The remaining 42 Phase E tasks are backlog, not represented as completed UI.
+- Remaining backlog/blocked work is not represented as completed UI.
+
+### E1 capability audit
+- `E1-01` verified the live OpenClaw agent surface and recorded the supported,
+  derived, and unavailable fields in `docs/AGENT_GATEWAY_CAPABILITIES.md`.
+- At the audit instant the Gateway reported 9 configured agents, 73 tools for
+  `main`, 62 visible skills (27 eligible), 25 configured model rows, and exact
+  session/usage APIs. Formal role, duty state, semantic office action,
+  productivity, and task assignment are not Gateway facts and will not be
+  invented in the archive.
+
+### E1 Agent Archive
+- `E1-02` replaced the selector-style Agent page with a responsive archive fed
+  by authenticated `GET /api/agents/overview`.
+- The backend joins the configured roster with paginated visible-session state,
+  30-day usage, and agent-scoped tool/skill catalogs. Every card shows exact
+  model/runtime/permission metadata, `Working` only for `hasActiveRun: true`,
+  recent session evidence, capability counts, and token/cost state.
+- Search plus status/model filters operate on the returned live snapshot. Manual
+  refresh bypasses a 30-second server cache; usage is not polled for presence.
+- Host workspace paths, usage database paths, session keys, and raw run IDs are
+  removed before browser delivery. The regression suite asserts those boundaries.
+- Formal role and Julie-task assignment remain visibly `Not configured` /
+  `Not linked`; identity themes and session activity are not relabeled as either.
+
+### E1 Single-Agent Profile
+- `E1-03` added authenticated `GET /api/agents/:id` and the real
+  `/agents/:id` route with Overview, Activity, and Capabilities deep-link tabs.
+- Overview shows configured/effective identity, explicit missing role, primary /
+  fallback / utility models, runtime and permission facts, provenance, a safe
+  SOUL summary, workspace/bootstrap metadata, and explicit missing Julie
+  workspace assignment.
+- Activity shows exact active-run state, bounded sanitized sessions, real 30-day
+  token/cache/cost buckets, and an honest unlinked task-history state.
+- Capabilities exposes agent-scoped tool, skill eligibility, and runtime command
+  inventories with filters and partial-error states.
+- The backend never sends raw SOUL content, host paths, session keys, usage DB
+  paths, hashes, or active run IDs. Unknown agents return 404 instead of falling
+  back to `main`.
+- `scripts/test-phase-c.mjs` now passes **14/14**, including detail auth,
+  redaction, raw-SOUL exclusion, and unknown-agent checks.
+
+### E1 Per-Agent Communication
+- `E1-04` added the `#chat` agent-profile tab plus authenticated history and
+  send endpoints. The browser supplies an agent ID and opaque session ID; Julie
+  resolves the private Gateway session key server-side and rejects mismatches.
+- Existing sessions return at most the latest 120 non-empty user/assistant text
+  messages. Tool/control rows are omitted, credential-shaped text and OpenClaw
+  host paths are redacted, and legacy string plus current structured transcript
+  content shapes are both supported.
+- Sending to an existing session preserves that exact agent/session. Sending
+  without one creates a backend-only `agent:<id>:julie-agent-chat-*` key, waits
+  for the final Gateway reply, and returns the completed sanitized history.
+- A real `main` round-trip returned the exact requested
+  `JULIE_AGENT_CHAT_OK` response with a new session ID and two-message history.
+- `scripts/test-phase-c.mjs` now passes **18/18** with unauthenticated history /
+  send checks, sanitized-history shape, and non-executing empty-input validation.
+
+### E1 Usage Statistics
+- `E1-05` now exposes Gateway-reported 30-day usage at archive aggregate,
+  per-agent, per-session, and per-model levels.
+- The archive shows total tokens/cost, top models across all agents, and each
+  agent's most-used reported model. Agent Activity shows input, output, cache,
+  total, cost buckets, missing-cost counts, model call counts, and bounded
+  session usage rows.
+- Model totals are summed only from `sessions.usage[].usage.modelUsage`; Julie
+  does not estimate missing tokens or prices. `pending`, `no_data`, and
+  `unavailable` remain visible states, and reported zero cost is preserved.
+- Live verification confirmed the per-model token sum equals the agent total for
+  the current `main` report; regression tests assert model usage shape.
+
+### E1 HR Agent Onboarding
+- `E1-06` added `/agents/new`, a five-step HR wizard for identity/personality,
+  Julie workspace and schedule, live model selection, tool/skill requests, and
+  an explicit review/confirmation receipt.
+- `GET /api/agents/onboarding/options` joins 25 live configured models, 73 tools,
+  62 skills (with eligibility), existing agent IDs, and Julie workspaces without
+  exposing secrets or host paths.
+- `POST /api/agents` calls documented `agents.create` only after confirmation,
+  saves Julie-owned role/schedule/workspace/request metadata in `agent_profiles`,
+  and writes the reviewed SOUL through `agents.files.set` with hash or
+  expected-missing compare-and-swap.
+- The wizard distinguishes actual Gateway fields from Julie-owned HR context;
+  requested tools/skills never claim to alter Gateway capability policy.
+- Before the approved live test, OpenClaw config was backed up under gitignored
+  `data/backups/` with mode 0600. The retained `julie-command-center-qa` agent
+  was created successfully, assigned to Mission Control, and verified with role,
+  schedule, requested capabilities, and readable SOUL metadata; no warnings.
+- Regression suite now passes **22/22**, including onboarding auth, live option
+  shape, policy disclosure, and pre-mutation confirmation validation.
+
+### E1 Agent Editing
+- Follow-up `E1-03A` makes every agent detail profile owner-editable through an
+  explicit review dialog and authenticated `PATCH /api/agents/:id`.
+- Display name, emoji, and changed primary model are applied through documented
+  `agents.update`; unchanged Gateway fields are diffed out to avoid unnecessary
+  config application or model preparation.
+- Julie role, personality, schedule, timezone, workspace assignment, and
+  capability requests update `agent_profiles`. Optional SOUL synchronization
+  replaces only Julie's marked HR block or appends one, preserving all existing
+  non-Julie content, with Gateway hash compare-and-swap.
+- The retained QA agent was successfully renamed to `Command Center QA` through
+  a real `agents.update`; its stable ID stayed `julie-command-center-qa`, and
+  local/SOUL updates completed without warnings.
+- Regression suite now passes **24/24** with update auth and pre-mutation
+  confirmation coverage.
+
+### E1 Active-Workspace Agent Scoping
+- Follow-up `E1-07A` adds authoritative many-to-many `workspace_agents`
+  membership and scopes the normal archive, profile, history, chat, and edit
+  routes to Julie's current active workspace.
+- The archive response contains only assigned agents and recomputes session,
+  working, usage, cost, and model aggregates for that workspace. Direct access
+  to an unassigned agent returns 404 without leaking whether it exists elsewhere.
+- **Manage Roster** is a separate owner-only view of the live Gateway roster. It
+  can assign/unassign agents for the active workspace and visibly marks explicit
+  multi-workspace sharing; it never deletes or mutates the OpenClaw agent.
+- Existing legacy agents were explicitly assigned to active Mission Control to
+  preserve the prior roster. Retained QA is explicitly shared with Working.
+  Live switch verification showed Mission Control = 10 agents, Working = QA
+  only; `main` detail was blocked in Working while QA remained accessible.
+- Agent editing now accepts multiple workspace memberships. The original
+  single `agent_profiles.workspace_id` remains only a synchronized legacy hint.
+- Regression suite passes **28/28**, including assignment auth, confirmation,
+  and exact overview-to-membership set equality.
+
+### E1 Office-World Visual MVP
+- `E1-08` adds an Archive / Office toggle to the workspace-scoped Agents page.
+- The Office is a dependency-free responsive SVG/CSS scene with isometric floor,
+  desks and computers, library, lounge, off-duty/home pods, and roster lobby.
+- Assigned agents render as compact hologram tokens in a clearly labeled
+  **staging** layout. The MVP does not place them at a desk/library/home based on
+  guesses; activity mapping is the separate E1-09 task.
+- A visible accessible roster duplicates every agent's real role/run-state label
+  and links to the profile. Reduced-motion policy applies globally; no WebGL,
+  glTF, Three.js, or other dependency was added.
+
+### E1 Evidence-Based Office Placement
+- `E1-09` adds a closed server-owned office placement projection.
+- An agent goes to a generic **desk** only when the complete visible session
+  snapshot reports `hasActiveRun: true`; the response includes the exact evidence
+  string and `classification: verified`.
+- No current API supplies a reliable reading/tool event, break event, or duty
+  schedule fact, so library, lounge, and home remain unused. Every non-working or
+  unreadable state maps to `staging / unclassified`, never inferred idle/off-duty.
+- The Office displays per-zone counts, occupied-desk glow, placement policy, and
+  evidence in the accessible roster. Live Mission Control verification reported
+  0 active runs and 10 staged agents, matching the source snapshot exactly.
+- Regression checks enforce `working → desk/verified` and every other current
+  state → `staging/unclassified`.
+
+### E1 Personality-Derived Avatar Pipeline (awaiting a usable image source)
+- `E1-10` now has an authenticated **Avatar Studio** on each active-workspace
+  agent profile plus allowlisted readiness, preview, generate, asset, fallback,
+  and apply endpoints.
+- Live `image_generate action=list` reports OpenAI and OpenRouter as
+  configuration-present. Two owner-approved one-image attempts returned no
+  assets: OpenAI rejected authentication and OpenRouter rejected the request at
+  its weekly key limit. No image was stored or applied.
+- The owner replaced OpenRouter with OmniRoute in Julie's avatar-provider policy.
+  OpenRouter is now excluded server-side. The live model catalog has 20
+  OmniRoute rows, but `image_generate` does not register OmniRoute and those rows
+  do not expose an image-generation route, so OmniRoute is shown as
+  `not_supported` rather than being silently routed through OpenRouter.
+- Julie distinguishes config presence, configured-but-unverified, last attempt
+  failed, and generation succeeded. Provider projections strip auth environment
+  hints and never return credentials, raw SOUL, or host paths.
+- Prompts are rebuilt server-side from the Julie role/personality, Gateway theme /
+  emoji, and the marked Julie HR SOUL block when present. Three non-human visual
+  directions are available. Every prompt explicitly forbids inferred gender,
+  age, ethnicity, skin tone, nationality, body type, disability, religion, and
+  real-person likeness; owner notes are labeled as explicit input.
+- The live catalog supplies no per-call cost estimate. The UI therefore reports
+  **Not reported**, links to provider pricing, and requires both prompt review and
+  unknown-cost acknowledgement before exactly one square 1K/1024 call.
+- Generated PNG/JPEG/WebP candidates are integrity-checked, limited to 8 MB, and
+  stored mode 0600 under gitignored `data/agent-avatars`; no candidate is applied
+  automatically. A separate exact-image confirmation applies assets up to 2 MB
+  through documented `agents.update`.
+- A deterministic, zero-cost SVG fallback is active now and contains no inferred
+  appearance. Owner-supplied PNG/JPEG/WebP can also be downscaled client-side,
+  stored as a private candidate, reviewed, and applied with no generation call.
+  A public HTTPS image URL can be previewed and explicitly applied without Julie
+  fetching it; the UI discloses that clients may contact that host.
+- GLB 2.0 uploads up to 8 MB and public HTTPS `.glb` references can be stored as
+  Julie-only companion assets. They are explicitly not Gateway image avatars and
+  remain downloadable metadata because no 3D viewer is configured.
+- Positive local smoke checks stored and authenticated-fetched a tiny PNG and a
+  structurally valid GLB 2.0 fixture, verified MIME/boundary metadata, then
+  removed only those test rows/files; agent identity was never touched.
+- Regression suite passes **47/47**. Task #42 is `waiting_input` until the owner
+  supplies/reviews a usable image or OmniRoute gains a real Gateway image route;
+  no current candidate exists to apply.
 
 ---
 
