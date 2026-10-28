@@ -1,5 +1,57 @@
 # Project State: Julie AiOS
 
+## Status: Phase E0 complete (stability, Chat, and command-center shell)
+**Date:** 2026-10-28
+
+### Outcome
+The first eight Phase E tasks (`E0-01` through `E0-08`, task rows 25–32)
+were completed sequentially. Julie now has one visible voice entry point, a
+stable Chat renderer, real workspace controls, a full navigation shell, and a
+recoverable route boundary. The larger program remains explicitly tracked:
+**27 done / 42 backlog** across the full task board.
+
+### Delivered
+- **One voice control:** the Home-column orb and floating FAB were removed from
+  view. The center mobile-footer microphone is the sole visible global entry;
+  the existing controller remains mounted headlessly and reports its real
+  listening/processing/error state to that footer control.
+- **Phone-density pass:** Julie's avatar message is shorter and smaller, real
+  task/chat counts moved to a compact metadata line, preview height was reduced,
+  and quick replies became a narrow horizontal strip on phones.
+- **Chat crash fixed:** recursive inline Markdown used to reset a shared global
+  regex and repeatedly match the same bold/italic token until the browser ran
+  out of memory. Every recursive call now owns its regex cursor; a two-case
+  regression suite covers the exact failure shape and multiple inline tokens.
+- **Real workspace Chat controls:** the selector is populated from SQLite,
+  changes persist through the authenticated activation API, stale scoped data
+  is cleared during transitions, and the create dialog accepts a required name
+  plus optional description before creating and activating the workspace.
+- **Command-center shell:** gateway status is right-aligned and remains sourced
+  from backend polling. The sidebar now exposes Home, Chat, Agents, Task Board,
+  Projects, Analytics, Automations, Apps & Integrations, Terminal, Settings,
+  Profile, and Future Lab. Unimplemented routes render explicit dependency-aware
+  planned pages—never fake controls.
+- **Mobile footer:** five focused items—Home, Chat, the single AI voice entry,
+  Agents, and More. More opens the complete navigation drawer.
+- **Failure containment:** a route-level React error boundary prevents one view
+  from blanking the shell. Agents, Apps, Analytics, and Chat now use recoverable
+  loading, empty, and error states with retries where appropriate.
+
+### Verification
+- ✅ Backend strict TypeScript and frontend Vite builds pass
+- ✅ `scripts/test-markdown.tsx`: 2/2 pass
+- ✅ `scripts/test-phase-c.mjs`: 9/9 pass, including authenticated live gateway data
+- ✅ All 12 shell routes return HTTP 200 through the single Express process
+- ✅ `julie.service` restarted; `/api/health` reports ok and gateway 2026.10.5 connected
+
+### Honest boundaries
+- Projects, Automations, dedicated Settings, and Future Lab are currently
+  dependency-aware planned pages. Their controls will not be enabled until the
+  corresponding authenticated backend capability exists.
+- The remaining 42 Phase E tasks are backlog, not represented as completed UI.
+
+---
+
 ## Status: Phase D-3.1 (Mobile stabilization + D2/D3 backlog cleared)
 **Date:** 2026-10-27
 
@@ -176,4 +228,4 @@ None.
 
 ---
 
-*Last updated: 2026-10-26*
+*Last updated: 2026-10-28*

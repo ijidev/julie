@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import { Markdown } from "./markdown";
-import { VoiceFab, requestVoiceCapture } from "./voice-fab";
+import { VoiceFab, VOICE_STATE_EVENT, requestVoiceCapture } from "./voice-fab";
 import { useSpeaking, speakWithTracking } from "./speaking";
 import { Wave } from "./wave";
 import { speechSupported, startSpeechRecognition, submitVoiceText, type VoiceState } from "./voice";
@@ -72,9 +72,71 @@ function Login({ onOk }: { onOk: () => void }) {
 }
 
 // --- Shell: Sidebar (Desktop) + Bottom Nav (Mobile) ---
+type ShellNavItem = { path: string; label: string; icon: string; action?: "voice" | "menu" };
+
+const SIDEBAR_SECTIONS: Array<{ label: string; items: ShellNavItem[] }> = [
+  { label: "Command Center", items: [
+    { path: "/", label: "Home", icon: "⌂" },
+    { path: "/chat", label: "Chat", icon: "◉" },
+    { path: "/agents", label: "Agents", icon: "◇" },
+  ] },
+  { label: "Operations", items: [
+    { path: "/tasks", label: "Task Board", icon: "✓" },
+    { path: "/projects", label: "Projects", icon: "▤" },
+    { path: "/analytics", label: "Analytics", icon: "◔" },
+    { path: "/automations", label: "Automations", icon: "↻" },
+  ] },
+  { label: "System", items: [
+    { path: "/tools", label: "Apps & Integrations", icon: "⌘" },
+    { path: "/terminal", label: "Terminal", icon: ">_" },
+    { path: "/settings", label: "Settings", icon: "⚙" },
+    { path: "/profile", label: "Profile", icon: "◎" },
+    { path: "/future", label: "Future Lab", icon: "✦" },
+  ] },
+];
+
+const BOTTOM_NAV: ShellNavItem[] = [
+  { path: "/", label: "Home", icon: "⌂" },
+  { path: "/chat", label: "Chat", icon: "◉" },
+  { path: "/voice", label: "AI", icon: "◉", action: "voice" },
+  { path: "/agents", label: "Agents", icon: "◇" },
+  { path: "/menu", label: "More", icon: "•••", action: "menu" },
+];
+
+function FooterNavIcon({ item }: { item: ShellNavItem }) {
+  if (item.action === "voice") return (
+    <svg className="footer-icon-svg footer-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+      <rect x="9" y="3" width="6" height="11" rx="3" />
+      <path d="M5 11a7 7 0 0 0 14 0" />
+      <path d="M12 18v3" />
+    </svg>
+  );
+  if (item.path === "/") return (
+    <svg className="footer-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 10.5 12 4l8 6.5" /><path d="M6.5 9.5V20h11V9.5" /><path d="M10 20v-6h4v6" />
+    </svg>
+  );
+  if (item.path === "/chat") return (
+    <svg className="footer-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M5 5.5h14v10H9l-4 3v-13Z" /><path d="M8.5 9.5h7M8.5 12.5h4.5" />
+    </svg>
+  );
+  if (item.path === "/agents") return (
+    <svg className="footer-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="9" cy="8" r="3" /><circle cx="16.5" cy="9.5" r="2.3" /><path d="M3.8 19c.6-3.1 2.3-4.7 5.2-4.7s4.6 1.6 5.2 4.7M14.5 14.5c2.8-.4 4.7 1 5.5 3.7" />
+    </svg>
+  );
+  return (
+    <svg className="footer-icon-svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <circle cx="5" cy="12" r="1.5" /><circle cx="12" cy="12" r="1.5" /><circle cx="19" cy="12" r="1.5" />
+    </svg>
+  );
+}
+
 function Shell({ route, navigate, onLogout }: { route: string; navigate: (to: string) => void; onLogout: () => void }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [gw, setGw] = useState<GatewayStatus | null>(null);
+  const [voiceState, setVoiceState] = useState("idle");
 
   useEffect(() => {
     let alive = true;
@@ -84,18 +146,20 @@ function Shell({ route, navigate, onLogout }: { route: string; navigate: (to: st
     return () => { alive = false; clearInterval(t); };
   }, []);
 
-  // Center "AI" item starts inline voice capture from ANY page (Phase D-2 Chunk B);
-  // it no longer navigates. /voice stays routable for deep links only.
-  const NAV: Array<{ path: string; label: string; icon: string; action?: "voice" }> = [
-    { path: "/", label: "Home", icon: "◈" },
-    { path: "/chat", label: "Chat", icon: "◉" },
-    { path: "/voice", label: "AI", icon: "◉", action: "voice" },
-    { path: "/tools", label: "Tools", icon: "⚙" },
-    { path: "/profile", label: "Profile", icon: "▣" },
-  ];
+  useEffect(() => {
+    const onVoiceState = (event: Event) => {
+      const state = (event as CustomEvent<{ state?: string }>).detail?.state;
+      if (state) setVoiceState(state);
+    };
+    window.addEventListener(VOICE_STATE_EVENT, onVoiceState);
+    return () => window.removeEventListener(VOICE_STATE_EVENT, onVoiceState);
+  }, []);
 
-  const onNav = (item: { path: string; action?: "voice" }) => {
+  // Center "AI" starts inline voice capture from any page; /voice remains
+  // routable for deep links, but it is not duplicated in the desktop sidebar.
+  const onNav = (item: Pick<ShellNavItem, "path" | "action">) => {
     if (item.action === "voice") { requestVoiceCapture(); return; }
+    if (item.action === "menu") { setMenuOpen(true); return; }
     navigate(item.path);
     setMenuOpen(false);
   };
@@ -110,57 +174,172 @@ function Shell({ route, navigate, onLogout }: { route: string; navigate: (to: st
     if (route === "/terminal") return <TerminalPage />;
     if (route === "/tasks") return <BoardView />;
     if (route === "/profile") return <ProfilePage />;
+    if (route === "/projects") return <ComingSoonPage title="Projects" icon="▤"
+      description="A workspace-aware registry and read-only project browser is planned here."
+      dependency="Requires the authenticated OpenCode bridge and owner-approved project roots." navigate={navigate} />;
+    if (route === "/automations") return <ComingSoonPage title="Automations" icon="↻"
+      description="Schedules, approvals, run history, and failures will be managed from this page."
+      dependency="Requires a documented OpenClaw or Julie scheduler contract before controls can be enabled." navigate={navigate} />;
+    if (route === "/settings") return <ComingSoonPage title="Settings" icon="⚙"
+      description="A dedicated configuration center for voice, models, privacy, integrations, and workspace defaults is planned."
+      dependency="Owner avatar and workspace controls remain available in Profile while this page is built." navigate={navigate} />;
+    if (route === "/future") return <ComingSoonPage title="Future Lab" icon="✦"
+      description="Experimental command-center capabilities will live here without pretending unfinished controls work."
+      dependency="Roadmap items are tracked in the Julie task board and will appear only with verified data sources." navigate={navigate} />;
     return <HomePage navigate={navigate} gw={gw} />;
   };
 
   return (
     <div className={`app${menuOpen ? " mobile-menu-open" : ""}`}>
       <div className="sidebar-scrim" onClick={() => setMenuOpen(false)} />
-      <aside className={`sidebar${menuOpen ? " open" : ""}`}>
-        <div className="brand">
-          <div className="brand-orb" />
-          <div><h1>Julie</h1><span>AiOS</span></div>
+      <aside id="primary-navigation" className={`sidebar${menuOpen ? " open" : ""}`}>
+        <div className="sidebar-heading">
+          <div className="brand">
+            <div className="brand-orb" />
+            <div><h1>Julie</h1><span>AiOS</span></div>
+          </div>
+          <button className="sidebar-close" onClick={() => setMenuOpen(false)} aria-label="Close navigation">×</button>
         </div>
-        <div className="section-label">Command Center</div>
-        {NAV.map(item => (
-          <button key={item.path} className={`nav-item${route === item.path ? " active" : ""}`}
-            onClick={() => onNav(item)}>
-            <span>{item.icon}</span> {item.label}
-          </button>
-        ))}
-        <div className="sidebar-footer" style={{ marginTop: "auto" }}>
+        <div className="sidebar-nav-scroll">
+          {SIDEBAR_SECTIONS.map((section) => (
+            <div className="sidebar-section" key={section.label}>
+              <div className="section-label">{section.label}</div>
+              {section.items.map((item) => {
+                const active = item.path === "/" ? route === "/" : route === item.path || route.startsWith(`${item.path}/`);
+                return <button key={item.path} className={`nav-item${active ? " active" : ""}`}
+                  onClick={() => onNav(item)} aria-current={active ? "page" : undefined}>
+                  <span className="nav-icon" aria-hidden="true">{item.icon}</span><span>{item.label}</span>
+                </button>;
+              })}
+            </div>
+          ))}
+        </div>
+        <div className="sidebar-footer">
           <button className="icon-btn" onClick={onLogout}>Sign out</button>
         </div>
       </aside>
 
       <main className="main">
-        <header className="topbar" style={{ marginBottom: 20 }}>
-          <button className="icon-btn menu-btn" onClick={() => setMenuOpen(true)} aria-label="menu">☰</button>
+        <header className="topbar">
+          <button className="icon-btn menu-btn" onClick={() => setMenuOpen(true)} aria-label="Open navigation"
+            aria-expanded={menuOpen} aria-controls="primary-navigation">☰</button>
           <GatewayPill status={gw} />
         </header>
-        {renderView()}
+        <RouteErrorBoundary key={route} route={route} onHome={() => navigate("/")}>
+          {renderView()}
+        </RouteErrorBoundary>
       </main>
 
       <nav className="bottom-nav">
-        {NAV.map(item => (
-          <button key={item.path} className={route === item.path ? "active" : ""}
-            onClick={() => onNav(item)}>
-            <span className="icon">{item.icon}</span>
-            {item.label}
-          </button>
-        ))}
+        {BOTTOM_NAV.map(item => {
+          const active = item.action === "menu"
+            ? menuOpen
+            : !item.action && (item.path === "/" ? route === "/" : route === item.path || route.startsWith(`${item.path}/`));
+          return <button key={item.path}
+            className={`${active ? "active" : ""}${item.action === "voice" ? ` voice-entry ${voiceState}` : ""}`}
+            onClick={() => onNav(item)} aria-label={item.action === "voice" ? "Talk to Julie" : item.label}
+            aria-current={active && item.action !== "menu" ? "page" : undefined} aria-expanded={item.action === "menu" ? menuOpen : undefined}>
+            <span className="icon"><FooterNavIcon item={item} /></span>
+            <span className="bottom-nav-label">{item.label}</span>
+          </button>;
+        })}
       </nav>
 
-      {/* Global floating voice button — mounted once, present on every route (Phase D-2 Chunk B) */}
-      <VoiceFab route={route} onOpenChat={() => navigate("/chat")} />
+      {/* Headless global voice controller. The footer-center AI item is the
+          only visible voice control and dispatches into this component. */}
+      <VoiceFab route={route} onOpenChat={() => navigate("/chat")} showButton={false} />
     </div>
   );
 }
 
 function GatewayPill({ status }: { status: GatewayStatus | null }) {
-  if (!status) return <span className="status-pill wait"><span className="status-dot" /> checking…</span>;
-  if (status.connected) return <span className="status-pill ok"><span className="status-dot" /> System Online</span>;
-  return <span className="status-pill err"><span className="status-dot" /> System Offline</span>;
+  const kind = !status ? "wait" : status.connected ? "ok" : "err";
+  const label = !status ? "Checking gateway…" : status.connected ? "System Online" : "System Offline";
+  const detail = status?.connected
+    ? [status.serverVersion ? `Gateway ${status.serverVersion}` : "Gateway connected", status.latencyMs != null ? `${status.latencyMs} ms` : ""].filter(Boolean).join(" · ")
+    : status?.error || label;
+  return <span className={`status-pill ${kind}`} role="status" aria-live="polite" title={detail}>
+    <span className="status-dot" /> <span>{label}</span>
+  </span>;
+}
+
+function ComingSoonPage({ title, icon, description, dependency, navigate }: {
+  title: string;
+  icon: string;
+  description: string;
+  dependency: string;
+  navigate: (to: string) => void;
+}) {
+  return (
+    <section className="coming-soon-page">
+      <div className="coming-soon-glow" aria-hidden="true" />
+      <div className="coming-soon-icon" aria-hidden="true">{icon}</div>
+      <div className="coming-soon-kicker">Planned capability</div>
+      <h2>{title}</h2>
+      <p>{description}</p>
+      <div className="coming-soon-dependency">
+        <span>Dependency</span>
+        <strong>{dependency}</strong>
+      </div>
+      <div className="coming-soon-actions">
+        <button className="btn" onClick={() => navigate("/tasks")}>View task board</button>
+        <button className="btn-secondary" onClick={() => navigate("/")}>Back home</button>
+      </div>
+    </section>
+  );
+}
+
+type RouteErrorBoundaryProps = {
+  route: string;
+  onHome: () => void;
+  children: React.ReactNode;
+};
+
+class RouteErrorBoundary extends React.Component<RouteErrorBoundaryProps, { error: Error | null }> {
+  state: { error: Error | null } = { error: null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    console.error(`Route render failed (${this.props.route})`, error, info.componentStack);
+  }
+
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <section className="route-error card" role="alert">
+        <div className="route-error-icon" aria-hidden="true">!</div>
+        <div className="chat-eyebrow">Page recovered</div>
+        <h2>This view hit an unexpected error</h2>
+        <p>Julie kept the rest of the command center running. Retry this view or return home.</p>
+        <div className="route-error-actions">
+          <button className="btn" onClick={() => this.setState({ error: null })}>Try again</button>
+          <button className="btn-secondary" onClick={this.props.onHome}>Back home</button>
+          <button className="btn-secondary" onClick={() => window.location.reload()}>Reload app</button>
+        </div>
+      </section>
+    );
+  }
+}
+
+function PageState({ kind, title, detail, onRetry }: {
+  kind: "loading" | "empty" | "error";
+  title: string;
+  detail?: string;
+  onRetry?: () => void;
+}) {
+  return (
+    <section className={`page-state ${kind}`} role={kind === "error" ? "alert" : "status"} aria-live="polite">
+      <div className="page-state-symbol" aria-hidden="true">
+        {kind === "loading" ? <span className="page-state-spinner" /> : kind === "error" ? "!" : "—"}
+      </div>
+      <strong>{title}</strong>
+      {detail && <p>{detail}</p>}
+      {onRetry && <button className="btn-secondary" onClick={onRetry}>Try again</button>}
+    </section>
+  );
 }
 
 // --- Home Page: Dashboard (Phase D-1 reference design) ---
@@ -599,11 +778,12 @@ function HomePage({ navigate, gw }: { navigate: (to: string) => void; gw: Gatewa
             </div>
             <HologramBust />
             <div className="hv-bubble">
-              {greeting}, {OWNER_NAME}. How can I help you today?
-              <br />
-              {pendingTasks > 0 || convs.length > 0
-                ? `You have ${pendingTasks} pending ${pendingTasks === 1 ? "task" : "tasks"} and ${convs.length} open ${convs.length === 1 ? "conversation" : "conversations"}.`
-                : "You're all caught up."}
+              {greeting}, {OWNER_NAME}. How can I help today?
+            </div>
+            <div className="hv-ai-meta">
+              <span>{pendingTasks} {pendingTasks === 1 ? "task" : "tasks"}</span>
+              <span aria-hidden="true">·</span>
+              <span>{convs.length} {convs.length === 1 ? "chat" : "chats"}</span>
             </div>
           </section>
 
@@ -612,7 +792,7 @@ function HomePage({ navigate, gw }: { navigate: (to: string) => void; gw: Gatewa
           <section className="hv-card card-chat-preview">
             <div className="hv-chat-label">{lastMsg ? msgTimeLabel(lastMsg) : "CHAT PREVIEW"}</div>
             <div className="hv-chat-preview">
-              {messages.length === 0 && <div className="hv-empty">No messages yet — start from the command bar, a tool tile, or the quick replies.</div>}
+              {messages.length === 0 && <div className="hv-empty">No messages yet — start from Chat, a tool, or a quick reply.</div>}
               {previewMsgs.map((m) => (
                 <div key={m.id} className={`hv-msg ${m.role === "user" ? "user" : "assistant"}`}>
                   {m.role === "assistant" && <span className="hv-avatar">AI</span>}
@@ -629,21 +809,6 @@ function HomePage({ navigate, gw }: { navigate: (to: string) => void; gw: Gatewa
             )}
           </section>
 
-          {/* 6. Voice orb — starts the GLOBAL inline voice capture (no navigation, Phase D-2 Chunk B). */}
-          {/* Reuses the current conversation (Phase C.1); the shared wave appears only while the AI speaks. */}
-          <section className="hv-card card-voice">
-            <button className="hv-voice-orb" onClick={() => requestVoiceCapture()} aria-label="Start voice conversation">
-              <span className="hv-orb-ring" /><span className="hv-orb-ring hv-orb-ring-2" /><span className="hv-orb-ring hv-orb-ring-3" />
-              <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#FFE8D6" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true">
-                <rect x="9" y="3" width="6" height="11" rx="3" />
-                <path d="M5 11a7 7 0 0 0 14 0" />
-                <path d="M12 18v3" />
-              </svg>
-            </button>
-            <Wave bars={24} className="orb-wave" />
-            <div className="hv-voice-label">Tap to speak</div>
-            <div className="hv-voice-sub">Voice lands in your current conversation</div>
-          </section>
         </div>
 
         {/* RIGHT COLUMN */}
@@ -867,13 +1032,20 @@ function AgentsPage() {
   const [error, setError] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
 
-  useEffect(() => {
-    api.agents().then(d => { setAgents(d.agents); setLoading(false); }).catch(e => { setError(e.message); setLoading(false); });
+  const loadAgents = useCallback(() => {
+    setLoading(true);
+    setError("");
+    api.agents()
+      .then((data) => setAgents(data.agents))
+      .catch((requestError) => setError(requestError.message))
+      .finally(() => setLoading(false));
   }, []);
 
-  if (loading) return <div className="empty-state">Scanning agent registry…</div>;
-  if (error) return <div className="empty-state"><div>Agents unavailable: {error}</div><p className="text-dim">Could not reach the gateway agent registry.</p></div>;
-  if (agents.length === 0) return <div className="empty-state">No agents found on the gateway.</div>;
+  useEffect(loadAgents, [loadAgents]);
+
+  if (loading) return <PageState kind="loading" title="Scanning agent registry" detail="Requesting the live agent list from OpenClaw Gateway." />;
+  if (error) return <PageState kind="error" title="Agents unavailable" detail={error} onRetry={loadAgents} />;
+  if (agents.length === 0) return <PageState kind="empty" title="No agents reported" detail="The gateway returned an empty agent registry." onRetry={loadAgents} />;
 
   const detail = agents.find(a => a.id === selected);
   return (
@@ -933,7 +1105,10 @@ function ToolsPage() {
   const [saving, setSaving] = useState<string | null>(null);
   const [error, setError] = useState("");
 
-  useEffect(() => {
+  const loadApps = useCallback(() => {
+    setTools(null);
+    setPreferences(null);
+    setError("");
     Promise.all([api.tools(), api.appPreferences()])
       .then(([toolData, preferenceData]) => {
         setTools(toolData.tools);
@@ -941,6 +1116,8 @@ function ToolsPage() {
       })
       .catch((e) => setError(e.message));
   }, []);
+
+  useEffect(loadApps, [loadApps]);
 
   const setEnabled = async (id: AppDefinition["id"], enabled: boolean) => {
     setSaving(id);
@@ -954,8 +1131,8 @@ function ToolsPage() {
     }
   };
 
-  if (error && tools == null) return <div className="empty-state"><div>Apps unavailable: {error}</div><p className="text-dim">Gateway availability could not be verified.</p></div>;
-  if (tools == null || preferences == null) return <div className="empty-state">Checking app connections…</div>;
+  if (error && tools == null) return <PageState kind="error" title="Apps unavailable" detail={error} onRetry={loadApps} />;
+  if (tools == null || preferences == null) return <PageState kind="loading" title="Checking app connections" detail="Verifying capabilities against the live gateway tool inventory." />;
 
   return (
     <div className="apps-page">
@@ -1005,12 +1182,16 @@ function AnalyticsPage() {
   const [data, setData] = useState<Analytics | null>(null);
   const [error, setError] = useState("");
 
-  useEffect(() => {
+  const loadAnalytics = useCallback(() => {
+    setData(null);
+    setError("");
     api.analytics().then(d => setData(d.analytics)).catch(e => setError(e.message));
   }, []);
 
-  if (error) return <div className="empty-state"><div>Analytics error: {error}</div></div>;
-  if (!data) return <div className="empty-state">Crunching data…</div>;
+  useEffect(loadAnalytics, [loadAnalytics]);
+
+  if (error) return <PageState kind="error" title="Analytics unavailable" detail={error} onRetry={loadAnalytics} />;
+  if (!data) return <PageState kind="loading" title="Preparing analytics" detail="Aggregating real task, run, conversation, and message records." />;
 
   const maxDay = Math.max(...data.messagesPerDay.map(d => d.count), 1);
 
@@ -1243,42 +1424,95 @@ function TerminalPage() {
 
 // --- Chat View (Reused from existing) ---
 function ChatView() {
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [convs, setConvs] = useState<Conversation[]>([]);
   const [convId, setConvId] = useState<number | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
-  const [activeWorkspaceId, setActiveWorkspaceId] = useState<number>(1);
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState<number | null>(null);
+  const [loadingWorkspaces, setLoadingWorkspaces] = useState(true);
+  const [loadingConvs, setLoadingConvs] = useState(false);
+  const [loadingMessages, setLoadingMessages] = useState(false);
+  const [workspaceBusy, setWorkspaceBusy] = useState(false);
+  const [conversationBusy, setConversationBusy] = useState(false);
+  const [chatError, setChatError] = useState("");
+  const [createOpen, setCreateOpen] = useState(false);
+  const [newWorkspaceName, setNewWorkspaceName] = useState("");
+  const [newWorkspaceDescription, setNewWorkspaceDescription] = useState("");
+  const [createError, setCreateError] = useState("");
   const logRef = useRef<HTMLDivElement>(null);
 
-  // Load workspaces and conversations
+  const errorMessage = (error: unknown, fallback: string) =>
+    error instanceof Error && error.message ? error.message : fallback;
+
+  // Load the real workspace inventory and honor the server-persisted active one.
   useEffect(() => {
+    let stale = false;
     api.workspaces().then(d => {
+      if (stale) return;
+      setWorkspaces(d.workspaces);
       if (d.workspaces.length > 0) {
-        const activeId = d.activeWorkspaceId || d.workspaces[0].id;
+        const persisted = d.workspaces.some((workspace) => workspace.id === d.activeWorkspaceId)
+          ? d.activeWorkspaceId
+          : null;
+        const activeId = persisted ?? d.workspaces[0].id;
         setActiveWorkspaceId(activeId);
-        api.conversations(activeId).then(convData => {
-          setConvs(convData.conversations);
-          setConvId(convData.conversations[0]?.id ?? null);
-        });
       }
-    }).catch(() => {});
+    }).catch((error) => {
+      if (!stale) setChatError(errorMessage(error, "Could not load workspaces."));
+    }).finally(() => {
+      if (!stale) setLoadingWorkspaces(false);
+    });
+    return () => { stale = true; };
   }, []);
 
-  // Load conversations when workspace changes
+  // A workspace switch clears old scoped data immediately so conversations can
+  // never be shown under the wrong workspace while the next request is pending.
   useEffect(() => {
+    let stale = false;
+    setConvs([]);
+    setConvId(null);
+    setMessages([]);
+    if (!activeWorkspaceId) return () => { stale = true; };
+    setLoadingConvs(true);
+    setChatError("");
     api.conversations(activeWorkspaceId).then(d => {
+      if (stale) return;
       setConvs(d.conversations);
-      if (!convId || !d.conversations.find(c => c.id === convId)) {
-        setConvId(d.conversations[0]?.id ?? null);
-      }
+      setConvId(d.conversations[0]?.id ?? null);
+    }).catch((error) => {
+      if (!stale) setChatError(errorMessage(error, "Could not load conversations."));
+    }).finally(() => {
+      if (!stale) setLoadingConvs(false);
     });
+    return () => { stale = true; };
   }, [activeWorkspaceId]);
 
   useEffect(() => {
-    if (convId) api.messages(convId).then(d => setMessages(d.messages)).catch(() => {});
-    else setMessages([]);
+    let stale = false;
+    setMessages([]);
+    if (!convId) return () => { stale = true; };
+    setLoadingMessages(true);
+    setChatError("");
+    api.messages(convId).then(d => {
+      if (!stale) setMessages(d.messages);
+    }).catch((error) => {
+      if (!stale) setChatError(errorMessage(error, "Could not load messages."));
+    }).finally(() => {
+      if (!stale) setLoadingMessages(false);
+    });
+    return () => { stale = true; };
   }, [convId]);
+
+  useEffect(() => {
+    if (!createOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !workspaceBusy) setCreateOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [createOpen, workspaceBusy]);
 
   // Shared speaking store → "AI speaking" indicator with the one shared wave (Phase D-2 Chunk B).
   const speaking = useSpeaking();
@@ -1294,6 +1528,63 @@ function ChatView() {
 
   useEffect(() => { logRef.current?.scrollTo({ top: logRef.current.scrollHeight }); }, [messages]);
 
+  const switchWorkspace = async (nextId: number) => {
+    if (!nextId || nextId === activeWorkspaceId || workspaceBusy) return;
+    setWorkspaceBusy(true);
+    setChatError("");
+    try {
+      await api.activateWorkspace(nextId);
+      setActiveWorkspaceId(nextId);
+    } catch (error) {
+      setChatError(errorMessage(error, "Could not activate workspace."));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  };
+
+  const createWorkspace = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const name = newWorkspaceName.trim();
+    if (!name || workspaceBusy) return;
+    setWorkspaceBusy(true);
+    setCreateError("");
+    try {
+      const created = await api.createWorkspace(name, newWorkspaceDescription.trim());
+      // Creation and activation are separate real mutations. Only switch the UI
+      // after both calls succeed, then refresh from the server as source of truth.
+      await api.activateWorkspace(created.workspace.id);
+      const refreshed = await api.workspaces();
+      setWorkspaces(refreshed.workspaces);
+      setActiveWorkspaceId(created.workspace.id);
+      setNewWorkspaceName("");
+      setNewWorkspaceDescription("");
+      setCreateOpen(false);
+    } catch (error: any) {
+      const duplicate = error?.status === 409;
+      setCreateError(duplicate ? "A workspace with that name already exists." : errorMessage(error, "Could not create workspace."));
+      // If creation succeeded but activation/refresh failed, keep the real list
+      // synchronized instead of hiding the newly-created row.
+      api.workspaces().then((data) => setWorkspaces(data.workspaces)).catch(() => {});
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  };
+
+  const createConversation = async () => {
+    if (!activeWorkspaceId || conversationBusy) return;
+    setConversationBusy(true);
+    setChatError("");
+    try {
+      const d = await api.createConversation(activeWorkspaceId, "New conversation");
+      setConvs((current) => [d.conversation, ...current]);
+      setConvId(d.conversation.id);
+    } catch (error) {
+      setChatError(errorMessage(error, "Could not create a conversation."));
+    } finally {
+      setConversationBusy(false);
+    }
+  };
+
   const send = async () => {
     if (!input.trim() || !convId) return;
     setBusy(true);
@@ -1303,50 +1594,135 @@ function ChatView() {
       await api.sendMessage(convId, text);
       const d = await api.messages(convId);
       setMessages(d.messages);
-    } catch (e) { console.error(e); }
+    } catch (error) {
+      setInput(text);
+      setChatError(errorMessage(error, "Message could not be sent."));
+    }
     finally { setBusy(false); }
   };
 
+  const activeWorkspace = workspaces.find((workspace) => workspace.id === activeWorkspaceId);
+  const activeConversation = convs.find((conversation) => conversation.id === convId);
+
   return (
-    <section className="chat" style={{ flex: 1, display: "flex", flexDirection: "column", height: "80vh" }}>
-      <div className="card" style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-        <div style={{ display: "flex", gap: 10, marginBottom: 10 }}>
-          <select 
-            className="conv-select" 
-            value={activeWorkspaceId}
-            onChange={e => setActiveWorkspaceId(Number(e.target.value))}
-            style={{ maxWidth: 200 }}
-          >
-            <option value={1}>Workspace 1</option>
-          </select>
-          <select className="conv-select" value={convId ?? ""} onChange={e => setConvId(Number(e.target.value))}>
-            {convs.map(c => <option key={c.id} value={c.id}>{c.title}</option>)}
-          </select>
-          <button className="btn" onClick={async () => {
-            const d = await api.createConversation(activeWorkspaceId, "New conversation");
-            setConvs(c => [d.conversation, ...c]);
-            setConvId(d.conversation.id);
-          }}>+</button>
+    <section className="chat-page">
+      <div className="chat-page-heading">
+        <div>
+          <div className="chat-eyebrow">Workspace conversation</div>
+          <h2>{activeWorkspace?.name ?? (loadingWorkspaces ? "Loading…" : "Chat")}</h2>
+          {activeWorkspace?.description && <p>{activeWorkspace.description}</p>}
         </div>
+        {activeConversation && <span className="chat-context-pill">{activeConversation.title}</span>}
+      </div>
+
+      <div className="card chat-shell">
+        <div className="chat-toolbar">
+          <label className="chat-toolbar-field workspace-field">
+            <span>Workspace</span>
+            <select
+              className="conv-select"
+              value={activeWorkspaceId ?? ""}
+              onChange={(event) => switchWorkspace(Number(event.target.value))}
+              disabled={loadingWorkspaces || workspaceBusy || workspaces.length === 0}
+            >
+              {workspaces.length === 0 && <option value="">No workspaces</option>}
+              {workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
+            </select>
+          </label>
+          <button className="chat-toolbar-button" onClick={() => { setCreateError(""); setCreateOpen(true); }}>
+            <span aria-hidden="true">＋</span><span>Workspace</span>
+          </button>
+
+          <label className="chat-toolbar-field conversation-field">
+            <span>Conversation</span>
+            <select
+              className="conv-select"
+              value={convId ?? ""}
+              onChange={(event) => setConvId(Number(event.target.value))}
+              disabled={!activeWorkspaceId || loadingConvs || convs.length === 0}
+            >
+              {loadingConvs && <option value="">Loading conversations…</option>}
+              {!loadingConvs && convs.length === 0 && <option value="">No conversations</option>}
+              {convs.map((conversation) => <option key={conversation.id} value={conversation.id}>{conversation.title}</option>)}
+            </select>
+          </label>
+          <button className="chat-toolbar-button icon-only" onClick={createConversation}
+            disabled={!activeWorkspaceId || conversationBusy} aria-label="Create conversation" title="Create conversation">
+            {conversationBusy ? "…" : "＋"}
+          </button>
+        </div>
+
+        {chatError && <div className="chat-alert" role="alert">{chatError}</div>}
         {speaking && (
           <div className="chat-speaking-indicator">
             <Wave bars={14} className="chat-speaking-wave" />
             Julie is speaking…
           </div>
         )}
-        <div className="chat-log" ref={logRef} style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 12 }}>
+        <div className="chat-log" ref={logRef}>
+          {(loadingConvs || loadingMessages) && <div className="chat-empty">Loading conversation…</div>}
+          {!loadingConvs && !loadingMessages && activeWorkspaceId && !convId && (
+            <div className="chat-empty">
+              <strong>No conversation in this workspace</strong>
+              <span>Create one to start talking with Julie.</span>
+              <button className="btn" onClick={createConversation} disabled={conversationBusy}>New conversation</button>
+            </div>
+          )}
+          {!loadingWorkspaces && workspaces.length === 0 && (
+            <div className="chat-empty">
+              <strong>No workspace yet</strong>
+              <span>Create a workspace before starting a conversation.</span>
+              <button className="btn" onClick={() => setCreateOpen(true)}>Create workspace</button>
+            </div>
+          )}
+          {!loadingMessages && convId && messages.length === 0 && (
+            <div className="chat-empty"><strong>Ready when you are</strong><span>Send the first message in this conversation.</span></div>
+          )}
           {messages.map(m => (
             <div key={m.id} className={`msg ${m.role}`}>
               {m.role === "assistant" ? <Markdown text={m.text} /> : <span className="msg-plain">{m.text}</span>}
             </div>
           ))}
         </div>
-        <div className="chat-input" style={{ display: "flex", gap: 10, marginTop: 10 }}>
-          <textarea value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === "Enter" && !e.shiftKey && send()}
-            placeholder="Message Julie…" />
-          <button className="send-btn" onClick={send} disabled={busy}>Send</button>
+        <div className="chat-input">
+          <textarea value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => {
+            if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+          }} placeholder={convId ? `Message Julie in ${activeWorkspace?.name ?? "this workspace"}…` : "Create a conversation to begin"}
+            disabled={!convId || busy} />
+          <button className="send-btn" onClick={send} disabled={busy || !convId || !input.trim()}>{busy ? "Sending…" : "Send"}</button>
         </div>
       </div>
+
+      {createOpen && (
+        <div className="dialog-backdrop" onMouseDown={() => !workspaceBusy && setCreateOpen(false)}>
+          <div className="workspace-dialog card" role="dialog" aria-modal="true" aria-labelledby="create-workspace-title"
+            onMouseDown={(event) => event.stopPropagation()}>
+            <button className="dialog-close" onClick={() => setCreateOpen(false)} disabled={workspaceBusy} aria-label="Close">×</button>
+            <div className="chat-eyebrow">New workspace</div>
+            <h2 id="create-workspace-title">Create a focused space</h2>
+            <p>Conversations and tasks stay scoped to this workspace.</p>
+            <form onSubmit={createWorkspace} className="workspace-form">
+              <label>
+                <span>Name</span>
+                <input autoFocus value={newWorkspaceName} onChange={(event) => setNewWorkspaceName(event.target.value)}
+                  maxLength={120} placeholder="e.g. Product launch" required disabled={workspaceBusy} />
+              </label>
+              <label>
+                <span>Description <small>optional</small></span>
+                <textarea value={newWorkspaceDescription} onChange={(event) => setNewWorkspaceDescription(event.target.value)}
+                  maxLength={2000} rows={4} placeholder="What is this workspace for?" disabled={workspaceBusy} />
+              </label>
+              {createError && <div className="chat-alert" role="alert">{createError}</div>}
+              <div className="dialog-actions">
+                <button type="button" className="btn-secondary" onClick={() => setCreateOpen(false)} disabled={workspaceBusy}>Cancel</button>
+                <button type="submit" className="btn" disabled={workspaceBusy || !newWorkspaceName.trim()}>
+                  {workspaceBusy ? "Creating…" : "Create & activate"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </section>
   );
 }

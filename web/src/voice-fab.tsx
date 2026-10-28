@@ -21,6 +21,7 @@ import { startSpeechRecognition, submitVoiceText } from "./voice";
 // Custom event name: dispatched by the AI nav button / Home orb to trigger
 // the FAB's inline capture from any page (no route change).
 export const VOICE_START_EVENT = "julie:voice-start";
+export const VOICE_STATE_EVENT = "julie:voice-state";
 // Custom event name: dispatched after a voice reply is posted; ChatView
 // listens for it to refresh its message list.
 const CHAT_REFRESH_EVENT = "julie:voice-message-sent";
@@ -31,7 +32,15 @@ export function requestVoiceCapture(): void {
   window.dispatchEvent(new CustomEvent(VOICE_START_EVENT));
 }
 
-export function VoiceFab({ route, onOpenChat }: { route: string; onOpenChat: () => void }) {
+export function VoiceFab({
+  route,
+  onOpenChat,
+  showButton = true,
+}: {
+  route: string;
+  onOpenChat: () => void;
+  showButton?: boolean;
+}) {
   const [listening, setListening] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [error, setError] = useState("");
@@ -100,6 +109,12 @@ export function VoiceFab({ route, onOpenChat }: { route: string; onOpenChat: () 
     return () => window.removeEventListener(VOICE_START_EVENT, handler);
   }, [begin]);
 
+  // Let the single visible footer control reflect the headless controller.
+  useEffect(() => {
+    const state = error ? "error" : processing ? "processing" : listening ? "listening" : "idle";
+    window.dispatchEvent(new CustomEvent(VOICE_STATE_EVENT, { detail: { state } }));
+  }, [error, listening, processing]);
+
   // Cleanup on unmount
   useEffect(() => () => { stopRef.current?.(); }, []);
 
@@ -131,26 +146,29 @@ export function VoiceFab({ route, onOpenChat }: { route: string; onOpenChat: () 
         </div>
       )}
 
-      {/* Floating action button — fixed position via CSS, present on every route */}
-      <div className="voice-fab-container">
-        <Wave bars={8} className="voice-fab-wave" />
-        <button
-          className={cls}
-          onClick={begin}
-          aria-label={listening ? "Stop voice capture" : "Start voice capture"}
-          title={listening ? "Listening… tap to stop" : "Tap to speak"}
-        >
-          {processing ? (
-            <span className="voice-fab-spin" />
-          ) : (
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
-              <rect x="9" y="3" width="6" height="11" rx="3" />
-              <path d="M5 11a7 7 0 0 0 14 0" />
-              <path d="M12 18v3" />
-            </svg>
-          )}
-        </button>
-      </div>
+      {/* The controller can run headlessly. Julie mounts it headless so the
+          footer-center AI control is the ONE visible voice entry point. */}
+      {showButton && (
+        <div className="voice-fab-container">
+          <Wave bars={8} className="voice-fab-wave" />
+          <button
+            className={cls}
+            onClick={begin}
+            aria-label={listening ? "Stop voice capture" : "Start voice capture"}
+            title={listening ? "Listening… tap to stop" : "Tap to speak"}
+          >
+            {processing ? (
+              <span className="voice-fab-spin" />
+            ) : (
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+                <rect x="9" y="3" width="6" height="11" rx="3" />
+                <path d="M5 11a7 7 0 0 0 14 0" />
+                <path d="M12 18v3" />
+              </svg>
+            )}
+          </button>
+        </div>
+      )}
     </>
   );
 }

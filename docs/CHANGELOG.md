@@ -1,5 +1,32 @@
 # Changelog
 
+## Phase E0 — Stability, Chat, and command-center shell (2026-10-28)
+### Fixed
+- Removed the Home microphone orb and visible floating FAB; retained the center
+  footer AI microphone as the single global voice entry point.
+- Fixed Chat's deterministic out-of-memory crash: recursive Markdown rendering
+  no longer resets a shared global regex cursor.
+- Reduced avatar-message, chat-preview, card, and quick-reply density for phones.
+- Right-aligned the live gateway status in a collision-safe top bar.
+
+### Added
+- Real Chat workspace inventory, persisted workspace activation, create-and-
+  activate dialog, scoped transition clearing, and honest async/error states.
+- Full grouped sidebar navigation for command, operations, and system routes.
+- Explicit planned-capability pages for Projects, Automations, Settings, and
+  Future Lab so unfinished links never imply working functionality.
+- Redesigned five-item mobile footer: Home, Chat, AI voice, Agents, More.
+- Route error boundary plus shared loading/empty/error presentation for major pages.
+- `scripts/test-markdown.tsx` regression coverage for recursive inline Markdown.
+
+### Verification
+- Strict backend + frontend builds pass; Markdown tests 2/2 and Phase C tests 9/9.
+- All 12 shell routes return 200; service health is ok; real gateway is connected
+  at server version 2026.10.5.
+- Julie task rows 25–32 are done; 42 scoped Phase E tasks remain in backlog.
+
+---
+
 ## Phase D-3.1 — Mobile stabilization & backlog closure (2026-10-27)
 ### Fixed
 - Phone grid overflow: 3 equal `minmax(0, 1fr)` tracks, 8px outer gutter, and
@@ -145,4 +172,4 @@
 
 ---
 
-*Last updated: 2026-10-27*
+*Last updated: 2026-10-28*

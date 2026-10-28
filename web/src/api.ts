@@ -11,6 +11,8 @@ async function jfetch<T = any>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export type WorkspacesResponse = { ok: boolean; workspaces: Workspace[]; activeWorkspaceId: number | null };
+export type WorkspaceCreatedResponse = { ok: boolean; workspace: Workspace };
+export type WorkspaceActivatedResponse = { ok: boolean; activeWorkspaceId: number };
 export type TasksResponse = { ok: boolean; tasks: Task[]; runningTaskIds: number[] };
 export type ConversationsResponse = { ok: boolean; conversations: Conversation[] };
 export type ConversationCreatedResponse = { ok: boolean; conversation: Conversation };
@@ -23,8 +25,8 @@ export const api = {
   logout: () => jfetch("/api/logout", { method: "POST" }),
   gatewayStatus: () => jfetch<GatewayStatus>("/api/gateway/status"),
   workspaces: () => jfetch<WorkspacesResponse>("/api/workspaces"),
-  createWorkspace: (name: string, description = "") => jfetch("/api/workspaces", { method: "POST", body: JSON.stringify({ name, description }) }),
-  activateWorkspace: (id: number) => jfetch(`/api/workspaces/${id}/activate`, { method: "POST" }),
+  createWorkspace: (name: string, description = "") => jfetch<WorkspaceCreatedResponse>("/api/workspaces", { method: "POST", body: JSON.stringify({ name, description }) }),
+  activateWorkspace: (id: number) => jfetch<WorkspaceActivatedResponse>(`/api/workspaces/${id}/activate`, { method: "POST" }),
   tasks: (workspaceId: number) => jfetch<TasksResponse>(`/api/tasks?workspaceId=${workspaceId}`),
   createTask: (workspaceId: number, title: string, status = "backlog") => jfetch("/api/tasks", { method: "POST", body: JSON.stringify({ workspaceId, title, status }) }),
   updateTask: (id: number, patch: Record<string, unknown>) => jfetch(`/api/tasks/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),

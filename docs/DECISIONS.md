@@ -77,3 +77,13 @@ Gmail/Facebook/etc. show `Not connected` unless a matching gateway capability is
 actually reported. A toggle only persists a local enable/pause preference in the
 existing settings table; it does not perform or imply OAuth. External account
 connection flows remain out of scope until implemented for real.
+
+## D-012 — One visible voice entry with a headless shared controller
+Date: 2026-10-28
+The global voice controller remains mounted once in the authenticated shell so
+capture, current-conversation reuse, TTS, and error handling stay centralized.
+It renders no floating button; the center mobile-footer AI control dispatches to
+it and receives listening/processing/error state through a local browser event.
+Rationale: satisfy the single-microphone UI while avoiding duplicated capture
+implementations or changing the proven audio path. The deep `/voice` route is
+retained for direct links but is not another shell navigation control.

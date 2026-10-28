@@ -27,8 +27,11 @@ function renderInline(text: string, keyBase: string): React.ReactNode[] {
   let last = 0;
   let k = 0;
   let m: RegExpExecArray | null;
-  INLINE_RE.lastIndex = 0;
-  while ((m = INLINE_RE.exec(text)) !== null) {
+  // A local regex is essential here: renderInline recurses for bold/italic/link
+  // labels. Sharing one global RegExp lets the inner call reset lastIndex, so
+  // the outer call matches the same token forever and eventually OOMs Chat.
+  const inlineRe = new RegExp(INLINE_RE.source, "g");
+  while ((m = inlineRe.exec(text)) !== null) {
     if (m.index > last) nodes.push(text.slice(last, m.index));
     const tok = m[0];
     const key = `${keyBase}.${k++}`;
