@@ -1,5 +1,140 @@
 # Project State: Julie AiOS
 
+## Status: Phase E5 — Office operations and agent communications complete
+**Date:** 2026-10-29
+
+### Outcome
+The owner's nine high-priority E5 milestones (task rows 95–103) superseded the
+existing backlog and were completed in dependency order. Julie has her center
+mobile microphone back, a real operations-grade task system, an explicit office
+hierarchy, corrected/trained agents, direct agent messaging, and task-linked
+group rooms where agents receive and respond to one another's confirmed messages.
+
+### Delivered
+- **Mobile voice restored:** footer is Home / Chat / Talk microphone / Agents /
+  More. The AI Center and its session-creating shortcuts are gone. The mic uses
+  the selected existing conversation (or latest existing conversation outside
+  Chat) and asks for a conversation instead of creating one implicitly.
+- **Task Operations:** SQLite tasks now have optional live/workspace-validated
+  agent ownership and an append-only activity timeline. Assigned task runs route
+  to that agent's private session; unassigned runs use `main`. Browser payloads
+  expose only `session_linked`, never task/conversation Gateway session keys.
+  The modern board provides real KPIs, filters, ownership, board/list views,
+  editor/run controls, output, and activity on desktop and mobile.
+- **Office hierarchy:** explicit HR data validates and renders Owner/CEO →
+  Julie/main → department lead → same-department specialist. Mission Control is
+  complete: 10/10 members, 2 departments, 2 leads, 7 specialists.
+  - Product & Technology: `dev-builder` lead; coder, researcher, tester,
+    `devops`, and command-center QA specialists.
+  - Business & Growth: `ops` lead; commerce and content specialists.
+- **Agent training:** all ten identities, SOUL files, and operating charters now
+  match their real office role/reporting line. Main's startup charter contains
+  the mandatory create/delete sequence; full reviewed templates live in
+  `AGENT_LIFECYCLE.md` and `AGENT_TEMPLATE.md`. Spawn allowlists mirror the
+  hierarchy. A fresh real main session reproduced the required sequence.
+- **Agent Messenger:** `/agent-messenger` is a real agent inbox, with one identity
+  per assigned agent and multiple real Gateway sessions per agent. New-session
+  selection does not mutate state until send; history is bounded/sanitized and
+  task/session/run facts are never relabeled as presence/read receipts.
+- **Task rooms:** durable room/task/member/message data lives in SQLite; private
+  member session keys stay backend-only. An owner turn returns 202 queued, then
+  selected agents execute sequentially through their own Gateway sessions. Each
+  later agent receives the confirmed shared transcript, while failures are
+  persisted and displayed as failures. SSE reports sanitized live progress and
+  supports reconnect snapshots.
+- **Stability/security:** repaired invalid skill metadata; disabled the broken
+  placeholder-key embedding path in deliberate FTS-only mode; replaced the
+  unsupported `system.get-health` probe with documented `sessions.list`; removed
+  all conversation/task routing keys from browser projections.
+
+### Verification
+- ✅ Backend `tsc`, frontend `tsc --noEmit`, and Vite production build
+- ✅ Markdown regression 2/2; Phase C regression 47/47; E5 office regression 9/9
+- ✅ SQLite online backups before task, organization, and room migrations;
+  post-migration `PRAGMA integrity_check = ok`
+- ✅ OpenClaw config valid; Gateway 2026.10.5 and Julie health connected
+- ✅ Real DM: Operations Lead returned exact `OPS-DM-OK`
+- ✅ Real group turn: Julie replied, then Engineering Lead explicitly
+  acknowledged Julie's confirmed room message and added a distinct criterion
+- ✅ Julie restart continuity: room transcript/member/task survived and the same
+  lead room session returned exact `ROOM-RESUMED`
+- ✅ Gateway status probes return connected/latency without new
+  `system.get-health INVALID_REQUEST` logs
+- ✅ A later external config rewrite added two unsupported model endpoint flags;
+  after an owner-visible outage, the exact broken config was backed up, only the
+  invalid keys were removed, validation passed, and Gateway returned ready
+  without a host reboot
+
+### Honest boundaries / follow-up
+- Direct agent DMs are final-reply calls, not token streaming.
+- Room data survives Julie restarts; an in-flight dispatch monitor does not.
+- Memory search is intentionally keyword-only (`provider: none`) until a real
+  embedding provider/credential is selected; FTS is ready, semantic vectors are
+  disabled.
+- Existing historical AI Center conversation rows were preserved rather than
+  destructively deleted.
+- The installed community Bailian voice plugin still has an OpenClaw
+  `provenance-invalid` warning. Julie did not pretend this means trusted and did
+  not silently allowlist, uninstall, or reinstall owner-selected software.
+
+---
+
+## Status: Phase E4 — Chat is live (streaming), attachments land in the Gateway
+**Date:** 2026-10-28
+
+### Outcome
+The Chat page now behaves like a live connection to the real Gateway instead
+of one long blocking POST. Messages are acknowledged the moment `chat.send`
+is accepted, then status phases, streaming deltas, and the persisted reply
+arrive over the per-conversation SSE stream. File attachments (images, PDF,
+text files) are sent through the same turn — decision D-024. Conversation
+management gained a custom picker with a real per-row delete button, and the
+chat route locks page scrolling to the transcript.
+
+### Delivered
+- **Real-time chat lifecycle:** `POST /api/conversations/:id/messages` (and
+  the new `POST /api/upload`) return 202 with the stored user message as soon
+  as the real Gateway acknowledges `chat.send`; a background run monitor
+  persists the final assistant reply server-side. The old pattern of holding
+  the HTTP request open for the whole agent run (surfacing misleading 502s)
+  is gone.
+- **Visible run states:** ChatView streams the sanitized run projection over
+  `/api/conversations/:id/events` — send → Gateway acknowledgement → Gateway
+  phase labels (e.g. preparing context, rate-limit retries) → live response
+  text → saving → the persisted message. A reconnecting/rejoined client
+  restores the observable state of an in-flight run instead of appearing
+  frozen.
+- **Attachments:** a paperclip button in the composer accepts one file
+  (PNG/JPEG/WebP/GIF/PDF/txt/md/csv/json), shows a removable chip with the
+  real file size, and submits it with the message in one authenticated
+  multipart turn. Server-side checks: magic-byte signature, extension/MIME
+  cross-check, 8 MB general / 6 MB image limit, no secrets or unsafe names.
+- **Conversation picker:** the native `<select>` was replaced with an
+  accessible dropdown; every row carries a delete button calling
+  `DELETE /api/conversations/:id` (blocked with 409 while a run is active —
+  reported honestly). Deleting the active conversation selects the next one.
+- **Scroll fix:** on `/chat` the app frame is `overflow: hidden` at fixed
+  viewport height; only `.chat-log` scrolls, on desktop and phones.
+
+### Verification
+- `npm run build` (backend tsc strict) and `npm run web:build` pass.
+- Live round trip against the running Gateway: login → multipart upload of a
+  text file → 202 `accepted` → SSE events observed (`sending`,
+  `accepted`, `responding` with streamed text, `complete` with the persisted
+  assistant row). Health check `ok` after service restart.
+
+### Honest boundaries
+- Only ONE file may be attached per turn (the Gateway chat.send contract in
+  use; multi-file turn batching was the removed multer attempt's shape and is
+  not hidden as done).
+- Run history is monitor state in memory; a server restart mid-run surfaces
+  as an error on the next event/connect, the assistant reply is claims-backed
+  by gateway session history polling in the background monitor.
+- Voice capture flow now waits for the persisted reply through the same SSE
+  channel with a 10-minute bound (was: a single blocking HTTP call).
+
+---
+
 ## Status: Phase E0 complete (stability, Chat, and command-center shell)
 **Date:** 2026-10-28
 
@@ -339,6 +474,21 @@ center AI ASSISTANT panel.
 - ✅ `sudo systemctl restart julie.service` — active; health 200 (gateway connected, server 2026.10.5)
 - ✅ Live bundle contains new avatar markers (`hvDissolve` in JS, `hvCorePulse` in CSS)
 
+
+### E3.1 OpenCode access, stats, and Projects registry
+- `E3-07` wired an owner-authenticated, read-only bridge from Julie to the real
+  OpenCode v2 background service (verified live against OpenCode 2.2.0 on this
+  host). Discovery reads `$XDG_STATE_HOME/opencode/service.json`, rejects
+  non-loopback URLs, and authenticates with Basic credentials that never reach
+  the browser. Per owner direction the `/opencode` page is an activity/stats
+  view (prompts, steps, tokens, streak, tool success, 14-day steps bars, live
+  "in progress" sessions, history) plus a link that opens OpenCode's own
+  password-gated web UI via the service's advertised https tunnel — chat,
+  model choice, and uploads are not reimplemented in Julie.
+- `E3-10` replaced the Projects planned-page with a real development registry
+  fed by OpenCode `/api/project` records, grouped by canonical path with
+  bounded per-path session counts; host paths stay server-side (D-022/D-023).
+
 ### Known Limitations (honest)
 - The avatar is a hand-built SVG illustration (stylized hologram), not a rendered
   3D mesh — no three.js/webgl dependency per minimal-deps rule. A real glTF model
@@ -420,4 +570,4 @@ None.
 
 ---
 
-*Last updated: 2026-10-28*
+*Last updated: 2026-10-29*

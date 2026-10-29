@@ -1,5 +1,129 @@
 # Changelog
 
+## Phase E5 — Office operations, hierarchy, messenger, and rooms (2026-10-29)
+### Added
+- Nine high-priority E5 milestones (tasks 95–103), with real assignees and status
+  transitions recorded before implementation. Lower-priority backlog work stayed
+  paused.
+- Authoritative optional task assignee (`assigned_agent_id`), append-only task
+  activity, server-derived statistics, workspace/live-roster validation, and
+  assigned-agent execution. Task and conversation Gateway session keys are no
+  longer browser fields.
+- Modern responsive Task Operations page: KPI strip, search/status/priority/
+  assignee filters, board/list modes, ownership, live-run evidence, safe task
+  editor, agent result, and activity timeline.
+- Explicit office hierarchy API/UI: owner/CEO → Julie (`main`) → Product &
+  Technology and Business & Growth leads → seven specialists. All 10 active
+  workspace agents now have a configured role, department, reporting parent,
+  role-specific identity, SOUL, and operating charter.
+- Main-agent lifecycle training (`OFFICE_ORG.md`, `AGENT_LIFECYCLE.md`, and
+  `AGENT_TEMPLATE.md`) plus hierarchy-scoped OpenClaw spawn allowlists. A fresh
+  real `main` session reproduced the complete create/delete safety sequences.
+- `/agent-messenger`: real per-agent inbox, multiple Gateway sessions per agent,
+  explicit unsent new-session drafts, bounded sanitized history, exact run state,
+  open assigned-task counts, and direct owner DMs.
+- Persistent task rooms: SQLite room/member/message tables, authenticated API,
+  private per-member Gateway sessions, sequential shared-transcript dispatch,
+  confirmed/local/failed delivery states, sanitized SSE progress, archive/reopen,
+  task activity links, and a responsive Task Rooms UI inside Agent Messenger.
+- `scripts/test-e5-office.mjs` (9/9): auth, task statistics/assignment, session-key
+  redaction, organization invariants, confirmation gates, room projections/SSE,
+  and linked agent task history.
+
+### Fixed
+- Restored the center mobile-footer microphone (Home / Chat / Talk / Agents /
+  More) and removed the unwanted AI Center route, tiles, CSS, and automatic
+  session-creating commands. Voice targets the selected existing Chat
+  conversation and never silently creates one.
+- Repaired the workspace `opencode-cli` skill's missing frontmatter after a
+  timestamped backup; it is now eligible and model-visible.
+- Corrected mismatched copied agent identities/charters (Researcher/Reviewer/
+  Chief of Staff templates attached to unrelated IDs).
+- Stopped repeated OpenAI placeholder-key memory embedding 401s by explicitly
+  selecting documented keyword-only `memory.search.provider: none`; FTS is
+  ready, semantic vectors are intentionally disabled until a real provider is
+  configured.
+- Removed unsupported `system.get-health` polling. Julie now proves live Gateway
+  status directly with documented `sessions.list`, eliminating a successful
+  check's recurring `INVALID_REQUEST` log.
+- Agent overview/detail now project real linked tasks instead of claiming task
+  assignment is unavailable.
+
+### Verification
+- Backend strict TypeScript, frontend strict TypeScript, and Vite production
+  builds pass. Markdown regression: 2/2. Phase C regression: 47/47. E5 office
+  regression: 9/9.
+- Live DM: a new Operations Lead session returned exact `OPS-DM-OK`, with no
+  session key, run ID, or host path in the response.
+- Live room: owner → Julie confirmed reply → Engineering Lead confirmed reply
+  acknowledging Julie's message. After restarting Julie, room #1 retained task,
+  members, and transcript; the same stored lead session returned
+  `ROOM-RESUMED`.
+- OpenClaw config validates; identity/delegation changes hot-reloaded without a
+  Gateway restart. Julie health is ok and connected to Gateway 2026.10.5.
+
+### Honest boundaries
+- Direct DMs wait for a completed Gateway reply rather than streaming tokens.
+- Room transcript/member state survives Julie restarts, but an in-flight room
+  dispatch is process-local and is not recoverable after a Julie restart.
+- Existing historical “AI Center conversation” rows were preserved; the removed
+  UI can no longer create new ones.
+- The community Bailian voice plugin still reports `provenance-invalid`; it was
+  inspected but not automatically trusted, allowlisted, removed, or reinstalled.
+
+## Gateway outage — invalid config key repaired (2026-10-29)
+### Fixed
+- A second config rewrite at 11:43:58 added unsupported
+  `models.openAiChatCompletionsEnabled` and
+  `models.openResponsesEnabled`. Hot reload rejected the file; the subsequent
+  Gateway restart stopped at `78/CONFIG`. The broken file was backed up as
+  `openclaw.json.bak.pre-model-endpoint-key-fix-20261029T115020`, only those two
+  keys were removed, config validation passed, and the user Gateway unit was
+  restored. OpenClaw reported `ready` at 11:51:18 and Julie reconnected to
+  server 2026.10.5. No host reboot occurred.
+- `~/.openclaw/openclaw.json` carried `tools.sessions.agentToAgent: true`,
+  which the 2026.10.5 schema rejects (`tools.sessions` only accepts
+  `visibility`; `agentToAgent` is now a sibling object). Every Gateway start
+  aborted with exit `78/CONFIG`, and `RestartPreventExitStatus=78` kept the
+  unit from retrying, so the Gateway stayed down after the 01:39 restart.
+  Repaired by moving the key to `tools.agentToAgent: { "enabled": true }`
+  (same intent as `true`), after backing up to
+  `openclaw.json.bak.pre-agenttoagent-fix-20261029T075442`. Validated with
+  `openclaw config validate`, then `systemctl --user reset-failed` +
+  `restart openclaw-gateway.service`; `/api/health` reports
+  `gateway.connected: true` (server 2026.10.5) and a live chat turn completed
+  through `202 → accepted → complete`.
+- Julie-side behaviour confirmed during the outage: a Gateway that is up but
+  still finishing agent admission answers `chat.send` with `UNAVAILABLE`; the
+  route returns that as a 502 with the real reason, rolls back the stored user
+  message, and clears `activeRun` (no phantom pending turn).
+
+## Chat realtime + attachments (2026-10-28)
+### Added
+- Chat sends acknowledge immediately via the real Gateway `chat.send` (202),
+  with the reply persisted server-side in a background run monitor; the
+  browser subscribes to `/api/conversations/:id/messages` events only through
+  the sanitized SSE projection.
+- Live run states in ChatView: send → Gateway ack → Gateway phase labels →
+  streaming response text → saving → persisted message, plus reconnect
+  restore of in-flight runs (`hello` activeRun snapshot + messages-load
+  activeRun).
+- `POST /api/upload`: authenticated multipart (native `Response.formData()`,
+  no new dependency), magic-byte + extension/MIME validation, 8 MB / 6 MB
+  (image) limits, forwarded to `chat.send` `attachments` (decision D-024).
+- Composer paperclip + attachment chip with real file sizes (single file per
+  turn; images/PDF/text files).
+- Custom conversation picker replacing the native `<select>`, with a
+  per-row delete button wired to `DELETE /api/conversations/:id` (409 while a
+  run is active). Multi-file upload stub and its multer disk-store were
+  consolidated away (dependencies `multer`/`@types/multer` removed).
+
+### Fixed
+- Chat route scrolling: `.main.chat-main` locks height at `100dvh` with
+  hidden overflow; only `.chat-log` scrolls, desktop and mobile.
+- `deleteConversation` stray `X-Julie-Confirm` fallback fetch replaced by the
+  typed API method.
+
 ## Phase E0 — Stability, Chat, and command-center shell (2026-10-28)
 ### Fixed
 - Removed the Home microphone orb and visible floating FAB; retained the center
@@ -308,3 +432,44 @@
 ---
 
 *Last updated: 2026-10-28*
+
+## E3-07 — OpenCode direct dashboard access (2026-10-28)
+### Added
+- Owner-authenticated, read-only bridge to the local OpenCode v2 background
+  service (`server/src/opencode.ts`): loopback-validated service discovery from
+  `$XDG_STATE_HOME/opencode/service.json`, Basic-auth GETs against the real
+  2.2.0 API (`/api/info`, `/api/session`, `/api/session/:id/message`,
+  `/api/agent`), sanitized and bounded payloads with the same credential/path
+  redaction rules as agent chat.
+- New endpoints under `/api/opencode/*` (status, sessions, session transcript,
+  agents). All sit behind the owner session gate; unauthenticated requests are
+  rejected with 401. No write, prompt, or permission endpoints in this slice.
+- New `OpenCode` sidebar entry and `/opencode` page: live service status card
+  (real version/pid/checked time, honest unavailable state), real session list
+  with agent/model/token/cost/outcome, and a transcript view for text, reasoning,
+  and tool messages with bounded tool input/output. Nothing simulated.
+- Decision record D-022: read-only scope, loopback enforcement, and why the
+  server hand-rolls the wire instead of depending on `@opencode/client`.
+
+### Repurposed (owner direction, same day)
+- The `/opencode` page is now an OpenCode activity/stats view: prompts, steps,
+  tokens, active days/streak, tool success/failure, cost, a 14-day steps bar
+  chart, per-model usage, live "In progress" sessions
+  (`/api/experimental/session/stats` + `/api/session/active`), and a compact
+  session history. The home-built transcript viewer was removed — deep
+  interaction happens in OpenCode's default web UI, which the page links to via
+  the service's advertised https tunnel URL (password-gated by OpenCode itself).
+  Transcript endpoints remain available server-side for later use.
+
+### OpenCode page polish + Projects registry (2026-10-28, same day)
+#### Changed
+- **OpenCode page scaled down and sharpened**: 960px content column, tighter
+  card padding/type, compact stat tiles with accent hatch, slimmer steps bars
+  with glow, subtler badges. Verbose transcript UI stays removed (#62 → done).
+- **`/projects` is now a real registry** (E3-10): backed by the new
+  `/api/opencode/projects` endpoint that reads OpenCode's `/api/project`
+  records, groups duplicates by canonical path (OpenCode keeps two ids for the
+  julie repo), and enriches them with per-path session counts from a bounded
+  (400-session) scan. Browser payloads carry display names, VCS kind, sandbox
+  counts, registration/activity times, and session counts — not host paths
+  (decision D-022 wording extended in D-023).

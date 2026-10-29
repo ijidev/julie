@@ -78,6 +78,15 @@ export interface GatewayAgentRoster {
   selectionRequired?: boolean;
 }
 
+export interface GatewayChatAttachment {
+  type: "image" | "file";
+  mimeType: string;
+  fileName: string;
+  origin: "file";
+  content: string;
+  sizeBytes: number;
+}
+
 interface ChatEventPayload {
   runId?: string;
   sessionKey?: string;
@@ -85,18 +94,29 @@ interface ChatEventPayload {
   message?: { role: string; content?: unknown };
   deltaText?: string;
   replace?: boolean;
+  phase?: string;
+  retry?: { attempt?: number; maxAttempts?: number; reason?: string };
+  seq?: number;
+  errorMessage?: string;
+  errorKind?: string;
   stopReason?: string;
 }
 
 // Reduced chat-stream event forwarded to SSE subscribers.
 export interface ChatStreamEvent {
   sessionKey?: string;
-  state: "delta" | "final" | "error";
+  state: "status" | "delta" | "final" | "aborted" | "error";
   runId?: string;
+  seq?: number;
+  phase?: string;
+  retry?: { attempt?: number; maxAttempts?: number; reason?: string };
   deltaText?: string; // append payload (delta state)
   replace: boolean; // deltaText is a full replacement, not an append
   snapshot: string | null; // authoritative full text when a message snapshot was present
   text: string | null; // full final text on final state
+  errorMessage?: string;
+  errorKind?: string;
+  stopReason?: string;
 }
 
 function extractText(content: unknown): string {
@@ -141,28 +161,45 @@ export class GatewayClient {
     const listener = (event: string, payload: ChatEventPayload) => {
       if (event !== "chat") return;
       const state = payload?.state;
-      if (state === "delta") {
+      if (state === "status") {
+        handler({
+          sessionKey: payload.sessionKey,
+          state: "status",
+          runId: payload.runId,
+          seq: payload.seq,
+          phase: payload.phase,
+          retry: payload.retry,
+          replace: false,
+          snapshot: null,
+          text: null,
+        });
+      } else if (state === "delta") {
         // Per protocol: a message snapshot on a frame is authoritative and already
         // includes deltaText — never append on top of a snapshot.
-          const hasSnapshot = payload.message?.content !== undefined && extractText(payload.message.content).length > 0;
+        const hasSnapshot = payload.message?.content !== undefined && extractText(payload.message.content).length > 0;
         handler({
           sessionKey: payload.sessionKey,
           state: "delta",
           runId: payload.runId,
+          seq: payload.seq,
           deltaText: payload.deltaText,
           replace: payload.replace === true,
           snapshot: hasSnapshot ? extractText(payload.message?.content) : null,
           text: null,
         });
-      } else if (state === "final" || state === "error") {
+      } else if (state === "final" || state === "aborted" || state === "error") {
         handler({
           sessionKey: payload.sessionKey,
-          state: state === "final" ? "final" : "error",
+          state,
           runId: payload.runId,
+          seq: payload.seq,
           deltaText: undefined,
           replace: false,
           snapshot: null,
           text: state === "final" ? extractText(payload.message?.content) : null,
+          errorMessage: payload.errorMessage,
+          errorKind: payload.errorKind,
+          stopReason: payload.stopReason,
         });
       }
     };
@@ -324,31 +361,65 @@ export class GatewayClient {
     const start = Date.now();
     try {
       await this.ensureConnected();
-      // Live liveness proof: cheap read RPC through the open socket.
-      await this.rpc("system.get-health", {}, 10000).catch(async () => {
-        // Fall back to sessions.list (documented operator RPC) if system.get-health is unavailable.
-        await this.rpc("sessions.list", { limit: 1 }, 10000);
-      });
+      // Live liveness proof through a documented cheap read RPC. The previous
+      // system.get-health probe is not implemented by Gateway 2026.10.5 and
+      // produced an INVALID_REQUEST log every 30 seconds before this fallback.
+      await this.rpc("sessions.list", { limit: 1 }, 10000);
       return { ...this.status, latencyMs: Date.now() - start };
     } catch (e: any) {
       return { connected: false, error: e.message };
     }
   }
 
-  // Submit a chat turn and wait for the agent's final assistant text.
-  async chat(sessionKey: string, message: string, timeoutMs = 180000): Promise<{ runId?: string; text: string }> {
+  // Submit a chat turn and return as soon as the Gateway acknowledges it.
+  // Callers that own UI state can stream events and persist the final reply
+  // without holding an HTTP request open for the entire agent run.
+  async startChat(
+    sessionKey: string,
+    message: string,
+    attachments: GatewayChatAttachment[] = [],
+    idempotencyKey = `julie-${crypto.randomBytes(8).toString("hex")}`
+  ): Promise<{ runId: string; status: string; startedAt: number }> {
     await this.ensureConnected();
-    const idempotencyKey = `julie-${crypto.randomBytes(8).toString("hex")}`;
+    const startedAt = Date.now();
     const sendRes = await this.rpc<{ runId?: string; status?: string; runStarted?: boolean }>(
-      "chat.send", { sessionKey, message, idempotencyKey }, 30000
+      "chat.send", {
+        sessionKey,
+        message,
+        idempotencyKey,
+        ...(attachments.length > 0 ? { attachments } : {}),
+      }, 60000
     );
-    const runId = sendRes?.runId;
-    return await this.awaitFinalReply(sessionKey, runId, timeoutMs);
+    return {
+      runId: sendRes?.runId ?? idempotencyKey,
+      status: sendRes?.status ?? "started",
+      startedAt,
+    };
   }
 
-  private awaitFinalReply(sessionKey: string, runId: string | undefined, timeoutMs: number): Promise<{ runId?: string; text: string }> {
+  // Submit a chat turn and wait for the agent's final assistant text. This
+  // remains the convenience path for task automation and agent-profile chat.
+  async chat(
+    sessionKey: string,
+    message: string,
+    timeoutMs = 180000,
+    attachments: GatewayChatAttachment[] = []
+  ): Promise<{ runId?: string; text: string }> {
+    const started = await this.startChat(sessionKey, message, attachments);
+    return await this.waitForChatReply(sessionKey, started.runId, timeoutMs, message, started.startedAt);
+  }
+
+  waitForChatReply(
+    sessionKey: string,
+    runId: string | undefined,
+    timeoutMs: number,
+    expectedUserMessage = "",
+    startedAt = Date.now()
+  ): Promise<{ runId?: string; text: string }> {
     return new Promise((resolve, reject) => {
       let settled = false;
+      let observedExpectedUser = false;
+      const expected = expectedUserMessage.trim().replace(/\s+/g, " ");
       const finishOk = (text: string) => {
         if (settled) return;
         settled = true;
@@ -368,18 +439,37 @@ export class GatewayClient {
         if (payload.state === "final") {
           const text = extractText(payload.message?.content);
           if (text) finishOk(text);
+        } else if (payload.state === "error" || payload.state === "aborted") {
+          finishErr(new Error(payload.errorMessage || payload.stopReason || (payload.state === "aborted" ? "chat run aborted" : "chat run failed")));
         }
       };
       this.onEvent(listener);
       const poll = setInterval(async () => {
         try {
-          const h = await this.rpc<{ messages?: Array<{ role: string; content?: unknown }> }>(
+          const h = await this.rpc<{ messages?: Array<{ role: string; content?: unknown; timestamp?: number }> }>(
             "chat.history", { sessionKey }, 15000
           );
-          const last = h.messages?.[h.messages.length - 1];
+          const rows = h.messages ?? [];
+          const last = rows[rows.length - 1];
+          let precedingUser: { role: string; content?: unknown; timestamp?: number } | undefined;
+          for (let index = rows.length - 2; index >= 0; index--) {
+            if (rows[index]?.role === "user") {
+              precedingUser = rows[index];
+              break;
+            }
+          }
+          const userText = precedingUser ? extractText(precedingUser.content).replace(/\s+/g, " ") : "";
+          const userMatches = Boolean(expected && userText.includes(expected));
+          if (last?.role === "user") {
+            const latestUserText = extractText(last.content).replace(/\s+/g, " ");
+            if (!expected || latestUserText.includes(expected)) observedExpectedUser = true;
+          }
           if (last?.role === "assistant") {
             const text = extractText(last.content);
-            if (text) finishOk(text);
+            const rawTimestamp = typeof last.timestamp === "number" ? last.timestamp : 0;
+            const timestampMs = rawTimestamp > 0 && rawTimestamp < 10_000_000_000 ? rawTimestamp * 1000 : rawTimestamp;
+            const recent = timestampMs >= startedAt - 5000;
+            if (text && (recent || userMatches || observedExpectedUser)) finishOk(text);
           }
         } catch { /* transient poll failure: keep waiting */ }
       }, 3000);

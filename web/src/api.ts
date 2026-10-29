@@ -22,13 +22,52 @@ async function uploadBinary<T>(path: string, body: Blob, contentType: string): P
   return payload as T;
 }
 
+async function uploadForm<T>(path: string, body: FormData): Promise<T> {
+  const res = await fetch(path, {
+    method: "POST",
+    credentials: "same-origin",
+    body,
+  });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) throw Object.assign(new Error(payload?.error ?? `HTTP ${res.status}`), { status: res.status, body: payload });
+  return payload as T;
+}
+
 export type WorkspacesResponse = { ok: boolean; workspaces: Workspace[]; activeWorkspaceId: number | null };
 export type WorkspaceCreatedResponse = { ok: boolean; workspace: Workspace };
 export type WorkspaceActivatedResponse = { ok: boolean; activeWorkspaceId: number };
-export type TasksResponse = { ok: boolean; tasks: Task[]; runningTaskIds: number[] };
+export type TaskSummary = {
+  total: number;
+  open: number;
+  done: number;
+  active: number;
+  blocked: number;
+  highPriority: number;
+  assigned: number;
+  unassigned: number;
+  completionRate: number;
+  byStatus: Record<(typeof TASK_STATUSES)[number], number>;
+};
+export type TasksResponse = { ok: boolean; tasks: Task[]; runningTaskIds: number[]; summary: TaskSummary };
 export type ConversationsResponse = { ok: boolean; conversations: Conversation[] };
 export type ConversationCreatedResponse = { ok: boolean; conversation: Conversation };
-export type MessagesResponse = { ok: boolean; messages: Message[]; gatewaySessionKey: string };
+export type ChatRunSnapshot = {
+  state: "sending" | "accepted" | "status" | "responding" | "finalizing";
+  phase: string | null;
+  retry: { attempt?: number; maxAttempts?: number; reason?: string } | null;
+  text: string;
+  startedAt: number;
+};
+export type MessagesResponse = { ok: boolean; messages: Message[]; activeRun: ChatRunSnapshot | null };
+export type ChatSendAcceptedResponse = {
+  ok: true;
+  status: "accepted";
+  gatewayStatus: string;
+  userMessage: Message;
+};
+export type ChatUploadAcceptedResponse = ChatSendAcceptedResponse & {
+  attachment: { fileName: string; mimeType: string; sizeBytes: number };
+};
 export type InsightsResponse = { ok: boolean; insights: Insights };
 
 export const api = {
@@ -40,14 +79,23 @@ export const api = {
   createWorkspace: (name: string, description = "") => jfetch<WorkspaceCreatedResponse>("/api/workspaces", { method: "POST", body: JSON.stringify({ name, description }) }),
   activateWorkspace: (id: number) => jfetch<WorkspaceActivatedResponse>(`/api/workspaces/${id}/activate`, { method: "POST" }),
   tasks: (workspaceId: number) => jfetch<TasksResponse>(`/api/tasks?workspaceId=${workspaceId}`),
-  createTask: (workspaceId: number, title: string, status = "backlog") => jfetch("/api/tasks", { method: "POST", body: JSON.stringify({ workspaceId, title, status }) }),
+  createTask: (input: TaskCreateInput) => jfetch<{ ok: true; task: Task }>("/api/tasks", { method: "POST", body: JSON.stringify(input) }),
   updateTask: (id: number, patch: Record<string, unknown>) => jfetch(`/api/tasks/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   deleteTask: (id: number) => jfetch(`/api/tasks/${id}`, { method: "DELETE" }),
   runTask: (id: number) => jfetch(`/api/tasks/${id}/run`, { method: "POST", body: JSON.stringify({}) }),
+  taskActivity: (id: number) => jfetch<TaskActivityResponse>(`/api/tasks/${id}/activity`),
   conversations: (workspaceId: number) => jfetch<ConversationsResponse>(`/api/conversations?workspaceId=${workspaceId}`),
   createConversation: (workspaceId: number, title: string) => jfetch<ConversationCreatedResponse>("/api/conversations", { method: "POST", body: JSON.stringify({ workspaceId, title }) }),
+  deleteConversation: (id: number) => jfetch<{ ok: true }>(`/api/conversations/${id}`, { method: "DELETE" }),
   messages: (conversationId: number) => jfetch<MessagesResponse>(`/api/conversations/${conversationId}/messages`),
-  sendMessage: (conversationId: number, text: string) => jfetch(`/api/conversations/${conversationId}/messages`, { method: "POST", body: JSON.stringify({ text }) }),
+  sendMessage: (conversationId: number, text: string) => jfetch<ChatSendAcceptedResponse>(`/api/conversations/${conversationId}/messages`, { method: "POST", body: JSON.stringify({ text }) }),
+  uploadChatAttachment: (conversationId: number, message: string, file: File) => {
+    const body = new FormData();
+    body.append("conversationId", String(conversationId));
+    body.append("message", message);
+    body.append("file", file, file.name);
+    return uploadForm<ChatUploadAcceptedResponse>("/api/upload", body);
+  },
   agents: () => jfetch("/api/agents"),
   agentOverview: (refresh = false) => jfetch<AgentOverviewResponse>(`/api/agents/overview${refresh ? "?refresh=1" : ""}`),
   agentDetail: (id: string, refresh = false) => jfetch<AgentDetailResponse>(`/api/agents/${encodeURIComponent(id)}${refresh ? "?refresh=1" : ""}`),
@@ -58,6 +106,13 @@ export const api = {
   createAgent: (input: AgentOnboardingInput) => jfetch<AgentOnboardingResult>("/api/agents", { method: "POST", body: JSON.stringify(input) }),
   agentAssignments: (workspaceId?: number) => jfetch<AgentAssignmentsResponse>(`/api/agents/assignments${workspaceId ? `?workspaceId=${workspaceId}` : ""}`),
   setAgentAssignments: (workspaceId: number, agentIds: string[]) => jfetch<AgentAssignmentsResponse>("/api/agents/assignments", { method: "PUT", body: JSON.stringify({ workspaceId, agentIds, confirmed: true }) }),
+  agentOrganization: (workspaceId?: number) => jfetch<AgentOrganizationResponse>(`/api/agents/organization${workspaceId ? `?workspaceId=${workspaceId}` : ""}`),
+  setAgentOrganization: (workspaceId: number, members: AgentOrganizationInput[]) => jfetch<AgentOrganizationResponse>("/api/agents/organization", { method: "PUT", body: JSON.stringify({ workspaceId, members, confirmed: true }) }),
+  agentRooms: (workspaceId: number) => jfetch<AgentRoomsResponse>(`/api/agent-rooms?workspaceId=${workspaceId}`),
+  agentRoom: (id: number) => jfetch<AgentRoomResponse>(`/api/agent-rooms/${id}`),
+  createAgentRoom: (input: { workspaceId: number; taskId: number; title?: string; agentIds: string[] }) => jfetch<AgentRoomResponse>("/api/agent-rooms", { method: "POST", body: JSON.stringify({ ...input, confirmed: true }) }),
+  sendAgentRoomMessage: (id: number, text: string, agentIds: string[]) => jfetch<AgentRoomSendResponse>(`/api/agent-rooms/${id}/messages`, { method: "POST", body: JSON.stringify({ text, agentIds }) }),
+  archiveAgentRoom: (id: number, archived: boolean) => jfetch<AgentRoomResponse>(`/api/agent-rooms/${id}`, { method: "PATCH", body: JSON.stringify({ archived, confirmed: true }) }),
   agentAvatarStudio: (id: string, refresh = false) => jfetch<AgentAvatarStudioResponse>(`/api/agents/${encodeURIComponent(id)}/avatar${refresh ? "?refresh=1" : ""}`),
   previewAgentAvatar: (id: string, input: AgentAvatarPreviewInput) => jfetch<AgentAvatarPreviewResponse>(`/api/agents/${encodeURIComponent(id)}/avatar/preview`, { method: "POST", body: JSON.stringify(input) }),
   generateAgentAvatar: (id: string, input: AgentAvatarGenerateInput) => jfetch<AgentAvatarGenerateResult>(`/api/agents/${encodeURIComponent(id)}/avatar/generate`, { method: "POST", body: JSON.stringify(input) }),
@@ -73,6 +128,12 @@ export const api = {
   analytics: () => jfetch("/api/analytics"),
   weather: () => jfetch("/api/weather"),
   trending: () => jfetch<TrendingResponse>("/api/trending"),
+  opencodeStatus: () => jfetch<OpencodeStatus>("/api/opencode/status"),
+  opencodeSessions: () => jfetch<OpencodeSessionsResponse>("/api/opencode/sessions"),
+  opencodeMessages: (sid: string) => jfetch<OpencodeMessagesResponse>(`/api/opencode/sessions/${encodeURIComponent(sid)}/messages`),
+  opencodeStats: () => jfetch<OpencodeStatsResponse>("/api/opencode/stats"),
+  opencodeActive: () => jfetch<OpencodeActiveResponse>("/api/opencode/active"),
+  opencodeProjects: () => jfetch<OpencodeProjectsResponse>("/api/opencode/projects"),
   devices: () => jfetch("/api/devices"),
   insights: () => jfetch<InsightsResponse>("/api/insights"),
   promptUsage: (limit = 3) => jfetch<{ ok: boolean; prompts: Array<{ prompt_hash: string; prompt: string; uses: number; last_used: string }>; total: number }>(`/api/prompt-usage?limit=${limit}`),
@@ -129,8 +190,8 @@ export type AgentOverviewItem = {
       totalTokens: number | null;
       estimatedCostUsd: number | null;
     };
-    currentTask: null;
-    taskState: "not_linked";
+    currentTask: null | { id: number; assigned_agent_id: string; title: string; status: Task["status"]; priority: Task["priority"]; updated_at: string };
+    taskState: "linked";
     error: string | null;
   };
   office: {
@@ -196,7 +257,7 @@ export type AgentOverviewResponse = {
     conversations: number;
     tasks: { total: number; open: number; byStatus: Array<{ status: string; count: number }> };
     projects: { state: "not_configured"; count: null };
-    policies: { membership: "explicit"; sharedAgents: number; taskAssignment: "not_configured"; projectAccess: "not_configured" };
+    policies: { membership: "explicit"; sharedAgents: number; taskAssignment: "configured"; projectAccess: "not_configured" };
   };
   partialErrors: string[];
 };
@@ -326,7 +387,11 @@ export type AgentDetailResponse = {
       items: Array<{ name: string; description: string | null; category: string | null; source: string | null; scope: string | null; acceptsArgs: boolean }>;
       error: string | null;
     };
-    taskHistory: { state: "not_linked"; items: never[]; reason: string };
+    taskHistory: {
+      state: "linked";
+      items: Array<Pick<Task, "id" | "workspace_id" | "title" | "description" | "status" | "priority" | "assigned_agent_id" | "last_run_output" | "run_started_at" | "created_at" | "updated_at">>;
+      reason: null;
+    };
   };
 };
 export type AgentChatSession = {
@@ -414,6 +479,88 @@ export type AgentAssignmentsResponse = {
   agents: AgentAssignmentRow[];
   summary: { assigned: number; unassigned: number; shared: number; gatewayRosterTotal: number };
 };
+export type AgentOrganizationLevel = "executive" | "lead" | "specialist";
+export type AgentOrganizationMember = {
+  agentId: string;
+  displayName: string;
+  emoji: string | null;
+  model: string | null;
+  role: string | null;
+  department: string | null;
+  reportsTo: string | null;
+  level: AgentOrganizationLevel | null;
+  configured: boolean;
+  isDefault: boolean;
+};
+export type AgentOrganizationInput = {
+  agentId: string;
+  role: string;
+  department: string;
+  reportsTo: string;
+  level: AgentOrganizationLevel;
+};
+export type AgentOrganizationResponse = {
+  ok: true;
+  source: "gateway+local";
+  workspace: { id: number; name: string; description: string };
+  owner: { id: "owner"; displayName: string; role: "CEO" };
+  members: AgentOrganizationMember[];
+  summary: {
+    rosterMembers: number;
+    configured: number;
+    unconfigured: number;
+    departments: number;
+    leads: number;
+    specialists: number;
+    complete: boolean;
+  };
+};
+export type AgentRoomMember = {
+  agentId: string;
+  displayName: string;
+  emoji: string | null;
+  identityState: "ready" | "unavailable";
+  role: string | null;
+  department: string | null;
+  level: AgentOrganizationLevel | null;
+  sortOrder: number;
+  joinedAt: string;
+};
+export type AgentRoomMessage = {
+  id: number;
+  roomId: number;
+  senderType: "owner" | "agent" | "system";
+  senderId: string;
+  text: string;
+  deliveryState: "local" | "confirmed" | "failed";
+  createdAt: string;
+};
+export type AgentRoomActiveRun = {
+  state: "dispatching";
+  startedAt: number;
+  currentAgentId: string | null;
+  recipients: string[];
+  completed: number;
+  failed: number;
+  remaining: number;
+};
+export type AgentRoom = {
+  id: number;
+  workspaceId: number;
+  task: null | { id: number; title: string; status: Task["status"] | null; assignedAgentId: string | null };
+  title: string;
+  status: "open" | "archived";
+  members: AgentRoomMember[];
+  messageCount: number;
+  latestMessage: AgentRoomMessage | null;
+  activeRun: AgentRoomActiveRun | null;
+  createdAt: string;
+  updatedAt: string;
+};
+export type AgentRoomDetail = AgentRoom & { messages: AgentRoomMessage[] };
+export type AgentRoomsResponse = { ok: true; source: "local+gateway"; workspace: { id: number; name: string }; rooms: AgentRoom[] };
+export type AgentRoomResponse = { ok: true; source: "local+gateway"; room: AgentRoomDetail };
+export type AgentRoomSendResponse = { ok: true; status: "queued"; ownerMessage: AgentRoomMessage; activeRun: AgentRoomActiveRun };
 export type AgentAvatarDirection = "synthetic_hologram" | "abstract_core" | "emblematic_guardian";
 export type AgentAvatarPreviewInput = { direction: AgentAvatarDirection; ownerNotes: string };
 export type AgentAvatarPreview = AgentAvatarPreviewInput & {
@@ -486,7 +633,7 @@ export type AgentAvatarStudioResponse = {
   fallback: { kind: "deterministic_svg"; url: string; billed: false; inferredAppearance: false };
   assets: AgentAvatarAsset[];
   activeAsset: AgentAvatarAsset | null;
-  models3d: AgentAvatarModel[];
+  models3d: AgentAvatarModel3D[];
   model3dBoundary: string;
 };
 export type AgentAvatarPreviewResponse = {
@@ -537,7 +684,7 @@ export type AgentAvatarUrlApplyResult = {
   host: string;
   disclosure: string;
 };
-export type AgentAvatarModel = {
+export type AgentAvatarModel3D = {
   id: number;
   sourceType: "upload" | "https_url";
   url: string;
@@ -551,7 +698,7 @@ export type AgentAvatarModel = {
 export type AgentAvatarModelResult = {
   ok: true;
   source: "local" | "owner_input";
-  model: AgentAvatarModel;
+  model: AgentAvatarModel3D;
   boundary: string;
 };
 export type Tool = { id: string; name?: string; description?: string; status?: string; [key: string]: unknown };
@@ -565,8 +712,41 @@ export type Analytics = {
 };
 
 export type Workspace = { id: number; name: string; description: string };
-export type Task = { id: number; workspace_id: number; title: string; description: string; status: string; priority: number; gateway_session_key?: string; last_run_output?: string; run_started_at?: string | null; created_at: string; updated_at: string };
-export type Conversation = { id: number; workspace_id: number; title: string; gateway_session_key: string; updated_at: string };
+export type Task = {
+  id: number;
+  workspace_id: number;
+  title: string;
+  description: string;
+  status: (typeof TASK_STATUSES)[number];
+  priority: 1 | 2 | 3;
+  assigned_agent_id: string;
+  session_linked: boolean;
+  last_run_output?: string;
+  run_started_at?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+export type TaskCreateInput = {
+  workspaceId: number;
+  title: string;
+  description?: string;
+  status?: (typeof TASK_STATUSES)[number];
+  priority?: 1 | 2 | 3;
+  assignedAgentId?: string | null;
+};
+export type TaskActivity = {
+  id: number;
+  task_id: number;
+  actor_type: "owner" | "agent" | "system";
+  actor_id: string;
+  event_type: string;
+  details: string;
+  from_status: string | null;
+  to_status: string | null;
+  created_at: string;
+};
+export type TaskActivityResponse = { ok: true; activity: TaskActivity[]; source: "local" };
+export type Conversation = { id: number; workspace_id: number; title: string; created_at: string; updated_at: string };
 export type Message = { id: number; role: string; text: string; created_at: string };
 export type GatewayStatus = { connected: boolean; serverVersion?: string | null; latencyMs?: number; error?: string };
 
@@ -606,6 +786,81 @@ export type Insights = {
   };
   score: number | null;
   totals: { totalTasks: number; doneTasks: number; inProgressTasks: number };
+};
+
+// --- OpenCode bridge (real service data; read-only) ---
+export type OpencodeStatus = {
+  ok: boolean;
+  available: boolean;
+  version: string | null;
+  pid: number | null;
+  webUiUrl: string | null;
+  checkedAt: string;
+  error?: string;
+};
+export type OpencodeSessionRow = {
+  id: string;
+  title: string | null;
+  agent: string | null;
+  model: { providerID: string | null; id: string | null };
+  cost: number | null;
+  tokens: { input: number | null; output: number | null; reasoning: number | null; cacheRead: number | null; cacheWrite: number | null };
+  outcome: string | null;
+  time: { created: number | null; updated: number | null };
+};
+export type OpencodeSessionsResponse = { ok: boolean; sessions: OpencodeSessionRow[]; error?: string; source: string };
+export type OpencodePart =
+  | { type: "text" | "reasoning"; text: string; truncated: boolean }
+  | { type: "tool"; name: string | null; executed: boolean; state: { status: string | null; input: string | null; output: string | null } }
+  | { type: string; preview: string };
+export type OpencodeMessageRow = {
+  id: string | null;
+  type: string | null;
+  agent: string | null;
+  model: { providerID: string | null; id: string | null };
+  tokens: { input: number | null; output: number | null; reasoning: number | null; cacheRead: number | null; cacheWrite: number | null };
+  cost: number | null;
+  time: { created: number | null; updated: number | null };
+  text: string | null;
+  parts: OpencodePart[];
+};
+export type OpencodeMessagesResponse = { ok: boolean; messages: OpencodeMessageRow[]; error?: string; source: string };
+export type OpencodeStatsResponse = {
+  ok: boolean;
+  stats: {
+    range: { from: number | null; to: number | null };
+    sessions: number;
+    subagents: number;
+    prompts: number;
+    steps: number;
+    tokens: { input: number | null; output: number | null; reasoning: number | null; cacheRead: number | null; cacheWrite: number | null };
+    cost: number | null;
+    tools: { calls: number; succeeded: number; failed: number; unfinished: number };
+    activeDays: number;
+    streak: number;
+    activity: Array<{ date: string; steps: number }>;
+    models: Array<{ model: { providerID: string | null; id: string | null }; steps: number; tokens: { input: number | null; output: number | null; reasoning: number | null; cacheRead: number | null; cacheWrite: number | null }; cost: number | null }>;
+  } | null;
+  error?: string;
+  source: string;
+};
+export type OpencodeActiveResponse = { ok: boolean; active: Array<{ id: string; state: string | null }>; error?: string; source: string };
+export type OpencodeProjectRow = {
+  id: string | null;
+  name: string;
+  vcs: string | null;
+  created: number | null;
+  updated: number | null;
+  lastActive: number | null;
+  sandboxes: number;
+  sessions: number;
+};
+export type OpencodeProjectsResponse = {
+  ok: boolean;
+  projects: OpencodeProjectRow[];
+  coverage: { projects: number; sessionsScanned: number };
+  error?: string;
+  source: string;
 };
 
 export const TASK_STATUSES = ["backlog", "ready", "in_progress", "waiting_input", "pending_review", "done", "blocked"] as const;

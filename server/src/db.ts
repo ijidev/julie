@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   status TEXT NOT NULL DEFAULT 'backlog'
     CHECK (status IN ('backlog','ready','in_progress','waiting_input','pending_review','done','blocked')),
   priority INTEGER NOT NULL DEFAULT 2,
+  assigned_agent_id TEXT NOT NULL DEFAULT '',
   gateway_session_key TEXT NOT NULL DEFAULT '',
   last_run_output TEXT NOT NULL DEFAULT '',
   run_started_at TEXT,
@@ -71,6 +72,9 @@ CREATE TABLE IF NOT EXISTS agent_profiles (
     CHECK (schedule_mode IN ('always_available','weekdays','manual')),
   timezone TEXT NOT NULL DEFAULT 'UTC',
   workspace_id INTEGER REFERENCES workspaces(id) ON DELETE SET NULL,
+  department TEXT NOT NULL DEFAULT '',
+  reports_to TEXT NOT NULL DEFAULT '',
+  org_level TEXT NOT NULL DEFAULT '',
   requested_tools TEXT NOT NULL DEFAULT '[]',
   requested_skills TEXT NOT NULL DEFAULT '[]',
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
@@ -82,6 +86,50 @@ CREATE TABLE IF NOT EXISTS workspace_agents (
   assigned_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   PRIMARY KEY (workspace_id, agent_id)
 );
+CREATE TABLE IF NOT EXISTS task_activity (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  actor_type TEXT NOT NULL CHECK (actor_type IN ('owner','agent','system')),
+  actor_id TEXT NOT NULL DEFAULT '',
+  event_type TEXT NOT NULL,
+  details TEXT NOT NULL DEFAULT '',
+  from_status TEXT,
+  to_status TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS task_activity_task_idx
+  ON task_activity(task_id, id DESC);
+CREATE TABLE IF NOT EXISTS agent_rooms (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  task_id INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
+  title TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','archived')),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS agent_rooms_workspace_idx
+  ON agent_rooms(workspace_id, updated_at DESC);
+CREATE TABLE IF NOT EXISTS agent_room_members (
+  room_id INTEGER NOT NULL REFERENCES agent_rooms(id) ON DELETE CASCADE,
+  agent_id TEXT NOT NULL,
+  gateway_session_key TEXT NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  last_dispatched_message_id INTEGER,
+  joined_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  PRIMARY KEY (room_id, agent_id)
+);
+CREATE TABLE IF NOT EXISTS agent_room_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  room_id INTEGER NOT NULL REFERENCES agent_rooms(id) ON DELETE CASCADE,
+  sender_type TEXT NOT NULL CHECK (sender_type IN ('owner','agent','system')),
+  sender_id TEXT NOT NULL,
+  text TEXT NOT NULL,
+  delivery_state TEXT NOT NULL CHECK (delivery_state IN ('local','confirmed','failed')),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS agent_room_messages_room_idx
+  ON agent_room_messages(room_id, id);
 CREATE TABLE IF NOT EXISTS agent_avatar_assets (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   agent_id TEXT NOT NULL,
@@ -139,8 +187,27 @@ function migrateTasks(): void {
   if (!has("gateway_session_key")) db.exec("ALTER TABLE tasks ADD COLUMN gateway_session_key TEXT NOT NULL DEFAULT ''");
   if (!has("last_run_output")) db.exec("ALTER TABLE tasks ADD COLUMN last_run_output TEXT NOT NULL DEFAULT ''");
   if (!has("run_started_at")) db.exec("ALTER TABLE tasks ADD COLUMN run_started_at TEXT");
+  if (!has("assigned_agent_id")) db.exec("ALTER TABLE tasks ADD COLUMN assigned_agent_id TEXT NOT NULL DEFAULT ''");
 }
 migrateTasks();
+
+function migrateAgentProfiles(): void {
+  const cols = (db.prepare("PRAGMA table_info(agent_profiles)").all() as Array<{ name: string }>).map((column) => column.name);
+  const has = (name: string) => cols.includes(name);
+  if (!has("department")) db.exec("ALTER TABLE agent_profiles ADD COLUMN department TEXT NOT NULL DEFAULT ''");
+  if (!has("reports_to")) db.exec("ALTER TABLE agent_profiles ADD COLUMN reports_to TEXT NOT NULL DEFAULT ''");
+  if (!has("org_level")) db.exec("ALTER TABLE agent_profiles ADD COLUMN org_level TEXT NOT NULL DEFAULT ''");
+}
+migrateAgentProfiles();
+
+// Existing rows predate the append-only task timeline. Record that boundary as
+// a baseline event rather than inventing historical edits or assignees.
+db.exec(`
+  INSERT INTO task_activity (task_id, actor_type, event_type, details, created_at)
+  SELECT t.id, 'system', 'baseline', 'Task existed before activity tracking', t.created_at
+  FROM tasks t
+  WHERE NOT EXISTS (SELECT 1 FROM task_activity a WHERE a.task_id = t.id);
+`);
 
 // One-time-compatible projection of the original single workspace_id field into
 // explicit many-to-many memberships. Existing rows remain as a legacy primary

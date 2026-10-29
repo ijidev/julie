@@ -18,7 +18,7 @@ import { Wave } from "./wave";
 import { speakWithTracking } from "./speaking";
 import { startSpeechRecognition, submitVoiceText } from "./voice";
 
-// Custom event name: dispatched by the AI nav button / Home orb to trigger
+// Custom event name: dispatched by the microphone nav button to trigger
 // the FAB's inline capture from any page (no route change).
 export const VOICE_START_EVENT = "julie:voice-start";
 export const VOICE_STATE_EVENT = "julie:voice-state";
@@ -102,7 +102,7 @@ export function VoiceFab({
     }
   }, []);
 
-  // Listen for the global trigger event (AI nav button, Home orb)
+  // Listen for the global trigger event (footer microphone)
   useEffect(() => {
     const handler = () => begin();
     window.addEventListener(VOICE_START_EVENT, handler);
@@ -147,7 +147,7 @@ export function VoiceFab({
       )}
 
       {/* The controller can run headlessly. Julie mounts it headless so the
-          footer-center AI control is the ONE visible voice entry point. */}
+          footer-center microphone is the ONE visible voice entry point. */}
       {showButton && (
         <div className="voice-fab-container">
           <Wave bars={8} className="voice-fab-wave" />

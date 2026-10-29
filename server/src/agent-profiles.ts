@@ -9,6 +9,9 @@ export type AgentProfile = {
   workspaceId: number | null;
   workspaceName: string | null;
   workspaceAssignments: Array<{ id: number; name: string }>;
+  department: string;
+  reportsTo: string;
+  orgLevel: "executive" | "lead" | "specialist" | null;
   requestedTools: string[];
   requestedSkills: string[];
   createdAt: string;
@@ -23,6 +26,9 @@ type AgentProfileRow = {
   timezone: string;
   workspace_id: number | null;
   workspace_name: string | null;
+  department: string;
+  reports_to: string;
+  org_level: string;
   requested_tools: string;
   requested_skills: string;
   created_at: string;
@@ -55,6 +61,9 @@ export function getAgentWorkspaceAssignmentMap(): Map<string, Array<{ id: number
 }
 
 function mapRow(row: AgentProfileRow, assignments: Array<{ id: number; name: string }> = []): AgentProfile {
+  const orgLevel = row.org_level === "executive" || row.org_level === "lead" || row.org_level === "specialist"
+    ? row.org_level
+    : null;
   return {
     agentId: row.agent_id,
     role: row.role,
@@ -64,6 +73,9 @@ function mapRow(row: AgentProfileRow, assignments: Array<{ id: number; name: str
     workspaceId: row.workspace_id,
     workspaceName: row.workspace_name,
     workspaceAssignments: assignments,
+    department: row.department,
+    reportsTo: row.reports_to,
+    orgLevel,
     requestedTools: stringArray(row.requested_tools),
     requestedSkills: stringArray(row.requested_skills),
     createdAt: row.created_at,
@@ -154,4 +166,35 @@ export function saveAgentProfile(input: {
 
 export function deleteAgentProfile(agentId: string): void {
   db.prepare("DELETE FROM agent_profiles WHERE agent_id = ?").run(agentId);
+}
+
+export type AgentOrganizationInput = {
+  agentId: string;
+  role: string;
+  department: string;
+  reportsTo: string;
+  orgLevel: "executive" | "lead" | "specialist";
+};
+
+export function replaceAgentOrganization(entries: AgentOrganizationInput[]): void {
+  const transaction = db.transaction(() => {
+    // The reviewed payload is authoritative. Clear stale reporting metadata for
+    // profiles omitted from a future roster before applying the current tree;
+    // role/personality and workspace membership remain untouched.
+    db.prepare("UPDATE agent_profiles SET department = '', reports_to = '', org_level = '', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')").run();
+    const upsert = db.prepare(`
+      INSERT INTO agent_profiles (agent_id, role, department, reports_to, org_level)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(agent_id) DO UPDATE SET
+        role = excluded.role,
+        department = excluded.department,
+        reports_to = excluded.reports_to,
+        org_level = excluded.org_level,
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+    `);
+    for (const entry of entries) {
+      upsert.run(entry.agentId, entry.role, entry.department, entry.reportsTo, entry.orgLevel);
+    }
+  });
+  transaction();
 }

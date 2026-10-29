@@ -174,6 +174,22 @@ async function buildAgentOverview(workspaceId: number, workspaceName: string) {
 
   const counts = await Promise.all(workspaceAgents.map((agent) => capabilityCounts(agent.id)));
   const localProfiles = getAgentProfileMap();
+  const assignedTaskRows = db.prepare(`
+    SELECT id, assigned_agent_id, title, status, priority, updated_at
+    FROM tasks
+    WHERE workspace_id = ? AND assigned_agent_id <> ''
+    ORDER BY
+      CASE status WHEN 'in_progress' THEN 0 WHEN 'ready' THEN 1 WHEN 'blocked' THEN 2
+                  WHEN 'waiting_input' THEN 3 WHEN 'pending_review' THEN 4
+                  WHEN 'backlog' THEN 5 ELSE 6 END,
+      updated_at DESC, id DESC
+  `).all(workspaceId) as Array<{ id: number; assigned_agent_id: string; title: string; status: string; priority: number; updated_at: string }>;
+  const tasksByAgent = new Map<string, typeof assignedTaskRows>();
+  for (const task of assignedTaskRows) {
+    const rows = tasksByAgent.get(task.assigned_agent_id) ?? [];
+    rows.push(task);
+    tasksByAgent.set(task.assigned_agent_id, rows);
+  }
   const agents = workspaceAgents.map((agent, index) => {
     const localProfile = localProfiles.get(agent.id) ?? null;
     const agentAssignments = assignmentMap.get(agent.id) ?? [];
@@ -181,6 +197,8 @@ async function buildAgentOverview(workspaceId: number, workspaceName: string) {
       .filter((row) => agentIdForSession(row) === agent.id)
       .sort((a, b) => Number(b?.hasActiveRun === true) - Number(a?.hasActiveRun === true) || sessionTime(b) - sessionTime(a));
     const activeSessions = agentSessions.filter((row) => row?.hasActiveRun === true);
+    const agentTasks = tasksByAgent.get(agent.id) ?? [];
+    const currentTask = agentTasks.find((task) => task.status !== "done") ?? null;
     const activityState = sessionsError
       ? "unknown"
       : activeSessions.length > 0
@@ -228,8 +246,8 @@ async function buildAgentOverview(workspaceId: number, workspaceName: string) {
         activeSessions: activeSessions.length,
         latestActivityAt: agentSessions.length > 0 ? sessionTime(agentSessions[0]) || null : null,
         currentSession: sessionSummary(activeSessions[0] ?? agentSessions[0]),
-        currentTask: null,
-        taskState: "not_linked",
+        currentTask,
+        taskState: "linked",
         error: sessionsError,
       },
       office: activityState === "working"
@@ -302,7 +320,7 @@ async function buildAgentOverview(workspaceId: number, workspaceName: string) {
       policies: {
         membership: "explicit",
         sharedAgents: agents.filter((agent) => agent.hr?.sharedAcrossWorkspaces).length,
-        taskAssignment: "not_configured",
+        taskAssignment: "configured",
         projectAccess: "not_configured",
       },
     },

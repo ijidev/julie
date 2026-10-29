@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import { createHash } from "node:crypto";
 import { Router, raw as rawBody, type Request, type Response } from "express";
 import { db, getSetting, setSetting, TASK_STATUSES, type TaskStatus } from "./db.js";
-import { gateway } from "./gateway.js";
+import { gateway, type ChatStreamEvent, type GatewayChatAttachment } from "./gateway.js";
 import { getWeather } from "./weather.js";
 import { getTrending } from "./trending.js";
 import { getAgentOverview, invalidateAgentOverview } from "./agent-overview.js";
@@ -13,9 +13,23 @@ import { AgentOnboardingInputError, createOnboardedAgent, getAgentOnboardingOpti
 import { AgentUpdateInputError, updateManagedAgent } from "./agent-update.js";
 import { AgentAssignmentInputError, getWorkspaceAgentAssignments, replaceWorkspaceAgentAssignments } from "./agent-assignments.js";
 import { isAgentAssignedToWorkspace } from "./agent-profiles.js";
+import { AgentOrganizationError, configureAgentOrganization, getAgentOrganization } from "./agent-organization.js";
+import { AgentRoomError, createAgentRoom, getAgentRoom, getAgentRoomActiveRun, hasAgentRoom, listAgentRooms, setAgentRoomArchived, startAgentRoomTurn, subscribeAgentRoom } from "./agent-rooms.js";
 import { AgentAvatarError, addAgentAvatarModelUrl, applyAgentAvatar, applyAgentAvatarUrl, buildAgentFallbackSvg, generateAgentAvatar, getAgentAvatarStudio, importAgentAvatarImage, importAgentAvatarModel, previewAgentAvatar, readAgentAvatarAsset, readAgentAvatarModel } from "./agent-avatar.js";
 import { loginHandler, logoutHandler, requireAuth, parseCookies, SESSION_COOKIE, safeEqual } from "./auth.js";
 import { config } from "./config.js";
+import {
+  getOpencodeStatus,
+  getOpencodeStats,
+  listOpencodeActiveSessions,
+  listOpencodeAgents,
+  listOpencodeProjects,
+  listOpencodeSessionMessages,
+  listOpencodeSessions,
+  OpencodeAvailableError,
+  OpencodeForbiddenError,
+  OpencodeUnavailableError,
+} from "./opencode.js";
 
 export const api = Router();
 
@@ -47,6 +61,137 @@ function recordPromptUsage(raw: string): void {
     ).run();
   }
 }
+
+// ---- live conversation runs ----
+// Julie acknowledges a message as soon as the real Gateway accepts chat.send,
+// then persists the final reply in the background. Browser-visible events are a
+// sanitized local projection: Gateway session keys and run IDs stay server-side.
+type ActiveConversationRun = {
+  conversationId: number;
+  sessionKey: string;
+  runId: string;
+  prompt: string;
+  startedAt: number;
+  state: "sending" | "accepted" | "status" | "responding" | "finalizing";
+  phase?: string;
+  retry?: { attempt?: number; maxAttempts?: number; reason?: string };
+  streamedText: string;
+  finalizing: boolean;
+  finished: boolean;
+};
+
+type ConversationSubscriber = (event: Record<string, unknown>) => void;
+
+const CHAT_REPLY_MONITOR_TIMEOUT_MS = 30 * 60 * 1000;
+const activeConversationRuns = new Map<number, ActiveConversationRun>();
+const conversationSubscribers = new Map<number, Set<ConversationSubscriber>>();
+
+function publishConversationEvent(conversationId: number, event: Record<string, unknown>): void {
+  for (const subscriber of conversationSubscribers.get(conversationId) ?? []) {
+    try { subscriber(event); } catch { /* a disconnected SSE client cannot affect a run */ }
+  }
+}
+
+function publicRunSnapshot(run: ActiveConversationRun | undefined): Record<string, unknown> | null {
+  if (!run) return null;
+  return {
+    state: run.state,
+    phase: run.phase ?? null,
+    retry: run.retry ?? null,
+    text: run.streamedText,
+    startedAt: run.startedAt,
+  };
+}
+
+function matchingConversationRun(event: ChatStreamEvent): ActiveConversationRun | undefined {
+  for (const run of activeConversationRuns.values()) {
+    if (event.sessionKey !== run.sessionKey) continue;
+    if (event.runId && event.runId !== run.runId) continue;
+    return run;
+  }
+  return undefined;
+}
+
+function finishConversationRun(run: ActiveConversationRun, text: string): void {
+  if (run.finished || run.finalizing) return;
+  const reply = text.trim();
+  if (!reply) return;
+  run.finalizing = true;
+  run.state = "finalizing";
+  publishConversationEvent(run.conversationId, { type: "run", state: "finalizing" });
+  try {
+    const info = db.prepare("INSERT INTO messages (conversation_id, role, text) VALUES (?, 'assistant', ?)").run(run.conversationId, reply);
+    db.prepare("UPDATE conversations SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?").run(run.conversationId);
+    const message = db.prepare("SELECT id, role, text, created_at FROM messages WHERE id = ?").get(info.lastInsertRowid);
+    run.finished = true;
+    publishConversationEvent(run.conversationId, { type: "run", state: "complete", message });
+  } catch (error: any) {
+    publishConversationEvent(run.conversationId, {
+      type: "run",
+      state: "error",
+      error: typeof error?.message === "string" ? error.message.slice(0, 500) : "could not save assistant response",
+    });
+  } finally {
+    if (activeConversationRuns.get(run.conversationId) === run) activeConversationRuns.delete(run.conversationId);
+  }
+}
+
+function failConversationRun(run: ActiveConversationRun, error: unknown, state: "error" | "aborted" = "error"): void {
+  if (run.finished || run.finalizing) return;
+  run.finished = true;
+  const detail = error instanceof Error ? error.message : typeof error === "string" ? error : "chat run failed";
+  publishConversationEvent(run.conversationId, {
+    type: "run",
+    state,
+    error: detail.slice(0, 500),
+  });
+  if (activeConversationRuns.get(run.conversationId) === run) activeConversationRuns.delete(run.conversationId);
+}
+
+gateway.subscribeChat((event) => {
+  const run = matchingConversationRun(event);
+  if (!run) return;
+
+  if (event.state === "status") {
+    run.state = "status";
+    run.phase = event.phase;
+    run.retry = event.retry;
+    publishConversationEvent(run.conversationId, {
+      type: "run",
+      state: "status",
+      phase: event.phase ?? null,
+      retry: event.retry ?? null,
+    });
+    return;
+  }
+
+  if (event.state === "delta") {
+    run.state = "responding";
+    if (event.snapshot != null) run.streamedText = event.snapshot;
+    else if (event.replace) run.streamedText = event.deltaText ?? "";
+    else run.streamedText += event.deltaText ?? "";
+    publishConversationEvent(run.conversationId, {
+      type: "run",
+      state: "responding",
+      deltaText: event.deltaText ?? "",
+      replace: event.replace,
+      snapshot: event.snapshot,
+    });
+    return;
+  }
+
+  if (event.state === "final") {
+    const finalText = event.text || run.streamedText;
+    if (finalText) finishConversationRun(run, finalText);
+    return;
+  }
+
+  failConversationRun(
+    run,
+    event.errorMessage || event.stopReason || (event.state === "aborted" ? "chat run aborted" : "chat run failed"),
+    event.state
+  );
+});
 
 function requireActiveWorkspaceAgent(agentId: string, res: Response): boolean {
   const workspaceId = Number(getSetting("active_workspace_id") ?? 0);
@@ -193,6 +338,138 @@ api.put("/agents/assignments", async (req, res) => {
     }
     res.status(503).json({ ok: false, error: e.message, source: "gateway+local" });
   }
+});
+
+api.get("/agents/organization", async (req, res) => {
+  const workspaceId = Number(req.query.workspaceId ?? getSetting("active_workspace_id") ?? 0);
+  try {
+    const result = await getAgentOrganization(workspaceId);
+    res.setHeader("Cache-Control", "no-store");
+    res.json(result);
+  } catch (error: any) {
+    if (error instanceof AgentOrganizationError) {
+      res.status(error.status).json({ ok: false, error: error.message, source: "gateway+local" });
+      return;
+    }
+    res.status(503).json({ ok: false, error: error?.message ?? "organization unavailable", source: "gateway+local" });
+  }
+});
+
+api.put("/agents/organization", async (req, res) => {
+  const workspaceId = Number(req.body?.workspaceId ?? getSetting("active_workspace_id") ?? 0);
+  try {
+    const result = await configureAgentOrganization(workspaceId, req.body?.members, req.body?.confirmed === true);
+    res.setHeader("Cache-Control", "no-store");
+    res.json(result);
+  } catch (error: any) {
+    if (error instanceof AgentOrganizationError) {
+      res.status(error.status).json({ ok: false, error: error.message, source: "gateway+local" });
+      return;
+    }
+    res.status(503).json({ ok: false, error: error?.message ?? "organization update failed", source: "gateway+local" });
+  }
+});
+
+// ---- agent rooms: task-linked, persistent local transcript + real Gateway turns ----
+api.get("/agent-rooms", async (req, res) => {
+  const workspaceId = Number(req.query.workspaceId ?? getSetting("active_workspace_id") ?? 0);
+  try {
+    const result = await listAgentRooms(workspaceId);
+    res.setHeader("Cache-Control", "no-store");
+    res.json(result);
+  } catch (error: any) {
+    if (error instanceof AgentRoomError) {
+      res.status(error.status).json({ ok: false, error: error.message, source: "local+gateway" });
+      return;
+    }
+    res.status(503).json({ ok: false, error: error?.message ?? "agent rooms unavailable", source: "local+gateway" });
+  }
+});
+
+api.post("/agent-rooms", async (req, res) => {
+  const workspaceId = Number(req.body?.workspaceId ?? getSetting("active_workspace_id") ?? 0);
+  const taskId = Number(req.body?.taskId);
+  if (!Number.isInteger(workspaceId) || workspaceId <= 0 || !Number.isInteger(taskId) || taskId <= 0) {
+    res.status(400).json({ ok: false, error: "valid workspaceId and taskId required", source: "local+gateway" });
+    return;
+  }
+  try {
+    const result = await createAgentRoom({ workspaceId, taskId, title: req.body?.title, agentIds: req.body?.agentIds, confirmed: req.body?.confirmed === true });
+    res.setHeader("Cache-Control", "no-store");
+    res.status(201).json(result);
+  } catch (error: any) {
+    if (error instanceof AgentRoomError) {
+      res.status(error.status).json({ ok: false, error: error.message, source: "local+gateway" });
+      return;
+    }
+    res.status(503).json({ ok: false, error: error?.message ?? "room creation failed", source: "local+gateway" });
+  }
+});
+
+api.get("/agent-rooms/:id", async (req, res) => {
+  const roomId = Number(req.params.id);
+  if (!Number.isInteger(roomId) || roomId <= 0) { res.status(400).json({ ok: false, error: "valid room id required" }); return; }
+  try {
+    const result = await getAgentRoom(roomId);
+    res.setHeader("Cache-Control", "no-store");
+    res.json(result);
+  } catch (error: any) {
+    if (error instanceof AgentRoomError) { res.status(error.status).json({ ok: false, error: error.message, source: "local+gateway" }); return; }
+    res.status(503).json({ ok: false, error: error?.message ?? "room unavailable", source: "local+gateway" });
+  }
+});
+
+api.post("/agent-rooms/:id/messages", async (req, res) => {
+  const roomId = Number(req.params.id);
+  if (!Number.isInteger(roomId) || roomId <= 0) { res.status(400).json({ ok: false, error: "valid room id required" }); return; }
+  try {
+    const result = await startAgentRoomTurn(roomId, req.body?.text, req.body?.agentIds);
+    res.setHeader("Cache-Control", "no-store");
+    res.status(202).json(result);
+  } catch (error: any) {
+    if (error instanceof AgentRoomError) { res.status(error.status).json({ ok: false, error: error.message, source: "local+gateway" }); return; }
+    res.status(503).json({ ok: false, error: error?.message ?? "room dispatch failed", source: "local+gateway" });
+  }
+});
+
+api.patch("/agent-rooms/:id", async (req, res) => {
+  const roomId = Number(req.params.id);
+  if (!Number.isInteger(roomId) || roomId <= 0) { res.status(400).json({ ok: false, error: "valid room id required" }); return; }
+  if (req.body?.confirmed !== true || typeof req.body?.archived !== "boolean") {
+    res.status(400).json({ ok: false, error: "archive state and confirmation required", source: "local" });
+    return;
+  }
+  try {
+    const result = await setAgentRoomArchived(roomId, req.body.archived);
+    res.setHeader("Cache-Control", "no-store");
+    res.json(result);
+  } catch (error: any) {
+    if (error instanceof AgentRoomError) { res.status(error.status).json({ ok: false, error: error.message, source: "local+gateway" }); return; }
+    res.status(503).json({ ok: false, error: error?.message ?? "room update failed", source: "local+gateway" });
+  }
+});
+
+api.get("/agent-rooms/:id/events", (req, res) => {
+  const roomId = Number(req.params.id);
+  if (!Number.isInteger(roomId) || roomId <= 0 || !hasAgentRoom(roomId)) {
+    res.status(404).json({ ok: false, error: "room not found" });
+    return;
+  }
+  res.status(200);
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders();
+  res.write("retry: 3000\n\n");
+  const send = (event: Record<string, unknown>) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+  send({ type: "hello", roomId, activeRun: getAgentRoomActiveRun(roomId) });
+  const unsubscribe = subscribeAgentRoom(roomId, send as (event: any) => void);
+  const heartbeat = setInterval(() => res.write(": keepalive\n\n"), 15_000);
+  req.on("close", () => {
+    clearInterval(heartbeat);
+    unsubscribe();
+  });
 });
 
 api.get("/agents/:id/avatar", async (req, res) => {
@@ -746,16 +1023,98 @@ api.delete("/workspaces/:id", (req, res) => {
 });
 
 // ---- tasks ----
+class TaskInputError extends Error {
+  status: number;
+
+  constructor(message: string, status = 400) {
+    super(message);
+    this.name = "TaskInputError";
+    this.status = status;
+  }
+}
+
+function publicTask(row: any) {
+  // Gateway session keys remain server-side. The UI only needs to know whether
+  // a task has prior execution context, never the private routing identifier.
+  const { gateway_session_key: gatewaySessionKey, ...task } = row;
+  return { ...task, session_linked: Boolean(gatewaySessionKey) };
+}
+
+function taskSummary(rows: any[]) {
+  const byStatus = Object.fromEntries(TASK_STATUSES.map((status) => [status, 0])) as Record<TaskStatus, number>;
+  for (const row of rows) byStatus[row.status as TaskStatus] += 1;
+  const total = rows.length;
+  const done = byStatus.done;
+  return {
+    total,
+    open: total - done,
+    done,
+    active: byStatus.in_progress,
+    blocked: byStatus.blocked,
+    highPriority: rows.filter((row) => row.priority === 1 && row.status !== "done").length,
+    assigned: rows.filter((row) => Boolean(row.assigned_agent_id)).length,
+    unassigned: rows.filter((row) => !row.assigned_agent_id).length,
+    completionRate: total === 0 ? 0 : Math.round((done / total) * 100),
+    byStatus,
+  };
+}
+
+function recordTaskActivity(input: {
+  taskId: number;
+  actorType: "owner" | "agent" | "system";
+  actorId?: string;
+  eventType: string;
+  details?: string;
+  fromStatus?: string | null;
+  toStatus?: string | null;
+}): void {
+  db.prepare(`
+    INSERT INTO task_activity (task_id, actor_type, actor_id, event_type, details, from_status, to_status)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    input.taskId,
+    input.actorType,
+    input.actorId ?? "",
+    input.eventType.slice(0, 80),
+    (input.details ?? "").slice(0, 2000),
+    input.fromStatus ?? null,
+    input.toStatus ?? null,
+  );
+}
+
+async function resolveTaskAssignee(workspaceId: number, raw: unknown, current = ""): Promise<string> {
+  if (raw === undefined) return current;
+  if (raw === null || raw === "") return "";
+  if (typeof raw !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(raw.trim())) {
+    throw new TaskInputError("assignedAgentId must be a valid agent id or null");
+  }
+  const agentId = raw.trim();
+  if (!isAgentAssignedToWorkspace(agentId, workspaceId)) {
+    throw new TaskInputError("assigned agent is not assigned to this workspace", 409);
+  }
+  const roster = await gateway.getAgentRoster();
+  if (!roster.agents.some((agent) => agent.id === agentId)) {
+    throw new TaskInputError("assigned agent is not in the live Gateway roster", 409);
+  }
+  return agentId;
+}
+
 api.get("/tasks", (req, res) => {
   const wsId = Number(req.query.workspaceId ?? getSetting("active_workspace_id") ?? 0);
   if (!wsId) { res.json({ ok: true, tasks: [] }); return; }
   const rows = db.prepare(
     "SELECT * FROM tasks WHERE workspace_id = ? ORDER BY priority, updated_at DESC"
-  ).all(wsId);
-  res.json({ ok: true, tasks: rows, runningTaskIds: [...activeTaskRuns.keys()] });
+  ).all(wsId) as any[];
+  const ids = new Set(rows.map((row) => row.id));
+  res.json({
+    ok: true,
+    tasks: rows.map(publicTask),
+    runningTaskIds: [...activeTaskRuns.keys()].filter((id) => ids.has(id)),
+    summary: taskSummary(rows),
+  });
 });
 
-api.post("/tasks", (req, res) => {
+api.post("/tasks", async (req, res) => {
   const wsId = Number(req.body?.workspaceId ?? getSetting("active_workspace_id") ?? 0);
   const title = typeof req.body?.title === "string" ? req.body.title.trim().slice(0, 500) : "";
   const description = typeof req.body?.description === "string" ? req.body.description.trim().slice(0, 5000) : "";
@@ -765,12 +1124,30 @@ api.post("/tasks", (req, res) => {
   if (!wsId || !db.prepare("SELECT id FROM workspaces WHERE id = ?").get(wsId)) {
     res.status(400).json({ ok: false, error: "valid workspaceId required" }); return;
   }
-  const info = db.prepare("INSERT INTO tasks (workspace_id, title, description, status, priority) VALUES (?, ?, ?, ?, ?)")
-    .run(wsId, title, description, status, priority);
-  res.json({ ok: true, task: db.prepare("SELECT * FROM tasks WHERE id = ?").get(info.lastInsertRowid) });
+  try {
+    const rawAssignee = Object.prototype.hasOwnProperty.call(req.body ?? {}, "assignedAgentId")
+      ? req.body.assignedAgentId
+      : req.body?.assigned_agent_id;
+    const assignedAgentId = await resolveTaskAssignee(wsId, rawAssignee);
+    const created = db.transaction(() => {
+      const info = db.prepare("INSERT INTO tasks (workspace_id, title, description, status, priority, assigned_agent_id) VALUES (?, ?, ?, ?, ?, ?)")
+        .run(wsId, title, description, status, priority, assignedAgentId);
+      const taskId = Number(info.lastInsertRowid);
+      recordTaskActivity({ taskId, actorType: "owner", eventType: "created", details: "Task created", toStatus: status });
+      if (assignedAgentId) recordTaskActivity({ taskId, actorType: "owner", eventType: "assigned", details: `Assigned to ${assignedAgentId}` });
+      return db.prepare("SELECT * FROM tasks WHERE id = ?").get(taskId);
+    })();
+    res.status(201).json({ ok: true, task: publicTask(created) });
+  } catch (error: any) {
+    if (error instanceof TaskInputError) {
+      res.status(error.status).json({ ok: false, error: error.message, source: "gateway+local" });
+      return;
+    }
+    res.status(503).json({ ok: false, error: error?.message ?? "task creation failed", source: "gateway+local" });
+  }
 });
 
-api.patch("/tasks/:id", (req, res) => {
+api.patch("/tasks/:id", async (req, res) => {
   const task = db.prepare("SELECT * FROM tasks WHERE id = ?").get(req.params.id) as any;
   if (!task) { res.status(404).json({ ok: false, error: "task not found" }); return; }
   const title = typeof req.body?.title === "string" && req.body.title.trim() ? req.body.title.trim().slice(0, 500) : task.title;
@@ -783,23 +1160,199 @@ api.patch("/tasks/:id", (req, res) => {
   const runStartedAt = req.body?.run_started_at === null
     ? null
     : (typeof req.body?.run_started_at === "string" && req.body.run_started_at ? req.body.run_started_at : task.run_started_at);
-  db.prepare("UPDATE tasks SET title = ?, description = ?, status = ?, priority = ?, last_run_output = ?, run_started_at = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?")
-    .run(title, description, status, priority, lastRunOutput, runStartedAt, req.params.id);
-  res.json({ ok: true, task: db.prepare("SELECT * FROM tasks WHERE id = ?").get(req.params.id) });
+  try {
+    const hasCamelAssignee = Object.prototype.hasOwnProperty.call(req.body ?? {}, "assignedAgentId");
+    const hasSnakeAssignee = Object.prototype.hasOwnProperty.call(req.body ?? {}, "assigned_agent_id");
+    const rawAssignee = hasCamelAssignee ? req.body.assignedAgentId : hasSnakeAssignee ? req.body.assigned_agent_id : undefined;
+    const assignedAgentId = await resolveTaskAssignee(task.workspace_id, rawAssignee, task.assigned_agent_id ?? "");
+    const assigneeChanged = assignedAgentId !== (task.assigned_agent_id ?? "");
+    if (status !== task.status && activeTaskRuns.has(task.id)) {
+      res.status(409).json({ ok: false, error: "cannot change task status while it is running" });
+      return;
+    }
+    if (assigneeChanged && activeTaskRuns.has(task.id)) {
+      res.status(409).json({ ok: false, error: "cannot reassign a task while it is running" });
+      return;
+    }
+    const updated = db.transaction(() => {
+      db.prepare(`
+        UPDATE tasks
+        SET title = ?, description = ?, status = ?, priority = ?, assigned_agent_id = ?,
+            gateway_session_key = ?, last_run_output = ?, run_started_at = ?,
+            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        WHERE id = ?
+      `).run(
+        title,
+        description,
+        status,
+        priority,
+        assignedAgentId,
+        assigneeChanged ? "" : task.gateway_session_key,
+        lastRunOutput,
+        runStartedAt,
+        req.params.id,
+      );
+      if (task.status !== status) {
+        recordTaskActivity({
+          taskId: task.id,
+          actorType: "owner",
+          eventType: "status_changed",
+          details: `${task.status} → ${status}`,
+          fromStatus: task.status,
+          toStatus: status,
+        });
+      }
+      if (assigneeChanged) {
+        recordTaskActivity({
+          taskId: task.id,
+          actorType: "owner",
+          eventType: assignedAgentId ? "assigned" : "unassigned",
+          details: assignedAgentId ? `Assigned to ${assignedAgentId}` : `Unassigned from ${task.assigned_agent_id}`,
+        });
+      }
+      const otherChanged = title !== task.title || description !== task.description || priority !== task.priority;
+      if (otherChanged) recordTaskActivity({ taskId: task.id, actorType: "owner", eventType: "updated", details: "Task details updated" });
+      return db.prepare("SELECT * FROM tasks WHERE id = ?").get(req.params.id);
+    })();
+    res.json({ ok: true, task: publicTask(updated) });
+  } catch (error: any) {
+    if (error instanceof TaskInputError) {
+      res.status(error.status).json({ ok: false, error: error.message, source: "gateway+local" });
+      return;
+    }
+    res.status(503).json({ ok: false, error: error?.message ?? "task update failed", source: "gateway+local" });
+  }
+});
+
+api.get("/tasks/:id/activity", (req, res) => {
+  const task = db.prepare("SELECT id FROM tasks WHERE id = ?").get(req.params.id);
+  if (!task) { res.status(404).json({ ok: false, error: "task not found" }); return; }
+  const activity = db.prepare(`
+    SELECT id, task_id, actor_type, actor_id, event_type, details, from_status, to_status, created_at
+    FROM task_activity
+    WHERE task_id = ?
+    ORDER BY id DESC
+    LIMIT 200
+  `).all(req.params.id);
+  res.json({ ok: true, activity, source: "local" });
 });
 
 api.delete("/tasks/:id", (req, res) => {
+  const id = Number(req.params.id);
+  if (activeTaskRuns.has(id)) { res.status(409).json({ ok: false, error: "cannot delete a task while it is running" }); return; }
   const info = db.prepare("DELETE FROM tasks WHERE id = ?").run(req.params.id);
   if (info.changes === 0) { res.status(404).json({ ok: false, error: "task not found" }); return; }
   res.json({ ok: true });
 });
 
 // ---- conversations + chat through the real gateway ----
+type ConversationRow = {
+  id: number;
+  workspace_id: number;
+  title: string;
+  gateway_session_key: string;
+};
+
+function publicConversation(row: any) {
+  const { gateway_session_key: _gatewaySessionKey, ...conversation } = row;
+  return conversation;
+}
+
+type ConversationTurnInput = {
+  conversation: ConversationRow;
+  prompt: string;
+  storedText: string;
+  usageText?: string;
+  attachments?: GatewayChatAttachment[];
+  responseExtra?: Record<string, unknown>;
+};
+
+async function beginConversationTurn(input: ConversationTurnInput, res: Response): Promise<void> {
+  const { conversation } = input;
+  if (activeConversationRuns.has(conversation.id)) {
+    res.status(409).json({ ok: false, error: "this conversation already has an active run" });
+    return;
+  }
+
+  const requestRunId = `julie-${crypto.randomBytes(8).toString("hex")}`;
+  const startedAt = Date.now();
+  const run: ActiveConversationRun = {
+    conversationId: conversation.id,
+    sessionKey: conversation.gateway_session_key,
+    runId: requestRunId,
+    prompt: input.prompt,
+    startedAt,
+    state: "sending",
+    streamedText: "",
+    finalizing: false,
+    finished: false,
+  };
+
+  const info = db.prepare("INSERT INTO messages (conversation_id, role, text) VALUES (?, 'user', ?)").run(conversation.id, input.storedText);
+  db.prepare("UPDATE conversations SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?").run(conversation.id);
+  const userMessage = db.prepare("SELECT id, role, text, created_at FROM messages WHERE id = ?").get(info.lastInsertRowid);
+  if (input.usageText?.trim()) recordPromptUsage(input.usageText);
+
+  activeConversationRuns.set(conversation.id, run);
+  publishConversationEvent(conversation.id, { type: "message", message: userMessage });
+  publishConversationEvent(conversation.id, { type: "run", state: "sending", startedAt });
+
+  try {
+    const accepted = await gateway.startChat(
+      conversation.gateway_session_key,
+      input.prompt,
+      input.attachments ?? [],
+      requestRunId
+    );
+    run.runId = accepted.runId;
+    run.startedAt = accepted.startedAt;
+    run.state = "accepted";
+    publishConversationEvent(conversation.id, {
+      type: "run",
+      state: "accepted",
+      gatewayStatus: accepted.status,
+      startedAt: accepted.startedAt,
+    });
+
+    // Completion is detached from the HTTP response. Gateway chat events drive
+    // the normal fast path; history polling remains a bounded fallback if a
+    // terminal event is lost during a reconnect.
+    void gateway.waitForChatReply(
+      conversation.gateway_session_key,
+      accepted.runId,
+      CHAT_REPLY_MONITOR_TIMEOUT_MS,
+      input.prompt,
+      accepted.startedAt
+    ).then((reply) => finishConversationRun(run, reply.text))
+      .catch((error) => failConversationRun(run, error));
+
+    res.setHeader("Cache-Control", "no-store");
+    res.status(202).json({
+      ok: true,
+      status: "accepted",
+      gatewayStatus: accepted.status,
+      userMessage,
+      ...(input.responseExtra ?? {}),
+    });
+  } catch (error: any) {
+    // The Gateway never acknowledged this turn: roll back the stored user
+    // message so a retry cannot look like a duplicate send.
+    const storedId = (userMessage as { id: number }).id;
+    try { db.prepare("DELETE FROM messages WHERE id = ?").run(storedId); } catch { /* already gone */ }
+    publishConversationEvent(conversation.id, { type: "message-removed", id: storedId });
+    failConversationRun(run, error);
+    res.status(502).json({
+      ok: false,
+      error: `gateway did not acknowledge chat send: ${typeof error?.message === "string" ? error.message : "unknown error"}`,
+    });
+  }
+}
+
 api.get("/conversations", (req, res) => {
   const wsId = Number(req.query.workspaceId ?? getSetting("active_workspace_id") ?? 0);
   if (!wsId) { res.json({ ok: true, conversations: [] }); return; }
   const rows = db.prepare(
-    "SELECT id, workspace_id, title, gateway_session_key, created_at, updated_at FROM conversations WHERE workspace_id = ? ORDER BY updated_at DESC"
+    "SELECT id, workspace_id, title, created_at, updated_at FROM conversations WHERE workspace_id = ? ORDER BY updated_at DESC"
   ).all(wsId);
   res.json({ ok: true, conversations: rows });
 });
@@ -812,80 +1365,228 @@ api.post("/conversations", (req, res) => {
   const title = typeof req.body?.title === "string" && req.body.title.trim() ? req.body.title.trim().slice(0, 200) : "New conversation";
   const sessionKey = `agent:main:julie-conv-${Date.now().toString(36)}-${crypto.randomBytes(3).toString("hex")}`;
   const info = db.prepare("INSERT INTO conversations (workspace_id, title, gateway_session_key) VALUES (?, ?, ?)").run(wsId, title, sessionKey);
-  res.json({ ok: true, conversation: db.prepare("SELECT * FROM conversations WHERE id = ?").get(info.lastInsertRowid) });
+  res.json({ ok: true, conversation: publicConversation(db.prepare("SELECT * FROM conversations WHERE id = ?").get(info.lastInsertRowid)) });
 });
 
 api.get("/conversations/:id/messages", (req, res) => {
   const conv = db.prepare("SELECT * FROM conversations WHERE id = ?").get(req.params.id) as any;
   if (!conv) { res.status(404).json({ ok: false, error: "conversation not found" }); return; }
   const rows = db.prepare("SELECT id, role, text, created_at FROM messages WHERE conversation_id = ? ORDER BY id").all(conv.id);
-  res.json({ ok: true, messages: rows, gatewaySessionKey: conv.gateway_session_key });
+  res.json({
+    ok: true,
+    messages: rows,
+    activeRun: publicRunSnapshot(activeConversationRuns.get(conv.id)),
+  });
 });
 
 api.post("/conversations/:id/messages", async (req, res) => {
-  const conv = db.prepare("SELECT * FROM conversations WHERE id = ?").get(req.params.id) as any;
+  const conv = db.prepare("SELECT * FROM conversations WHERE id = ?").get(req.params.id) as ConversationRow | undefined;
   if (!conv) { res.status(404).json({ ok: false, error: "conversation not found" }); return; }
   const text = typeof req.body?.text === "string" ? req.body.text.trim().slice(0, 20000) : "";
   if (!text) { res.status(400).json({ ok: false, error: "text required" }); return; }
+  await beginConversationTurn({ conversation: conv, prompt: text, storedText: text, usageText: text }, res);
+});
 
-  db.prepare("INSERT INTO messages (conversation_id, role, text) VALUES (?, 'user', ?)").run(conv.id, text);
-  db.prepare("UPDATE conversations SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?").run(conv.id);
-  recordPromptUsage(text);
+const CHAT_UPLOAD_MAX_BYTES = 8 * 1024 * 1024;
+const CHAT_UPLOAD_IMAGE_MAX_BYTES = 6 * 1024 * 1024;
+const CHAT_UPLOAD_TEXT_EXTENSIONS = new Map<string, string>([
+  ["txt", "text/plain"],
+  ["text", "text/plain"],
+  ["log", "text/plain"],
+  ["md", "text/markdown"],
+  ["markdown", "text/markdown"],
+  ["csv", "text/csv"],
+  ["json", "application/json"],
+]);
 
+class ChatUploadError extends Error {
+  constructor(message: string, readonly status = 400) {
+    super(message);
+  }
+}
+
+function cleanUploadName(raw: string): string {
+  const leaf = raw.split(/[\\/]/).pop() ?? "";
+  return leaf.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 180);
+}
+
+function hasBytes(bytes: Buffer, signature: number[], offset = 0): boolean {
+  return signature.every((value, index) => bytes[offset + index] === value);
+}
+
+function detectChatUploadMime(bytes: Buffer, fileName: string): string | null {
+  if (hasBytes(bytes, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) return "image/png";
+  if (hasBytes(bytes, [0xff, 0xd8, 0xff])) return "image/jpeg";
+  if (bytes.subarray(0, 6).toString("ascii") === "GIF87a" || bytes.subarray(0, 6).toString("ascii") === "GIF89a") return "image/gif";
+  if (bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP") return "image/webp";
+  if (bytes.subarray(0, 5).toString("ascii") === "%PDF-") return "application/pdf";
+
+  const extension = fileName.includes(".") ? fileName.split(".").pop()!.toLowerCase() : "";
+  const textMime = CHAT_UPLOAD_TEXT_EXTENSIONS.get(extension);
+  if (!textMime || bytes.includes(0)) return null;
   try {
-    const reply = await gateway.chat(conv.gateway_session_key, text);
-    if (!reply.text) {
-      res.status(502).json({ ok: false, error: "gateway returned no assistant text", runId: reply.runId ?? null });
+    new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    return textMime;
+  } catch {
+    return null;
+  }
+}
+
+function extensionMatchesChatMime(fileName: string, mimeType: string): boolean {
+  const extension = fileName.includes(".") ? fileName.split(".").pop()!.toLowerCase() : "";
+  const allowed: Record<string, string[]> = {
+    "image/png": ["png"],
+    "image/jpeg": ["jpg", "jpeg", "jfif"],
+    "image/gif": ["gif"],
+    "image/webp": ["webp"],
+    "application/pdf": ["pdf"],
+    "text/plain": ["txt", "text", "log"],
+    "text/markdown": ["md", "markdown"],
+    "text/csv": ["csv"],
+    "application/json": ["json"],
+  };
+  return Boolean(allowed[mimeType]?.includes(extension));
+}
+
+function declaredChatMimeMatches(declaredType: string, detectedType: string): boolean {
+  const declared = declaredType.trim().toLowerCase().split(";", 1)[0];
+  if (!declared || declared === "application/octet-stream") return true;
+  if (declared === "image/jpg") return detectedType === "image/jpeg";
+  if (detectedType.startsWith("text/") || detectedType === "application/json") {
+    return declared.startsWith("text/") || declared === "application/json";
+  }
+  return declared === detectedType;
+}
+
+async function parseChatUpload(req: Request): Promise<{
+  conversationId: number;
+  message: string;
+  attachment: GatewayChatAttachment;
+}> {
+  const contentType = req.get("Content-Type") ?? "";
+  if (!/^multipart\/form-data\s*;/i.test(contentType) || !Buffer.isBuffer(req.body)) {
+    throw new ChatUploadError("multipart/form-data upload required", 415);
+  }
+
+  let form: FormData;
+  try {
+    // undici's Response.formData() is the dependency-free multipart parser.
+    // The Node types for BodyInit do not fully cover typed-array views, so the
+    // request body is passed through the same runtime API it came from.
+    const bytes = new Uint8Array(req.body.buffer, req.body.byteOffset, req.body.byteLength);
+    const ResponseCtor = globalThis.Response as unknown as new (body: unknown, init?: { headers?: Record<string, string> }) => { formData(): Promise<FormData> };
+    form = await new ResponseCtor(bytes, { headers: { "Content-Type": contentType } }).formData();
+  } catch {
+    throw new ChatUploadError("invalid multipart upload");
+  }
+
+  const conversationId = Number(form.get("conversationId"));
+  if (!Number.isInteger(conversationId) || conversationId <= 0) throw new ChatUploadError("valid conversationId required");
+  const messageValue = form.get("message");
+  const message = typeof messageValue === "string" ? messageValue.trim().slice(0, 20000) : "";
+  const entry = form.get("file");
+  if (!entry || typeof entry === "string" || typeof entry.arrayBuffer !== "function") throw new ChatUploadError("file required");
+
+  const fileName = cleanUploadName(entry.name);
+  if (!fileName) throw new ChatUploadError("valid file name required");
+  if (entry.size <= 0) throw new ChatUploadError("file is empty");
+  if (entry.size > CHAT_UPLOAD_MAX_BYTES) throw new ChatUploadError("file exceeds the 8 MB upload limit", 413);
+
+  const bytes = Buffer.from(await entry.arrayBuffer());
+  const mimeType = detectChatUploadMime(bytes, fileName);
+  if (!mimeType || !extensionMatchesChatMime(fileName, mimeType)) {
+    throw new ChatUploadError("unsupported file; use PNG, JPEG, WebP, GIF, PDF, or a UTF-8 text file");
+  }
+  if (!declaredChatMimeMatches(entry.type, mimeType)) throw new ChatUploadError("file content does not match its declared type");
+  if (mimeType.startsWith("image/") && bytes.length > CHAT_UPLOAD_IMAGE_MAX_BYTES) {
+    throw new ChatUploadError("image exceeds the 6 MB Gateway limit", 413);
+  }
+
+  return {
+    conversationId,
+    message,
+    attachment: {
+      type: mimeType.startsWith("image/") ? "image" : "file",
+      mimeType,
+      fileName,
+      origin: "file",
+      content: bytes.toString("base64"),
+      sizeBytes: bytes.length,
+    },
+  };
+}
+
+api.post("/upload", rawBody({ type: "multipart/form-data", limit: "9mb" }), async (req, res) => {
+  try {
+    const upload = await parseChatUpload(req);
+    const conv = db.prepare("SELECT * FROM conversations WHERE id = ?").get(upload.conversationId) as ConversationRow | undefined;
+    if (!conv) { res.status(404).json({ ok: false, error: "conversation not found" }); return; }
+
+    const attachmentLabel = `📎 ${upload.attachment.fileName}`;
+    const prompt = upload.message || `Please review the attached file "${upload.attachment.fileName}".`;
+    const storedText = upload.message ? `${upload.message}\n\n${attachmentLabel}` : attachmentLabel;
+    await beginConversationTurn({
+      conversation: conv,
+      prompt,
+      storedText,
+      usageText: upload.message,
+      attachments: [upload.attachment],
+      responseExtra: {
+        attachment: {
+          fileName: upload.attachment.fileName,
+          mimeType: upload.attachment.mimeType,
+          sizeBytes: upload.attachment.sizeBytes,
+        },
+      },
+    }, res);
+  } catch (error) {
+    if (error instanceof ChatUploadError) {
+      res.status(error.status).json({ ok: false, error: error.message });
       return;
     }
-    const minfo = db.prepare("INSERT INTO messages (conversation_id, role, text) VALUES (?, 'assistant', ?)").run(conv.id, reply.text);
-    db.prepare("UPDATE conversations SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?").run(conv.id);
-    res.json({
-      ok: true,
-      runId: reply.runId ?? null,
-      message: db.prepare("SELECT id, role, text, created_at FROM messages WHERE id = ?").get(minfo.lastInsertRowid),
-    });
-  } catch (e: any) {
-    res.status(502).json({ ok: false, error: `gateway chat failed: ${e.message}` });
+    res.status(500).json({ ok: false, error: "upload failed" });
   }
 });
 
 // ---- streaming: SSE forward of gateway chat deltas per conversation ----
 api.get("/conversations/:id/events", (req, res) => {
-  const conv = db.prepare("SELECT * FROM conversations WHERE id = ?").get(req.params.id) as any;
+  const conv = db.prepare("SELECT * FROM conversations WHERE id = ?").get(req.params.id) as ConversationRow | undefined;
   if (!conv) { res.status(404).json({ ok: false, error: "conversation not found" }); return; }
   res.writeHead(200, {
     "Content-Type": "text/event-stream; charset=utf-8",
     "Cache-Control": "no-cache, no-transform",
     Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
   });
   res.write("retry: 3000\n\n");
   const send = (obj: unknown) => {
     try { res.write(`data: ${JSON.stringify(obj)}\n\n`); } catch { /* client gone */ }
   };
-  send({ type: "hello", conversationId: conv.id });
+  send({ type: "hello", conversationId: conv.id, activeRun: publicRunSnapshot(activeConversationRuns.get(conv.id)) });
   const heartbeat = setInterval(() => {
     try { res.write(": ping\n\n"); } catch { /* client gone */ }
   }, 15000);
-  const unsubscribe = gateway.subscribeChat((e) => {
-    if (e.sessionKey !== conv.gateway_session_key) return;
-    send({
-      type: e.state,
-      runId: e.runId ?? null,
-      deltaText: e.deltaText ?? null,
-      replace: e.replace,
-      snapshot: e.snapshot,
-      text: e.text,
-    });
-  });
+  const subscribers = conversationSubscribers.get(conv.id) ?? new Set<ConversationSubscriber>();
+  subscribers.add(send);
+  conversationSubscribers.set(conv.id, subscribers);
   req.on("close", () => {
     clearInterval(heartbeat);
-    unsubscribe();
+    subscribers.delete(send);
+    if (subscribers.size === 0) conversationSubscribers.delete(conv.id);
   });
 });
 
 api.delete("/conversations/:id", (req, res) => {
-  const info = db.prepare("DELETE FROM conversations WHERE id = ?").run(req.params.id);
+  const conversationId = Number(req.params.id);
+  if (!Number.isInteger(conversationId) || conversationId <= 0) {
+    res.status(400).json({ ok: false, error: "valid conversation id required" });
+    return;
+  }
+  if (activeConversationRuns.has(conversationId)) {
+    res.status(409).json({ ok: false, error: "cannot delete a conversation while Julie is working" });
+    return;
+  }
+  const info = db.prepare("DELETE FROM conversations WHERE id = ?").run(conversationId);
   if (info.changes === 0) { res.status(404).json({ ok: false, error: "conversation not found" }); return; }
   res.json({ ok: true });
 });
@@ -894,19 +1595,21 @@ api.delete("/conversations/:id", (req, res) => {
 // Lifecycle: ready -> in_progress -> pending_review (or blocked on failure).
 // Execution goes through the real OpenClaw agent registry: chat.send to the
 // orchestrator agent (agent:main) on a stable per-task session key.
-const activeTaskRuns = new Map<number, { startedAt: string }>();
+const activeTaskRuns = new Map<number, { startedAt: string; agentId: string }>();
 
-function taskRunPrompt(task: { title: string; description: string }): string {
+function taskRunPrompt(task: { id: number; title: string; description: string }, agentId: string): string {
   const desc = task.description.trim();
   return [
     `Execute this JULIE task from the task board.`,
+    `Task ID: ${task.id}`,
+    `Assigned agent: ${agentId}`,
     `Task: ${task.title}`,
     desc ? `\nDescription:\n${desc}` : "",
     `\nWork on it now using your available tools. When finished, reply with a short result summary as the final answer.`,
   ].join("");
 }
 
-api.post("/tasks/:id/run", (req, res) => {
+api.post("/tasks/:id/run", async (req, res) => {
   const task = db.prepare("SELECT * FROM tasks WHERE id = ?").get(req.params.id) as any;
   if (!task) { res.status(404).json({ ok: false, error: "task not found" }); return; }
   if (activeTaskRuns.has(task.id)) { res.status(409).json({ ok: false, error: "task is already running" }); return; }
@@ -914,29 +1617,82 @@ api.post("/tasks/:id/run", (req, res) => {
     res.status(409).json({ ok: false, error: `task must be in 'ready' to run (current: ${task.status})` });
     return;
   }
-  const sessionKey = task.gateway_session_key || `agent:main:julie-task-${task.id}`;
+  const agentId = task.assigned_agent_id || "main";
+  try {
+    if (task.assigned_agent_id && !isAgentAssignedToWorkspace(agentId, task.workspace_id)) {
+      res.status(409).json({ ok: false, error: "assigned agent is no longer assigned to this workspace" });
+      return;
+    }
+    const roster = await gateway.getAgentRoster();
+    if (!roster.agents.some((agent) => agent.id === agentId)) {
+      res.status(409).json({ ok: false, error: "task agent is not in the live Gateway roster" });
+      return;
+    }
+  } catch (error: any) {
+    res.status(503).json({ ok: false, error: error?.message ?? "could not validate task agent", source: "gateway" });
+    return;
+  }
+
+  const expectedPrefix = `agent:${agentId}:`;
+  const sessionKey = typeof task.gateway_session_key === "string" && task.gateway_session_key.startsWith(expectedPrefix)
+    ? task.gateway_session_key
+    : `${expectedPrefix}julie-task-${task.id}`;
   const now = new Date().toISOString();
-  db.prepare(
-    "UPDATE tasks SET status = 'in_progress', run_started_at = ?, gateway_session_key = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?"
-  ).run(now, sessionKey, task.id);
-  activeTaskRuns.set(task.id, { startedAt: now });
+  db.transaction(() => {
+    db.prepare(
+      "UPDATE tasks SET status = 'in_progress', run_started_at = ?, gateway_session_key = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?"
+    ).run(now, sessionKey, task.id);
+    recordTaskActivity({
+      taskId: task.id,
+      actorType: "system",
+      actorId: agentId,
+      eventType: "run_started",
+      details: `Execution accepted for ${agentId}`,
+      fromStatus: task.status,
+      toStatus: "in_progress",
+    });
+  })();
+  activeTaskRuns.set(task.id, { startedAt: now, agentId });
 
   // Background execution; never blocks the HTTP response.
-  gateway.chat(sessionKey, taskRunPrompt(task), 600000)
+  gateway.chat(sessionKey, taskRunPrompt(task, agentId), 600000)
     .then((reply) => {
       const output = (reply.text || "(gateway returned no output)").slice(0, 20000);
-      db.prepare(
-        "UPDATE tasks SET status = 'pending_review', last_run_output = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?"
-      ).run(output, task.id);
+      db.transaction(() => {
+        db.prepare(
+          "UPDATE tasks SET status = 'pending_review', last_run_output = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?"
+        ).run(output, task.id);
+        recordTaskActivity({
+          taskId: task.id,
+          actorType: "agent",
+          actorId: agentId,
+          eventType: "run_completed",
+          details: "Agent returned a result for owner review",
+          fromStatus: "in_progress",
+          toStatus: "pending_review",
+        });
+      })();
     })
     .catch((e: any) => {
-      db.prepare(
-        "UPDATE tasks SET status = 'blocked', last_run_output = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?"
-      ).run(`Run failed: ${e?.message ?? "unknown error"}`.slice(0, 20000), task.id);
+      const message = `Run failed: ${e?.message ?? "unknown error"}`.slice(0, 20000);
+      db.transaction(() => {
+        db.prepare(
+          "UPDATE tasks SET status = 'blocked', last_run_output = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?"
+        ).run(message, task.id);
+        recordTaskActivity({
+          taskId: task.id,
+          actorType: "system",
+          actorId: agentId,
+          eventType: "run_failed",
+          details: message.slice(0, 1000),
+          fromStatus: "in_progress",
+          toStatus: "blocked",
+        });
+      })();
     })
     .finally(() => activeTaskRuns.delete(task.id));
 
-  res.json({ ok: true, task: db.prepare("SELECT * FROM tasks WHERE id = ?").get(task.id) });
+  res.status(202).json({ ok: true, status: "accepted", task: publicTask(db.prepare("SELECT * FROM tasks WHERE id = ?").get(task.id)) });
 });
 
 // ---- settings ----
@@ -1000,4 +1756,95 @@ api.put("/settings", (req, res) => {
     setSetting(k, String(v).slice(0, 5000));
   }
   res.json({ ok: true });
+});
+
+// ---- OpenCode bridge (read-only; E3-07) ----
+// Direct owner access to the real OpenCode v2 background service. Every route
+// here is a GET that reads the live service never fabricates data. Writes go
+// through E3-09 later, not through this bridge.
+function opencodeErrorStatus(e: unknown): { status: number; error: string } {
+  if (e instanceof OpencodeUnavailableError) return { status: 503, error: e.message };
+  if (e instanceof OpencodeForbiddenError) return { status: e.status, error: e.message };
+  if (e instanceof OpencodeAvailableError) return { status: e.status, error: e.message };
+  const message = e instanceof Error ? e.message : "OpenCode request failed";
+  return { status: 502, error: message };
+}
+
+api.get("/opencode/status", async (_req, res) => {
+  try {
+    const status = await getOpencodeStatus();
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ ok: true, ...status });
+  } catch (e: unknown) {
+    const { status, error } = opencodeErrorStatus(e);
+    res.status(status).json({ ok: false, available: false, error, checkedAt: new Date().toISOString() });
+  }
+});
+
+api.get("/opencode/sessions", async (req, res) => {
+  const limit = Number(req.query.limit ?? NaN);
+  try {
+    const result = await listOpencodeSessions({ limit: Number.isFinite(limit) ? limit : undefined });
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ ok: true, ...result });
+  } catch (e: unknown) {
+    const { status, error } = opencodeErrorStatus(e);
+    res.status(status).json({ ok: false, sessions: [], error, source: "opencode" });
+  }
+});
+
+api.get("/opencode/sessions/:sid/messages", async (req, res) => {
+  const limit = Number(req.query.limit ?? NaN);
+  try {
+    const result = await listOpencodeSessionMessages(req.params.sid, { limit: Number.isFinite(limit) ? limit : undefined });
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ ok: true, ...result });
+  } catch (e: unknown) {
+    const { status, error } = opencodeErrorStatus(e);
+    res.status(status).json({ ok: false, messages: [], error, source: "opencode" });
+  }
+});
+
+api.get("/opencode/agents", async (_req, res) => {
+  try {
+    const result = await listOpencodeAgents();
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ ok: true, ...result });
+  } catch (e: unknown) {
+    const { status, error } = opencodeErrorStatus(e);
+    res.status(status).json({ ok: false, agents: [], error, source: "opencode" });
+  }
+});
+
+api.get("/opencode/stats", async (_req, res) => {
+  try {
+    const result = await getOpencodeStats();
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ ok: true, ...result });
+  } catch (e: unknown) {
+    const { status, error } = opencodeErrorStatus(e);
+    res.status(status).json({ ok: false, stats: null, error, source: "opencode" });
+  }
+});
+
+api.get("/opencode/active", async (_req, res) => {
+  try {
+    const result = await listOpencodeActiveSessions();
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ ok: true, ...result });
+  } catch (e: unknown) {
+    const { status, error } = opencodeErrorStatus(e);
+    res.status(status).json({ ok: false, active: [], error, source: "opencode" });
+  }
+});
+
+api.get("/opencode/projects", async (_req, res) => {
+  try {
+    const result = await listOpencodeProjects();
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ ok: true, ...result });
+  } catch (e: unknown) {
+    const { status, error } = opencodeErrorStatus(e);
+    res.status(status).json({ ok: false, projects: [], error, source: "opencode" });
+  }
 });

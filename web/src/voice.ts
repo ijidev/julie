@@ -5,7 +5,8 @@
  *  - VoiceState: union type for voice flow states
  *  - speechSupported(): boolean — SpeechRecognition available?
  *  - startSpeechRecognition(cb): start mic capture, returns stop fn or null
- *  - submitVoiceText(text): resolve current conversation, send, return reply
+ *  - submitVoiceText(text): resolve an existing current conversation, send,
+ *    return reply (never creates a conversation implicitly)
  *
  * The shared speaking-state store lives in ./speaking.ts.
  */
@@ -88,9 +89,19 @@ export interface SubmitVoiceResult {
   reply: string | null;
 }
 
+// ChatView owns this browser-local selection. Keeping only the opaque Julie DB
+// id here lets the shell-mounted voice controller address the conversation the
+// owner actually selected without exposing a Gateway session key.
+let selectedConversationId: number | null = null;
+
+export function setVoiceConversationId(conversationId: number | null): void {
+  selectedConversationId = conversationId;
+}
+
 /**
- * Resolve the active workspace's latest conversation (create one only if none
- * exists), send the user's text, and return the assistant reply.
+ * Resolve the active workspace's selected conversation (or its latest existing
+ * conversation when Chat has not been opened in this page load), send the
+ * user's text, and return the assistant reply. Voice never creates sessions.
  *
  * This is the single shared code path used by VoicePage, VoiceFab, and any
  * other caller that needs to post voice text into the CURRENT conversation
@@ -102,23 +113,52 @@ export async function submitVoiceText(text: string): Promise<SubmitVoiceResult> 
   const activeWsId: number = ws.activeWorkspaceId || ws.workspaces[0]?.id;
   if (!activeWsId) throw new Error("No active workspace");
 
-  // 2. Resolve conversation: use latest existing, create only if none
-  let convId: number;
+  // 2. Resolve an existing conversation. Validate the browser-local selection
+  // against the real workspace response before using it.
   const convData = await api.conversations(activeWsId);
-  if (convData.conversations.length > 0) {
-    convId = convData.conversations[0].id;
-  } else {
-    const created = await api.createConversation(activeWsId, "Voice conversation");
-    convId = created.conversation.id;
-  }
+  const selected = convData.conversations.find((conversation) => conversation.id === selectedConversationId);
+  const convId = selected?.id ?? convData.conversations[0]?.id;
+  if (!convId) throw new Error("Create a conversation in Chat before using the microphone.");
 
-  // 3. Send the message
+  // 3. Send the message. The HTTP call returns as soon as the real Gateway
+  // accepts the send; the assistant reply now arrives later through the
+  // conversation's live event stream.
   await api.sendMessage(convId, text);
 
-  // 4. Fetch updated messages to get the assistant reply
-  const msgs = await api.messages(convId);
-  const last = msgs.messages[msgs.messages.length - 1];
-  const reply = last && last.role === "assistant" ? last.text : null;
+  // 4. Wait for the reply through the conversation SSE stream (same live
+  // channel the chat view uses), with a bounded timeout for long agent runs.
+  const reply = await awaitConversationReply(convId, 10 * 60 * 1000).catch(() => null);
 
   return { convId, reply };
+}
+
+/**
+ * Subscribe to a conversation's event stream and resolve with the next
+ * persisted assistant reply. Bounded by `timeoutMs`; the caller decides how to
+ * surface a timeout (assistant reply simply has not landed yet).
+ */
+export function awaitConversationReply(convId: number, timeoutMs: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const source = new EventSource(`/api/conversations/${convId}/events`);
+    const finalize = (run: (value?: string) => void) => {
+      clearTimeout(timer);
+      source.close();
+      run();
+    };
+    const timer = setTimeout(() => finalize(() => reject(new Error("Voice reply timed out"))), timeoutMs);
+    source.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data) as { type?: string; state?: string; message?: { role: string; text: string }; error?: string };
+        if (data.type === "run" && data.state === "complete") {
+          const text = data.message?.role === "assistant" ? data.message.text : "";
+          if (text) finalize(() => resolve(text));
+        } else if (data.type === "run" && (data.state === "error" || data.state === "aborted")) {
+          finalize(() => reject(new Error(data.error || "The chat run did not produce a reply")));
+        }
+      } catch { /* malformed frame: keep waiting */ }
+    };
+    source.onerror = () => {
+      // EventSource reconnects automatically; the timeout is the bound.
+    };
+  });
 }

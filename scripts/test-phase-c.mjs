@@ -219,8 +219,9 @@ describe("API Shape & Data", () => {
       assert.strictEqual(typeof model.totalCost, "number");
       assert.strictEqual(typeof model.missingCostEntries, "number");
     }
-    assert.strictEqual(d.agent.role.state, "not_configured");
-    assert.strictEqual(d.agent.taskHistory.state, "not_linked");
+    assert.strictEqual(d.agent.role.state, "configured");
+    assert.strictEqual(d.agent.taskHistory.state, "linked");
+    assert.ok(Array.isArray(d.agent.taskHistory.items));
     assert.ok(!Object.hasOwn(d.agent.soul, "content"), "raw SOUL content must not be returned");
     const body = JSON.stringify(d);
     assert.ok(!body.includes("/.openclaw/"), "OpenClaw host paths must not be exposed");

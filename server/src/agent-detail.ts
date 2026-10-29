@@ -1,6 +1,7 @@
 import { gateway, type GatewayAgent } from "./gateway.js";
 import { aggregateModelUsage } from "./usage-projection.js";
 import { getAgentProfile } from "./agent-profiles.js";
+import { db } from "./db.js";
 
 export class AgentNotFoundError extends Error {
   constructor(agentId: string) {
@@ -182,6 +183,14 @@ async function buildAgentDetail(agentId: string) {
   const agent = roster.agents.find((candidate) => candidate.id === agentId);
   if (!agent) throw new AgentNotFoundError(agentId);
   const localProfile = getAgentProfile(agentId);
+  const taskHistory = db.prepare(`
+    SELECT id, workspace_id, title, description, status, priority, assigned_agent_id,
+           last_run_output, run_started_at, created_at, updated_at
+    FROM tasks
+    WHERE assigned_agent_id = ?
+    ORDER BY updated_at DESC, id DESC
+    LIMIT 100
+  `).all(agentId);
 
   const reads = await Promise.allSettled([
     sessionsForAgent(agentId),
@@ -342,9 +351,9 @@ async function buildAgentDetail(agentId: string) {
         error: commandsError,
       },
       taskHistory: {
-        state: "not_linked",
-        items: [],
-        reason: "Julie tasks do not yet have an agent assignment field.",
+        state: "linked",
+        items: taskHistory,
+        reason: null,
       },
     },
     partialErrors,

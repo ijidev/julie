@@ -82,7 +82,7 @@ connection flows remain out of scope until implemented for real.
 Date: 2026-10-28
 The global voice controller remains mounted once in the authenticated shell so
 capture, current-conversation reuse, TTS, and error handling stay centralized.
-It renders no floating button; the center mobile-footer AI control dispatches to
+It renders no floating button; the center mobile-footer microphone dispatches to
 it and receives listening/processing/error state through a local browser event.
 Rationale: satisfy the single-microphone UI while avoiding duplicated capture
 implementations or changing the proven audio path. The deep `/voice` route is
@@ -192,3 +192,107 @@ and public HTTPS image URLs may still become OpenClaw image avatars after exact
 review. GLB 2.0 uploads and HTTPS references are stored only as private/local
 Julie companion assets: `agents.update` accepts image avatars, and no 3D viewer
 or rendered fallback is claimed until a separate viewer/render capability exists.
+
+## D-024 — Chat attachments stream through the Gateway; no Julie-side file store
+Date: 2026-10-28
+Chat file attachments (PNG/JPEG/WebP/GIF, PDF, UTF-8 text/md/csv/json) are
+uploaded as one authenticated multipart POST to `POST /api/upload`, validated
+by content signature (magic bytes) plus extension/MIME cross-checks, base64
+encoded, and forwarded as `attachments` on the documented OpenClaw
+`chat.send` schema call. OpenClaw stages them into the agent's own workspace;
+Julie keeps no copy, exposes no browsing directory of chats files, and adds no
+multipart dependency (the request is parsed with the runtime's native
+`Response.formData()`; the earlier multer/disk-store attempt in the working
+tree was consolidated away in favor of this single documented path). The route
+sends the composer message and attachment together as one real turn that the
+Gateway acknowledges (202) before the agent run streams its reply over SSE —
+so no "sent" state is ever shown that the Gateway did not confirm. Size
+limits follow the Gateway contract (8 MB general, 6 MB for images) and are
+enforced before any Gateway call.
+
+## D-022 — OpenCode bridge is read-only, loopback-only, and hand-rolled
+Date: 2026-10-28
+E3-07 bridges the real OpenCode v2 background service into Julie. Discovery and
+auth were verified against the running OpenCode 2.2.0 service before any code
+was written: the registration file at `$XDG_STATE_HOME/opencode/service.json`
+holds `{ url, password, pid, version }`, the URL is loopback, requests use Basic
+`opencode:<password>`, and the contract is documented per version by the
+service's own `/openapi.json`. Julie's bridge rejects any registration URL that
+is not localhost/127.0.0.1/::1 and never puts the password or URL in browser
+payloads. The bridge is deliberately write-free: sessions, transcripts, and the
+agent list are GET-only; prompt/interrupt/permission endpoints wait for E3-09
+with explicit owner controls. `@opencode/client` was evaluated for this work
+(and used for the live verification probes) but the dependency was rejected for
+the server runtime: the verified wire shape is one registration read plus
+Basic-auth GETs, and the working agreement keeps dependencies minimal. Session
+and transcript payloads are field-whitelisted — ids, titles, agent/model, token
+and cost sums, timestamps, and message text/tool summaries only; message text is
+redacted with the same credential/path patterns as agent chat and tool inputs
+and outputs are truncated (500/4000 chars, ≤80 parts, ≤200 messages).
+
+## D-023 — Project registry mirrors OpenCode; host paths stay server-side
+Date: 2026-10-28
+The `/projects` registry ('Development project registry') is fed only by records
+the OpenCode service itself exposes ('/api/project'); Julie creates no project
+rows of its own. Records with the same canonical path are merged for display
+(the live service kept two ids for /home/admin/julie). Following the agent-
+archive redaction convention, browser payloads never carry canonical host
+paths, project ids are truncated, and per-path session counts come from a
+bounded 400-session scan whose coverage number is shown honestly. The owner's
+intended deep interaction surface remains the OpenCode web UI reached through
+the service's own password-gated tunnel, not Julie reimplementing it.
+
+## D-025 — Task ownership is a Julie fact; execution uses the assigned live agent
+Date: 2026-10-29
+Tasks now carry an optional `assigned_agent_id` owned by Julie SQLite. Assignment
+mutations are accepted only when the ID is both in the live Gateway roster and
+explicitly assigned to the task's Julie workspace. Unassigned tasks retain the
+documented `main` execution fallback; assigned tasks use a private
+`agent:<id>:julie-task-*` Gateway session. Reassignment is blocked during a run
+and resets stale per-agent execution context. An append-only `task_activity`
+timeline records owner edits and confirmed run/room transitions. Task summaries
+are calculated server-side from the same rows. Gateway task and conversation
+session keys are private routing state and are removed from every browser
+projection (superseding the unavailable-task statements in D-014).
+
+## D-026 — Office hierarchy is explicit HR configuration, never inferred from activity
+Date: 2026-10-29
+Julie stores `department`, `reports_to`, and `org_level` on local agent HR
+profiles, then joins those records to live Gateway identity. The owner/CEO is
+the root; `main` is the sole executive reporting to owner; every department lead
+reports to `main`; every specialist reports to one lead in the same department.
+The confirmed organization replacement endpoint validates the entire active
+workspace roster and these invariants atomically. Missing records render as
+unconfigured rather than being guessed from agent names, workspaces, sessions,
+or tools. OpenClaw spawn allowlists mirror the hierarchy: main may spawn leads,
+leads may spawn their specialists, and specialists have no cross-agent spawn
+targets. Agent create/delete remains a reviewed lifecycle with backup, config
+validation, documented Gateway mutation, HR/allowlist cleanup, and a real role
+comprehension round-trip.
+
+## D-027 — Agent Messenger reads and writes each agent's real Gateway sessions
+Date: 2026-10-29
+Direct messages are not copied into a second Julie transcript store. The inbox
+combines the explicit organization roster, exact Gateway active-run/session
+metadata, and real Julie task ownership. Selecting an agent reads that agent's
+bounded sanitized Gateway sessions; selecting “New session” creates nothing
+until the owner sends. Sends continue through the existing backend-owned
+agent-qualified session keys and return only opaque session IDs plus sanitized
+user/assistant history. Julie shows no invented online, delivered, read, or
+unread state. This is a dedicated multi-agent inbox while the ordinary Chat page
+remains the owner's conversation with `main`.
+
+## D-028 — Task rooms persist locally and relay confirmed turns through member agents
+Date: 2026-10-29
+Group rooms are linked to a real Julie task and persist room metadata,
+membership, delivery state, and the sanitized shared transcript in SQLite.
+Every member owns a private backend-only Gateway session. An owner message is
+accepted locally (202), then selected members run sequentially in organization
+order; each later prompt contains the bounded confirmed room transcript, so
+agents can respond to earlier agents rather than producing parallel isolated
+answers. Only completed Gateway text is stored as an agent message. A failed
+turn becomes an explicitly labeled system failure and dispatch continues. SSE
+projects queued/dispatching/complete state, messages, and a sanitized reconnect
+snapshot—never room session keys or run IDs. Room transcripts/membership survive
+Julie restarts; an in-flight dispatch is process-local and is not claimed to
+recover across a Julie restart.

@@ -5,8 +5,8 @@ import { Markdown } from "./markdown";
 import { VoiceFab, VOICE_STATE_EVENT, requestVoiceCapture } from "./voice-fab";
 import { useSpeaking, speakWithTracking } from "./speaking";
 import { Wave } from "./wave";
-import { speechSupported, startSpeechRecognition, submitVoiceText, type VoiceState } from "./voice";
-import { api, type Conversation, type GatewayStatus, type Message, type Task, type Workspace, type AgentOverviewItem, type AgentOverviewResponse, type AgentDetailResponse, type AgentChatMessage, type AgentOnboardingInput, type AgentOnboardingOptions, type AgentUpdateInput, type AgentUpdateResult, type AgentAssignmentsResponse, type AgentAvatarAsset, type AgentAvatarDirection, type AgentAvatarPreview, type AgentAvatarStudioResponse, type Tool, type Analytics, type Weather, type Device, type Insights, type TrendingItem, TASK_STATUSES } from "./api";
+import { setVoiceConversationId, speechSupported, startSpeechRecognition, submitVoiceText, type VoiceState } from "./voice";
+import { api, type ChatRunSnapshot, type Conversation, type GatewayStatus, type Message, type Task, type TaskActivity, type TaskSummary, type Workspace, type AgentAssignmentRow, type AgentOrganizationResponse, type AgentRoom, type AgentRoomActiveRun, type AgentRoomDetail, type AgentRoomMessage, type AgentOverviewItem, type AgentOverviewResponse, type AgentDetailResponse, type AgentChatMessage, type AgentOnboardingInput, type AgentOnboardingOptions, type AgentUpdateInput, type AgentUpdateResult, type AgentAssignmentsResponse, type AgentAvatarAsset, type AgentAvatarDirection, type AgentAvatarPreview, type AgentAvatarStudioResponse, type Tool, type Analytics, type Weather, type Device, type Insights, type TrendingItem, type OpencodeStatus, type OpencodeSessionRow, type OpencodeSessionsResponse, type OpencodeStatsResponse, type OpencodeActiveResponse, type OpencodeProjectsResponse, TASK_STATUSES } from "./api";
 
 // --- Router Hook ---
 function useRoute(): [string, (to: string) => void] {
@@ -78,6 +78,7 @@ const SIDEBAR_SECTIONS: Array<{ label: string; items: ShellNavItem[] }> = [
   { label: "Command Center", items: [
     { path: "/", label: "Home", icon: "⌂" },
     { path: "/chat", label: "Chat", icon: "◉" },
+    { path: "/agent-messenger", label: "Agent Messenger", icon: "✉" },
     { path: "/agents", label: "Agents", icon: "◇" },
   ] },
   { label: "Operations", items: [
@@ -88,6 +89,7 @@ const SIDEBAR_SECTIONS: Array<{ label: string; items: ShellNavItem[] }> = [
   ] },
   { label: "System", items: [
     { path: "/tools", label: "Apps & Integrations", icon: "⌘" },
+    { path: "/opencode", label: "OpenCode", icon: "◧" },
     { path: "/terminal", label: "Terminal", icon: ">_" },
     { path: "/settings", label: "Settings", icon: "⚙" },
     { path: "/profile", label: "Profile", icon: "◎" },
@@ -98,7 +100,7 @@ const SIDEBAR_SECTIONS: Array<{ label: string; items: ShellNavItem[] }> = [
 const BOTTOM_NAV: ShellNavItem[] = [
   { path: "/", label: "Home", icon: "⌂" },
   { path: "/chat", label: "Chat", icon: "◉" },
-  { path: "/voice", label: "AI", icon: "◉", action: "voice" },
+  { path: "/voice", label: "Talk", icon: "◉", action: "voice" },
   { path: "/agents", label: "Agents", icon: "◇" },
   { path: "/menu", label: "More", icon: "•••", action: "menu" },
 ];
@@ -155,7 +157,7 @@ function Shell({ route, navigate, onLogout }: { route: string; navigate: (to: st
     return () => window.removeEventListener(VOICE_STATE_EVENT, onVoiceState);
   }, []);
 
-  // Center "AI" starts inline voice capture from any page; /voice remains
+  // The center microphone starts inline voice capture from any page; /voice remains
   // routable for deep links, but it is not duplicated in the desktop sidebar.
   const onNav = (item: Pick<ShellNavItem, "path" | "action">) => {
     if (item.action === "voice") { requestVoiceCapture(); return; }
@@ -167,6 +169,7 @@ function Shell({ route, navigate, onLogout }: { route: string; navigate: (to: st
   const renderView = () => {
     if (route === "/") return <HomePage navigate={navigate} gw={gw} />;
     if (route === "/chat") return <ChatView />;
+    if (route === "/agent-messenger") return <AgentMessengerPage />;
     if (route === "/voice") return <VoicePage />;
     if (route === "/tools") return <ToolsPage />;
     if (route === "/agents/new") return <AgentOnboardingPage navigate={navigate} />;
@@ -178,12 +181,11 @@ function Shell({ route, navigate, onLogout }: { route: string; navigate: (to: st
       return <AgentDetailPage agentId={agentId} navigate={navigate} />;
     }
     if (route === "/analytics") return <AnalyticsPage />;
+    if (route === "/opencode") return <OpencodePage />;
     if (route === "/terminal") return <TerminalPage />;
     if (route === "/tasks") return <BoardView />;
     if (route === "/profile") return <ProfilePage />;
-    if (route === "/projects") return <ComingSoonPage title="Projects" icon="▤"
-      description="A workspace-aware registry and read-only project browser is planned here."
-      dependency="Requires the authenticated OpenCode bridge and owner-approved project roots." navigate={navigate} />;
+    if (route === "/projects") return <ProjectsPage navigate={navigate} />;
     if (route === "/automations") return <ComingSoonPage title="Automations" icon="↻"
       description="Schedules, approvals, run history, and failures will be managed from this page."
       dependency="Requires a documented OpenClaw or Julie scheduler contract before controls can be enabled." navigate={navigate} />;
@@ -226,7 +228,7 @@ function Shell({ route, navigate, onLogout }: { route: string; navigate: (to: st
         </div>
       </aside>
 
-      <main className="main">
+      <main className={`main${route === "/chat" ? " chat-main" : route === "/agent-messenger" ? " messenger-main" : ""}`}>
         <header className="topbar">
           <button className="icon-btn menu-btn" onClick={() => setMenuOpen(true)} aria-label="Open navigation"
             aria-expanded={menuOpen} aria-controls="primary-navigation">☰</button>
@@ -252,7 +254,7 @@ function Shell({ route, navigate, onLogout }: { route: string; navigate: (to: st
         })}
       </nav>
 
-      {/* Headless global voice controller. The footer-center AI item is the
+      {/* Headless global voice controller. The footer-center microphone is the
           only visible voice control and dispatches into this component. */}
       <VoiceFab route={route} onOpenChat={() => navigate("/chat")} showButton={false} />
     </div>
@@ -331,11 +333,12 @@ class RouteErrorBoundary extends React.Component<RouteErrorBoundaryProps, { erro
   }
 }
 
-function PageState({ kind, title, detail, onRetry }: {
+function PageState({ kind, title, detail, onRetry, action }: {
   kind: "loading" | "empty" | "error";
   title: string;
   detail?: string;
   onRetry?: () => void;
+  action?: React.ReactNode;
 }) {
   return (
     <section className={`page-state ${kind}`} role={kind === "error" ? "alert" : "status"} aria-live="polite">
@@ -345,6 +348,7 @@ function PageState({ kind, title, detail, onRetry }: {
       <strong>{title}</strong>
       {detail && <p>{detail}</p>}
       {onRetry && <button className="btn-secondary" onClick={onRetry}>Try again</button>}
+      {action}
     </section>
   );
 }
@@ -1249,6 +1253,108 @@ function AgentOfficeMvp({ agents, workspace, navigate }: {
   );
 }
 
+function AgentOrganizationView({ workspaceId, navigate }: { workspaceId: number; navigate: (to: string) => void }) {
+  const [data, setData] = useState<AgentOrganizationResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      setData(await api.agentOrganization(workspaceId));
+    } catch (requestError: any) {
+      setError(requestError?.message ?? "Could not load the organization hierarchy.");
+    } finally {
+      setLoading(false);
+    }
+  }, [workspaceId]);
+
+  useEffect(() => { void load(); }, [load]);
+  if (loading && !data) return <PageState kind="loading" title="Mapping the organization" detail="Joining the live Gateway roster to Julie's explicit HR reporting lines." />;
+  if (error && !data) return <PageState kind="error" title="Organization unavailable" detail={error} onRetry={load} />;
+  if (!data) return null;
+
+  const executive = data.members.find((member) => member.agentId === "main" && member.configured);
+  const leads = data.members.filter((member) => member.configured && member.level === "lead");
+  const departments = leads.map((lead) => ({
+    name: lead.department!,
+    lead,
+    specialists: data.members.filter((member) => member.configured && member.level === "specialist" && member.reportsTo === lead.agentId),
+  })).sort((left, right) => left.name.localeCompare(right.name));
+  const unconfigured = data.members.filter((member) => !member.configured);
+
+  const agentCard = (member: AgentOrganizationResponse["members"][number], kind: "executive" | "lead" | "specialist") => (
+    <button className={`org-person ${kind}`} key={member.agentId} onClick={() => navigate(`/agents/${encodeURIComponent(member.agentId)}`)}>
+      <span className="org-person-avatar">{member.emoji || agentInitials(member.displayName)}</span>
+      <span className="org-person-copy">
+        <strong>{member.displayName}</strong>
+        <small>{member.role || "Role not configured"}</small>
+        <code>{member.agentId}</code>
+      </span>
+      <span className="org-person-open" aria-hidden="true">↗</span>
+    </button>
+  );
+
+  return (
+    <section className="org-view">
+      <header className="org-view-head">
+        <div><span>Office hierarchy</span><h3>Reporting structure · {data.workspace.name}</h3><p>Roles and reporting lines are Julie HR records; names and models are joined from the live Gateway roster.</p></div>
+        <div className="org-view-actions"><span className={data.summary.complete ? "complete" : "partial"}>{data.summary.complete ? "Fully configured" : `${data.summary.unconfigured} unconfigured`}</span><button className="btn-secondary" onClick={load} disabled={loading}>{loading ? "Refreshing…" : "Refresh"}</button></div>
+      </header>
+
+      <div className="org-summary">
+        <div><strong>{data.summary.rosterMembers}</strong><span>Office members</span></div>
+        <div><strong>{data.summary.departments}</strong><span>Departments</span></div>
+        <div><strong>{data.summary.leads}</strong><span>Department leads</span></div>
+        <div><strong>{data.summary.specialists}</strong><span>Specialists</span></div>
+      </div>
+
+      {error && <div className="chat-alert" role="alert">Refresh failed; showing the prior organization snapshot. {error}</div>}
+
+      <div className="org-tree" aria-label="Organization hierarchy">
+        <div className="org-tier owner-tier">
+          <div className="org-person owner">
+            <span className="org-person-avatar">CEO</span>
+            <span className="org-person-copy"><strong>{data.owner.displayName}</strong><small>{data.owner.role}</small><code>Owner authority</code></span>
+          </div>
+        </div>
+        <div className="org-vertical-line" aria-hidden="true" />
+        <div className="org-tier executive-tier">
+          {executive ? agentCard(executive, "executive") : (
+            <div className="org-person missing"><span className="org-person-avatar">J</span><span className="org-person-copy"><strong>Julie · main</strong><small>Executive role not configured</small><code>main</code></span></div>
+          )}
+        </div>
+        <div className="org-branch-line" aria-hidden="true" />
+        {departments.length > 0 ? (
+          <div className="org-departments">
+            {departments.map((department) => (
+              <article className="org-department" key={department.name}>
+                <header><span>{department.name}</span><small>{department.specialists.length + 1} member{department.specialists.length === 0 ? "" : "s"}</small></header>
+                {agentCard(department.lead, "lead")}
+                <div className="org-team-line" aria-hidden="true" />
+                <div className="org-specialists">
+                  {department.specialists.map((member) => agentCard(member, "specialist"))}
+                  {department.specialists.length === 0 && <div className="org-empty-team">No specialists assigned</div>}
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <div className="org-empty-departments"><strong>No departments configured yet</strong><span>The live roster is visible below, but Julie will not invent reporting lines.</span></div>
+        )}
+      </div>
+
+      {unconfigured.length > 0 && (
+        <section className="org-unconfigured">
+          <header><div><span>Needs placement</span><strong>{unconfigured.length} roster member{unconfigured.length === 1 ? "" : "s"}</strong></div><p>These are real workspace agents with no complete local role/reporting record.</p></header>
+          <div>{unconfigured.map((member) => agentCard(member, "specialist"))}</div>
+        </section>
+      )}
+    </section>
+  );
+}
+
 function AgentsPage({ navigate }: { navigate: (to: string) => void }) {
   const [data, setData] = useState<AgentOverviewResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1259,7 +1365,7 @@ function AgentsPage({ navigate }: { navigate: (to: string) => void }) {
   const [modelFilter, setModelFilter] = useState("all");
   const [assignmentOpen, setAssignmentOpen] = useState(false);
   const [assignmentNotice, setAssignmentNotice] = useState("");
-  const [viewMode, setViewMode] = useState<"archive" | "office">("archive");
+  const [viewMode, setViewMode] = useState<"archive" | "office" | "organization">("archive");
 
   const loadAgents = useCallback(async (force = false, initial = false) => {
     if (initial) setLoading(true);
@@ -1300,7 +1406,7 @@ function AgentsPage({ navigate }: { navigate: (to: string) => void }) {
           <p>Only agents explicitly assigned to the active Julie workspace, with exact run state, capabilities, and recorded usage.</p>
         </div>
         <div className="agent-head-actions">
-          <div className="agent-view-toggle"><button className={viewMode === "archive" ? "active" : ""} onClick={() => setViewMode("archive")}>Archive</button><button className={viewMode === "office" ? "active" : ""} onClick={() => setViewMode("office")}>Office</button></div>
+          <div className="agent-view-toggle"><button className={viewMode === "archive" ? "active" : ""} onClick={() => setViewMode("archive")}>Archive</button><button className={viewMode === "office" ? "active" : ""} onClick={() => setViewMode("office")}>Office</button><button className={viewMode === "organization" ? "active" : ""} onClick={() => setViewMode("organization")}>Hierarchy</button></div>
           <span className="agent-live-source"><span className="hv-dot on" /> Gateway snapshot · {new Date(data.generatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
           <button className="btn-secondary" onClick={() => loadAgents(true)} disabled={refreshing}>{refreshing ? "Refreshing…" : "Refresh live data"}</button>
           <button className="btn-secondary" onClick={() => setAssignmentOpen(true)}>Manage roster</button>
@@ -1340,6 +1446,7 @@ function AgentsPage({ navigate }: { navigate: (to: string) => void }) {
       )}
 
       {viewMode === "office" && <AgentOfficeMvp agents={data.agents} workspace={data.workspace} navigate={navigate} />}
+      {viewMode === "organization" && <AgentOrganizationView workspaceId={data.workspace.id} navigate={navigate} />}
       {viewMode === "archive" && <>
       <div className="agent-filterbar">
         <label className="agent-search">
@@ -1393,7 +1500,7 @@ function AgentsPage({ navigate }: { navigate: (to: string) => void }) {
                   <div className="agent-current-head"><span>{current?.hasActiveRun ? "Current session" : "Latest visible session"}</span><small>{relativeAgentTime(current?.lastActivityAt ?? agent.activity.latestActivityAt)}</small></div>
                   <strong>{current?.displayName || "No visible session"}</strong>
                   <p>{current ? `${current.status || "Status not reported"} · ${current.model || "Model not reported"}` : state.detail}</p>
-                  <div className="agent-task-link"><span>Current task</span><strong>Not linked</strong></div>
+                  <div className="agent-task-link"><span>Current assigned task</span><strong>{agent.activity.currentTask ? `#${agent.activity.currentTask.id} · ${agent.activity.currentTask.title}` : "None assigned"}</strong></div>
                 </div>
 
                 <div className="agent-most-used-model"><span>Most used · 30d</span><strong title={agent.usage.models?.[0]?.model}>{agent.usage.models?.[0]?.model || (agent.usage.state === "ready" ? "No model usage reported" : "Usage unavailable")}</strong></div>
@@ -2357,8 +2464,15 @@ function AgentDetailPage({ agentId, navigate }: { agentId: string; navigate: (to
           </section>
 
           <section className="agent-detail-panel task-history-panel">
-            <div className="agent-panel-head"><div><span>Julie task evidence</span><h3>Task history</h3></div><b>Not linked</b></div>
-            <div className="detail-empty">{agent.taskHistory.reason} Session activity is not presented as task completion.</div>
+            <div className="agent-panel-head"><div><span>Julie task evidence</span><h3>Assigned task history</h3></div><b>{agent.taskHistory.items.length} linked</b></div>
+            {agent.taskHistory.items.length === 0 ? <div className="detail-empty">No Julie task is assigned to this agent. Session activity is not presented as task completion.</div> : (
+              <div className="agent-task-history-list">
+                {agent.taskHistory.items.map((task) => <article key={task.id}>
+                  <div><small>#{task.id} · {STATUS_LABEL[task.status]}</small><strong>{task.title}</strong><span>Priority {TASK_PRIORITY[task.priority].label} · updated {taskTimestamp(task.updated_at)}</span></div>
+                  {task.last_run_output && <p>{task.last_run_output.slice(0, 240)}{task.last_run_output.length > 240 ? "…" : ""}</p>}
+                </article>)}
+              </div>
+            )}
           </section>
         </div>
       )}
@@ -2784,6 +2898,271 @@ function ProfilePage() {
   );
 }
 
+// --- Projects Page (dev project registry; real OpenCode service records) ---
+function ProjectsPage({ navigate }: { navigate: (to: string) => void }) {
+  const [data, setData] = useState<OpencodeProjectsResponse | null>(null);
+  const load = useCallback(async () => {
+    setData(null);
+    try {
+      setData(await api.opencodeProjects());
+    } catch (e: any) {
+      setData({ ok: false, projects: [], coverage: { projects: 0, sessionsScanned: 0 }, error: e.message || "projects unavailable", source: "opencode" });
+    }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const up = data?.ok ?? false;
+  return (
+    <div className="projects-page">
+      <div className="card projects-header">
+        <div className="opencode-header">
+          <div>
+            <div className="card-title">Projects<span className="opencode-card-subtitle">Development registry · live from the OpenCode service</span></div>
+            {data == null ? (
+              <p className="muted" style={{ margin: 0 }}>loading registry…</p>
+            ) : up ? (
+              <p className="muted" style={{ margin: 0 }}>{data.projects.length} project{data.projects.length === 1 ? "" : "s"} · session counts from the latest {data.coverage.sessionsScanned} sessions</p>
+            ) : (
+              <p className="opencode-unavailable" style={{ margin: 0 }}>unavailable — {data.error}</p>
+            )}
+          </div>
+          <div className="projects-actions">
+            <button className="btn" onClick={load}>Refresh</button>
+            <button className="btn" onClick={() => navigate("/opencode")}>Activity ↗</button>
+          </div>
+        </div>
+      </div>
+
+      {data == null ? (
+        <div className="card"><PageState kind="loading" title="Loading projects…" /></div>
+      ) : !up ? (
+        <div className="card"><PageState kind="error" title="Projects unavailable" detail={`${data.error ?? "unknown error"} — the registry reads the real OpenCode service; nothing is simulated.`} onRetry={load} /></div>
+      ) : data.projects.length === 0 ? (
+        <div className="card"><PageState kind="empty" title="No projects yet" detail="Projects appear here once OpenCode records activity for a directory." /></div>
+      ) : (
+        <div className="projects-grid">
+          {data.projects.map((project) => (
+            <div className="project-card" key={project.id ?? project.name}>
+              <div className="project-card-head">
+                <span className="project-icon" aria-hidden="true">▤</span>
+                <strong>{project.name}</strong>
+                {project.vcs && <span className="status-pill wait opencode-outcome">{project.vcs}</span>}
+                {project.sandboxes > 0 && <span className="muted project-sub-detail">{project.sandboxes} sandbox{project.sandboxes === 1 ? "" : "es"}</span>}
+              </div>
+              <div className="project-card-stats">
+                <span>{project.sessions} session{project.sessions === 1 ? "" : "s"}</span>
+                <span className="muted">· {project.lastActive ? `active ${relativeTime(project.lastActive)}` : "no recent activity"}</span>
+              </div>
+              <div className="muted project-created">registered {project.created ? relativeTime(project.created) : "unknown"}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="card projects-note-card">
+        <p className="muted items-note">
+          This registry mirrors the real OpenCode service records. Host paths stay
+          server-side; files and ports that are not visible through the bridge
+          remain invisible here. Read-only file browsing is planned as the next
+          registry slice.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// --- OpenCode Page (real service stats + link to the default OpenCode web UI) ---
+function formatTokens(t: { input: number | null; output: number | null; reasoning: number | null; cacheRead: number | null; cacheWrite: number | null }): string {
+  const n = (t.input ?? 0) + (t.output ?? 0) + (t.reasoning ?? 0);
+  if (!n) return "0";
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return `${n}`;
+}
+
+function relativeTime(ts: number | null): string {
+  if (!ts) return "unknown";
+  const delta = Date.now() - ts;
+  if (delta < 60_000) return "just now";
+  if (delta < 3_600_000) return `${Math.floor(delta / 60_000)}m ago`;
+  if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)}h ago`;
+  return `${Math.floor(delta / 86_400_000)}d ago`;
+}
+
+function OpencodeStatusCard({ status, onStatus, onRecover }: { status: OpencodeStatus | null; onStatus: () => void; onRecover: () => void }) {
+  return (
+    <div className="card opencode-status">
+      <div className="opencode-header">
+        <div>
+          <div className="card-title">OpenCode</div>
+          {status == null ? (
+            <p className="muted" style={{ margin: 0 }}>checking service…</p>
+          ) : status.ok ? (
+            <p className="muted" style={{ margin: 0 }}>v{status.version ?? "?"} · pid {status.pid ?? "?"} · checked {relativeTime(Date.parse(status.checkedAt))}</p>
+          ) : (
+            <p className="opencode-unavailable" style={{ margin: 0 }}>unavailable — {status.error}</p>
+          )}
+        </div>
+        {status?.ok ? (
+          <a className="btn opencode-webui-link" href={status.webUiUrl ?? "#"} target="_blank" rel="noreferrer" onClick={(e) => { if (!status.webUiUrl) e.preventDefault(); }}>
+            Open code session ↗
+          </a>
+        ) : (
+          <button className="btn" onClick={onStatus}>Re-check</button>
+        )}
+      </div>
+      {status?.ok && status.webUiUrl == null && <p className="opencode-note">No browser-reachable URL was advertised by the service.</p>}
+      {!status?.ok && status != null && <button className="btn" style={{ marginTop: 10 }} onClick={onRecover}>Try again</button>}
+    </div>
+  );
+}
+
+function OpencodeStatTile({ label, value, detail }: { label: string; value: string; detail?: string | null }) {
+  return (
+    <div className="opencode-stat">
+      <span className="opencode-stat-value">{value}</span>
+      <span className="opencode-stat-label">{label}</span>
+      {detail && <span className="muted opencode-stat-detail">{detail}</span>}
+    </div>
+  );
+}
+
+function OpencodePage() {
+  const [status, setStatus] = useState<OpencodeStatus | null>(null);
+  const [stats, setStats] = useState<OpencodeStatsResponse | null>(null);
+  const [active, setActive] = useState<OpencodeActiveResponse | null>(null);
+  const [sessions, setSessions] = useState<OpencodeSessionsResponse | null>(null);
+
+  const loadStatus = useCallback(async () => {
+    try {
+      setStatus(await api.opencodeStatus());
+    } catch (e: any) {
+      setStatus({ ok: false, available: false, version: null, pid: null, webUiUrl: null, checkedAt: new Date().toISOString(), error: e.message || "status unavailable" });
+    }
+  }, []);
+
+  const loadLive = useCallback(async () => {
+    setStats(null); setActive(null); setSessions(null);
+    const [s, a, sess] = await Promise.allSettled([api.opencodeStats(), api.opencodeActive(), api.opencodeSessions()]);
+    setStats(s.status === "fulfilled" ? s.value : { ok: false, stats: null, error: s.reason?.message ?? "unavailable", source: "opencode" });
+    setActive(a.status === "fulfilled" ? a.value : { ok: false, active: [], error: a.reason?.message ?? "unavailable", source: "opencode" });
+    setSessions(sess.status === "fulfilled" ? sess.value : { ok: false, sessions: [], error: sess.reason?.message ?? "unavailable", source: "opencode" });
+  }, []);
+
+  useEffect(() => { loadStatus(); }, [loadStatus]);
+  useEffect(() => { if (status?.ok) loadLive(); }, [status?.ok, loadLive]);
+  useEffect(() => {
+    const t = setInterval(loadStatus, 30_000);
+    return () => clearInterval(t);
+  }, [loadStatus]);
+
+  const up = status?.ok ?? false;
+  const st = stats?.stats ?? null;
+  const maxSteps = st ? Math.max(1, ...st.activity.map((row) => row.steps)) : 1;
+
+  return (
+    <div className="opencode-page">
+      <OpencodeStatusCard status={status} onStatus={loadStatus} onRecover={loadStatus} />
+
+      {!up ? (
+        <div className="card">
+          <PageState kind="empty" title="Service unavailable" detail="Stats appear once the OpenCode background service answers. Nothing on this page is simulated." />
+        </div>
+      ) : st == null ? (
+        <div className="card">
+          {stats && !stats.ok ? (
+            <PageState kind="error" title="Stats unavailable" detail={stats.error ?? "unknown error"} onRetry={loadLive} />
+          ) : (
+            <PageState kind="loading" title="Loading stats…" />
+          )}
+        </div>
+      ) : (
+        <>
+          <div className="card">
+            <div className="card-title">Activity
+              <button className="btn" onClick={loadLive}>Refresh</button>
+            </div>
+            <div className="opencode-stats">
+              <OpencodeStatTile label="Prompts" value={String(st.prompts)} />
+              <OpencodeStatTile label="Steps" value={String(st.steps)} />
+              <OpencodeStatTile label="Tokens" value={formatTokens(st.tokens)} />
+              <OpencodeStatTile label="Active days" value={String(st.activeDays)} detail={st.streak ? `${st.streak}-day streak` : null} />
+              <OpencodeStatTile label="Tool calls" value={String(st.tools.calls)} detail={`${st.tools.succeeded} ok · ${st.tools.failed} failed`} />
+              <OpencodeStatTile label="Cost" value={typeof st.cost === "number" ? `$${st.cost.toFixed(4)}` : "not reported"} />
+            </div>
+            {st.activity.length > 0 && (
+              <div className="opencode-bars" aria-hidden="true">
+                {st.activity.slice(-14).map((row) => (
+                  <div key={row.date} className="opencode-bar-wrap" title={`${row.date}: ${row.steps} steps`}>
+                    <div className="opencode-bar" style={{ height: `${Math.max(4, Math.round((row.steps / maxSteps) * 60))}px` }} />
+                    <span className="opencode-bar-date">{row.date.slice(5)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {st.models.length > 0 && (
+              <div className="opencode-models">
+                {st.models.map((row, i) => (
+                  <div key={i} className="muted">
+                    {row.model.providerID}/{row.model.id ?? "?"} · {row.steps} steps · {formatTokens(row.tokens)} tokens
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="card">
+            <div className="card-title">In progress
+              {active && active.ok && <span className="muted" style={{ marginLeft: "auto" }}>{active.active.length === 0 ? "nothing running" : `${active.active.length} running`}</span>}
+            </div>
+            {active == null ? (
+              <p className="muted">checking…</p>
+            ) : !active.ok ? (
+              <PageState kind="error" title="Active check failed" detail={active.error ?? "unknown error"} onRetry={loadLive} />
+            ) : active.active.length === 0 ? (
+              <PageState kind="empty" title="No running sessions" detail="Sessions actively executing right now appear here." />
+            ) : (
+              active.active.map((row) => (
+                <div key={row.id} className="opencode-active-row">
+                  <span className="status-pill ok opencode-outcome"><span className="status-dot" /> <span>running</span></span>
+                  <span className="muted">session {row.id.slice(0, 12)}…</span>
+                </div>
+              ))
+            )}
+          </div>
+
+          <div className="card">
+            <div className="card-title">History</div>
+            {sessions == null ? (
+              <p className="muted">checking…</p>
+            ) : !sessions.ok ? (
+              <PageState kind="error" title="History unavailable" detail={sessions.error ?? "unknown error"} onRetry={loadLive} />
+            ) : sessions.sessions.length === 0 ? (
+              <PageState kind="empty" title="No sessions yet" detail="Open a session in the OpenCode web UI and it will appear here." />
+            ) : (
+              <div className="opencode-sessions">
+                {sessions.sessions.map((s: OpencodeSessionRow) => (
+                  <div className="opencode-session" key={s.id}>
+                    <div className="opencode-session-head">
+                      <strong>{s.title || `${s.agent ?? "session"} · ${s.id.slice(0, 10)}…`}</strong>
+                      {s.outcome && <span className={`status-pill ${s.outcome === "success" ? "ok" : s.outcome === "failed" ? "err" : "wait"} opencode-outcome`}>{s.outcome}</span>}
+                    </div>
+                    <div className="muted">
+                      {s.agent ?? "unknown agent"} · {s.model.providerID}/{s.model.id ?? "unknown model"} · {formatTokens(s.tokens || { input: null, output: null, reasoning: null, cacheRead: null, cacheWrite: null })} tokens
+                      {typeof s.cost === "number" && s.cost > 0 ? ` · $${s.cost.toFixed(4)}` : ""}
+                      {s.time.updated ? ` · ${relativeTime(s.time.updated)}` : ""}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // --- Terminal Page ---
 function TerminalPage() {
   const [lines, setLines] = useState<string[]>(["$ Julie AiOS Terminal ready."]);
@@ -2832,7 +3211,566 @@ function TerminalPage() {
   );
 }
 
-// --- Chat View (Reused from existing) ---
+// --- Chat View ---
+const CHAT_ATTACHMENT_ACCEPT = [
+  "image/png", "image/jpeg", "image/webp", "image/gif", "application/pdf",
+  "text/plain", "text/markdown", "text/csv", "application/json",
+  ".txt", ".text", ".log", ".md", ".markdown", ".csv", ".json",
+].join(",");
+
+function AgentRoomsView({ workspaceId, members, tasks }: {
+  workspaceId: number;
+  members: AgentOrganizationResponse["members"];
+  tasks: Task[];
+}) {
+  const [rooms, setRooms] = useState<AgentRoom[]>([]);
+  const [selectedRoomId, setSelectedRoomId] = useState<number | null>(null);
+  const [detail, setDetail] = useState<AgentRoomDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [composer, setComposer] = useState("");
+  const [recipientIds, setRecipientIds] = useState<string[]>([]);
+  const [activeRun, setActiveRun] = useState<AgentRoomActiveRun | null>(null);
+  const [sending, setSending] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createBusy, setCreateBusy] = useState(false);
+  const [createError, setCreateError] = useState("");
+  const [createTaskId, setCreateTaskId] = useState("");
+  const [createTitle, setCreateTitle] = useState("");
+  const [createAgentIds, setCreateAgentIds] = useState<string[]>([]);
+  const [mobileChatOpen, setMobileChatOpen] = useState(false);
+  const logRef = useRef<HTMLDivElement>(null);
+
+  const loadRooms = useCallback(async (preferredId?: number) => {
+    setLoading(true);
+    setError("");
+    try {
+      const data = await api.agentRooms(workspaceId);
+      setRooms(data.rooms);
+      setSelectedRoomId((current) => {
+        const wanted = preferredId ?? current;
+        return wanted && data.rooms.some((room) => room.id === wanted) ? wanted : data.rooms[0]?.id ?? null;
+      });
+    } catch (requestError: any) {
+      setError(requestError?.message ?? "Could not load agent rooms.");
+    } finally {
+      setLoading(false);
+    }
+  }, [workspaceId]);
+
+  const loadDetail = useCallback(async (roomId: number, quiet = false) => {
+    if (!quiet) setDetailLoading(true);
+    try {
+      const data = await api.agentRoom(roomId);
+      setDetail(data.room);
+      setActiveRun(data.room.activeRun);
+    } catch (requestError: any) {
+      setError(requestError?.message ?? "Could not load this room.");
+    } finally {
+      if (!quiet) setDetailLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { void loadRooms(); }, [loadRooms]);
+  useEffect(() => {
+    if (!selectedRoomId) { setDetail(null); setActiveRun(null); return; }
+    void loadDetail(selectedRoomId);
+  }, [selectedRoomId, loadDetail]);
+
+  useEffect(() => {
+    if (!detail) return;
+    setRecipientIds(detail.members.map((member) => member.agentId));
+  }, [detail?.id]);
+
+  useEffect(() => {
+    if (!selectedRoomId) return;
+    const source = new EventSource(`/api/agent-rooms/${selectedRoomId}/events`);
+    source.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data) as { type?: string; state?: string; activeRun?: AgentRoomActiveRun | null; message?: AgentRoomMessage; completed?: number; failed?: number };
+        if (data.type === "hello") setActiveRun(data.activeRun ?? null);
+        if (data.type === "message" && data.message) {
+          const message = data.message;
+          setDetail((current) => {
+            if (!current || current.id !== selectedRoomId || current.messages.some((row) => row.id === message.id)) return current;
+            return { ...current, messages: [...current.messages, message], messageCount: current.messageCount + 1, latestMessage: message };
+          });
+          setRooms((current) => current.map((room) => room.id === selectedRoomId ? { ...room, latestMessage: message, updatedAt: message.createdAt } : room));
+        }
+        if (data.type === "run") {
+          if (data.state === "complete") {
+            setActiveRun(null);
+            void loadDetail(selectedRoomId, true);
+            void loadRooms(selectedRoomId);
+          } else if (data.activeRun) setActiveRun(data.activeRun);
+        }
+      } catch { /* malformed frame: EventSource will continue */ }
+    };
+    return () => source.close();
+  }, [selectedRoomId, loadDetail, loadRooms]);
+
+  useEffect(() => {
+    if (!logRef.current) return;
+    logRef.current.scrollTop = logRef.current.scrollHeight;
+  }, [detail?.messages.length, activeRun]);
+
+  const memberMap = new Map((detail?.members ?? []).map((member) => [member.agentId, member]));
+  const openTasks = tasks.filter((task) => task.status !== "done");
+
+  const selectRoom = (id: number) => {
+    setSelectedRoomId(id);
+    setError("");
+    setMobileChatOpen(true);
+  };
+
+  const toggleRecipient = (agentId: string) => {
+    setRecipientIds((current) => current.includes(agentId) ? current.filter((id) => id !== agentId) : [...current, agentId]);
+  };
+
+  const sendRoomMessage = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!detail || !composer.trim() || recipientIds.length === 0 || sending || activeRun || detail.status !== "open") return;
+    setSending(true);
+    setError("");
+    try {
+      const result = await api.sendAgentRoomMessage(detail.id, composer.trim(), recipientIds);
+      setComposer("");
+      setActiveRun(result.activeRun);
+      setDetail((current) => current && !current.messages.some((message) => message.id === result.ownerMessage.id)
+        ? { ...current, messages: [...current.messages, result.ownerMessage], latestMessage: result.ownerMessage, messageCount: current.messageCount + 1 }
+        : current);
+    } catch (requestError: any) {
+      setError(requestError?.message ?? "Could not dispatch this room message.");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const openCreate = () => {
+    const task = openTasks[0];
+    setCreateTaskId(task ? String(task.id) : "");
+    setCreateTitle("");
+    setCreateAgentIds(task ? [...new Set(["main", task.assigned_agent_id].filter(Boolean))] : ["main"]);
+    setCreateError("");
+    setCreateOpen(true);
+  };
+
+  const changeCreateTask = (value: string) => {
+    setCreateTaskId(value);
+    const task = tasks.find((row) => row.id === Number(value));
+    setCreateAgentIds(task ? [...new Set(["main", task.assigned_agent_id].filter(Boolean))] : ["main"]);
+  };
+
+  const toggleCreateAgent = (agentId: string) => {
+    setCreateAgentIds((current) => current.includes(agentId) ? current.filter((id) => id !== agentId) : [...current, agentId]);
+  };
+
+  const createRoom = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const taskId = Number(createTaskId);
+    if (!Number.isInteger(taskId) || createBusy) return;
+    setCreateBusy(true);
+    setCreateError("");
+    try {
+      const result = await api.createAgentRoom({ workspaceId, taskId, title: createTitle.trim() || undefined, agentIds: createAgentIds });
+      setCreateOpen(false);
+      setDetail(result.room);
+      setMobileChatOpen(true);
+      await loadRooms(result.room.id);
+    } catch (requestError: any) {
+      setCreateError(requestError?.message ?? "Could not create the room.");
+    } finally {
+      setCreateBusy(false);
+    }
+  };
+
+  const toggleArchive = async () => {
+    if (!detail || activeRun || !window.confirm(`${detail.status === "open" ? "Archive" : "Reopen"} room #${detail.id}?`)) return;
+    setError("");
+    try {
+      const result = await api.archiveAgentRoom(detail.id, detail.status === "open");
+      setDetail(result.room);
+      await loadRooms(detail.id);
+    } catch (requestError: any) {
+      setError(requestError?.message ?? "Could not update this room.");
+    }
+  };
+
+  const senderName = (message: AgentRoomMessage) => {
+    if (message.senderType === "owner") return "You · CEO";
+    if (message.senderType === "system") return "Julie System";
+    return memberMap.get(message.senderId)?.displayName ?? message.senderId;
+  };
+
+  return (
+    <section className={`agent-rooms-view${mobileChatOpen ? " mobile-chat-open" : ""}`}>
+      <aside className="room-list-pane">
+        <div className="messenger-pane-head"><div><strong>Task rooms</strong><span>{rooms.length} persistent room{rooms.length === 1 ? "" : "s"}</span></div><button className="messenger-new-session" onClick={openCreate} disabled={openTasks.length === 0}>＋ Room</button></div>
+        {loading && rooms.length === 0 ? <div className="messenger-empty">Loading task rooms…</div> : rooms.length === 0 ? <div className="room-list-empty"><strong>No task rooms yet</strong><span>Create one from an open task and choose the collaborating agents.</span><button className="btn" onClick={openCreate} disabled={openTasks.length === 0}>Create task room</button></div> : (
+          <div className="room-list">
+            {rooms.map((room) => <button key={room.id} className={selectedRoomId === room.id ? "active" : ""} onClick={() => selectRoom(room.id)}>
+              <span className={`room-list-icon ${room.status}`}>{room.members.slice(0, 3).map((member) => member.emoji || agentInitials(member.displayName)).join(" ")}</span>
+              <span className="room-list-copy"><strong>{room.title}</strong><small>{room.task ? `#${room.task.id} · ${room.task.status ? STATUS_LABEL[room.task.status] : "Task deleted"}` : "Task deleted"} · {room.members.length} agents</small><em>{room.latestMessage ? `${senderName(room.latestMessage)}: ${room.latestMessage.text}` : "No messages"}</em></span>
+              {room.activeRun && <i className="room-live-dot" title="Active room dispatch" />}
+            </button>)}
+          </div>
+        )}
+      </aside>
+
+      <main className="room-chat-pane">
+        {!detail || detailLoading ? <div className="messenger-chat-empty"><span>{detailLoading ? <span className="page-state-spinner" /> : "#"}</span><strong>{detailLoading ? "Loading room…" : "Choose a task room"}</strong><p>Confirmed agent responses and local delivery failures appear here.</p></div> : <>
+          <header className="room-chat-head">
+            <button className="messenger-mobile-back" onClick={() => setMobileChatOpen(false)} aria-label="Back to rooms">←</button>
+            <div><strong>{detail.title}</strong><span>{detail.task ? `Task #${detail.task.id} · ${detail.task.status ? STATUS_LABEL[detail.task.status] : "Deleted"}` : "Linked task deleted"} · {detail.messageCount} messages</span></div>
+            <span className={`room-state ${detail.status}`}>{detail.status}</span>
+            <button className="room-archive" onClick={toggleArchive} disabled={Boolean(activeRun)}>{detail.status === "open" ? "Archive" : "Reopen"}</button>
+          </header>
+
+          <div className="room-members-strip">
+            {detail.members.map((member) => <span key={member.agentId} title={`${member.role || "Role not configured"} · ${member.department || "No department"}`}><i>{member.emoji || agentInitials(member.displayName)}</i>{member.displayName}</span>)}
+          </div>
+
+          <div className="room-transcript" ref={logRef}>
+            {detail.messages.map((message) => message.senderType === "system" ? <div className={`room-system-message ${message.deliveryState}`} key={message.id}><span>{message.text}</span><time>{taskTimestamp(message.createdAt)}</time></div> : (
+              <article className={`room-message ${message.senderType}`} key={message.id}>
+                <span className="room-message-avatar">{message.senderType === "owner" ? "You" : memberMap.get(message.senderId)?.emoji || agentInitials(senderName(message))}</span>
+                <div><header><strong>{senderName(message)}</strong><span className={message.deliveryState}>{message.deliveryState}</span><time>{new Date(message.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time></header><Markdown text={message.text} /></div>
+              </article>
+            ))}
+            {activeRun && <div className="room-dispatch-status"><span className="page-state-spinner" /><div><strong>{activeRun.currentAgentId ? `Waiting for ${memberMap.get(activeRun.currentAgentId)?.displayName ?? activeRun.currentAgentId}…` : "Starting room dispatch…"}</strong><span>{activeRun.completed} confirmed · {activeRun.failed} failed · {activeRun.remaining} remaining</span></div></div>}
+          </div>
+
+          {error && <div className="messenger-error" role="alert">{error}</div>}
+          <form className="room-composer" onSubmit={sendRoomMessage}>
+            <div className="room-recipient-picker"><span>Send sequentially to</span><div>{detail.members.map((member) => <label key={member.agentId} className={recipientIds.includes(member.agentId) ? "selected" : ""}><input type="checkbox" checked={recipientIds.includes(member.agentId)} onChange={() => toggleRecipient(member.agentId)} disabled={Boolean(activeRun) || detail.status !== "open"} /><i>{member.emoji || agentInitials(member.displayName)}</i>{member.displayName}</label>)}</div></div>
+            <div className="room-compose-row"><textarea value={composer} onChange={(event) => setComposer(event.target.value)} placeholder={detail.status === "open" ? "Message the room…" : "Archived rooms are read-only"} rows={2} maxLength={20_000} disabled={sending || Boolean(activeRun) || detail.status !== "open"} /><button className="btn" disabled={sending || Boolean(activeRun) || !composer.trim() || recipientIds.length === 0 || detail.status !== "open"}>{activeRun ? "Agents talking…" : sending ? "Queuing…" : "Send to room"}</button></div>
+          </form>
+          <div className="messenger-truth">Owner messages are local. Agent messages are shown only after that agent's Gateway turn completes; failed deliveries are labeled as system failures.</div>
+        </>}
+      </main>
+
+      {createOpen && <div className="task-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !createBusy) setCreateOpen(false); }}>
+        <form className="room-create-dialog" onSubmit={createRoom} role="dialog" aria-modal="true" aria-labelledby="room-create-title">
+          <header><div><span className="tasks-eyebrow">Agent collaboration</span><h3 id="room-create-title">Create task room</h3></div><button type="button" onClick={() => setCreateOpen(false)} disabled={createBusy}>×</button></header>
+          <label><span>Linked open task</span><select value={createTaskId} onChange={(event) => changeCreateTask(event.target.value)} required><option value="">Choose task…</option>{openTasks.map((task) => <option key={task.id} value={task.id}>#{task.id} · {task.title} · {task.assigned_agent_id || "unassigned"}</option>)}</select></label>
+          <label><span>Room title <small>optional</small></span><input value={createTitle} onChange={(event) => setCreateTitle(event.target.value)} maxLength={200} placeholder="Defaults to task number and title" /></label>
+          <fieldset><legend>Room agents</legend><p>Julie/main and the task's assigned agent are always included by the server.</p><div>{members.map((member) => <label key={member.agentId} className={createAgentIds.includes(member.agentId) ? "selected" : ""}><input type="checkbox" checked={createAgentIds.includes(member.agentId)} onChange={() => toggleCreateAgent(member.agentId)} /><i>{member.emoji || agentInitials(member.displayName)}</i><span><strong>{member.displayName}</strong><small>{member.role || member.agentId}</small></span></label>)}</div></fieldset>
+          {createError && <div className="task-form-error" role="alert">{createError}</div>}
+          <footer><button type="button" className="btn-secondary" onClick={() => setCreateOpen(false)} disabled={createBusy}>Cancel</button><button className="btn" disabled={createBusy || !createTaskId}>{createBusy ? "Creating…" : "Create confirmed room"}</button></footer>
+        </form>
+      </div>}
+    </section>
+  );
+}
+
+// --- Agent Messenger: real Gateway DMs with multiple sessions per agent ---
+type MessengerPane = "agents" | "sessions" | "chat";
+
+function AgentMessengerPage() {
+  const [workspaceId, setWorkspaceId] = useState(0);
+  const [mode, setMode] = useState<"direct" | "rooms">("direct");
+  const [organization, setOrganization] = useState<AgentOrganizationResponse | null>(null);
+  const [overview, setOverview] = useState<AgentOverviewResponse | null>(null);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [query, setQuery] = useState("");
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const [agentDetail, setAgentDetail] = useState<AgentDetailResponse | null>(null);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<AgentChatMessage[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [chatError, setChatError] = useState("");
+  const [composer, setComposer] = useState("");
+  const [sending, setSending] = useState(false);
+  const [sendStatus, setSendStatus] = useState("");
+  const [mobilePane, setMobilePane] = useState<MessengerPane>("agents");
+  const transcriptRef = useRef<HTMLDivElement>(null);
+
+  const loadInbox = useCallback(async (refresh = false) => {
+    setLoading(true);
+    setLoadError("");
+    try {
+      const workspaceData = await api.workspaces();
+      const activeId = workspaceData.activeWorkspaceId || workspaceData.workspaces[0]?.id;
+      if (!activeId) throw new Error("Create a workspace before opening Agent Messenger.");
+      setWorkspaceId(activeId);
+      const [orgData, overviewData, taskData] = await Promise.all([
+        api.agentOrganization(activeId),
+        api.agentOverview(refresh),
+        api.tasks(activeId),
+      ]);
+      setOrganization(orgData);
+      setOverview(overviewData);
+      setTasks(taskData.tasks);
+      setSelectedAgentId((current) => current && orgData.members.some((member) => member.agentId === current)
+        ? current
+        : orgData.members.find((member) => member.agentId === "main")?.agentId ?? orgData.members[0]?.agentId ?? null);
+    } catch (requestError: any) {
+      setLoadError(requestError?.message ?? "Could not load Agent Messenger.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { void loadInbox(); }, [loadInbox]);
+
+  useEffect(() => {
+    if (!selectedAgentId) {
+      setAgentDetail(null);
+      setSelectedSessionId(null);
+      setMessages([]);
+      return;
+    }
+    let cancelled = false;
+    setSessionsLoading(true);
+    setChatError("");
+    setMessages([]);
+    api.agentDetail(selectedAgentId, true).then((data) => {
+      if (cancelled) return;
+      setAgentDetail(data);
+      const latest = data.agent.activity.sessions.find((session) => Boolean(session.sessionId));
+      setSelectedSessionId(latest?.sessionId ?? null);
+    }).catch((requestError: any) => {
+      if (!cancelled) {
+        setAgentDetail(null);
+        setChatError(requestError?.message ?? "Could not load this agent's sessions.");
+      }
+    }).finally(() => { if (!cancelled) setSessionsLoading(false); });
+    return () => { cancelled = true; };
+  }, [selectedAgentId]);
+
+  useEffect(() => {
+    if (!selectedAgentId || !selectedSessionId) {
+      setMessages([]);
+      setHistoryLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setHistoryLoading(true);
+    setChatError("");
+    api.agentHistory(selectedAgentId, selectedSessionId).then((data) => {
+      if (!cancelled) setMessages(data.messages);
+    }).catch((requestError: any) => {
+      if (!cancelled) {
+        setMessages([]);
+        setChatError(requestError?.message ?? "Could not load this session history.");
+      }
+    }).finally(() => { if (!cancelled) setHistoryLoading(false); });
+    return () => { cancelled = true; };
+  }, [selectedAgentId, selectedSessionId]);
+
+  useEffect(() => {
+    if (!transcriptRef.current) return;
+    transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
+  }, [historyLoading, messages, sending]);
+
+  const members = organization?.members ?? [];
+  const activityMap = new Map((overview?.agents ?? []).map((agent) => [agent.id, agent]));
+  const taskCountMap = new Map<string, number>();
+  for (const task of tasks) {
+    if (!task.assigned_agent_id || task.status === "done") continue;
+    taskCountMap.set(task.assigned_agent_id, (taskCountMap.get(task.assigned_agent_id) ?? 0) + 1);
+  }
+  const needle = query.trim().toLowerCase();
+  const filteredMembers = members.filter((member) => !needle || [member.displayName, member.agentId, member.role, member.department].some((value) => value?.toLowerCase().includes(needle)));
+  const selectedMember = members.find((member) => member.agentId === selectedAgentId) ?? null;
+  const sessions = (agentDetail?.agent.activity.sessions ?? []).filter((session): session is typeof session & { sessionId: string } => Boolean(session.sessionId));
+  const selectedSession = sessions.find((session) => session.sessionId === selectedSessionId) ?? null;
+
+  const activityLabel = (agentId: string) => {
+    const activity = activityMap.get(agentId)?.activity;
+    if (!activity) return { label: "Status unavailable", className: "unknown" };
+    if (activity.state === "working") return { label: "Active run", className: "working" };
+    if (activity.state === "no_active_run") return { label: "No active run", className: "idle" };
+    if (activity.state === "no_sessions") return { label: "No sessions", className: "empty" };
+    return { label: "Status unavailable", className: "unknown" };
+  };
+
+  const chooseAgent = (agentId: string) => {
+    if (agentId === selectedAgentId) { setMobilePane("sessions"); return; }
+    setSelectedAgentId(agentId);
+    setSelectedSessionId(null);
+    setMessages([]);
+    setComposer("");
+    setSendStatus("");
+    setChatError("");
+    setMobilePane("sessions");
+  };
+
+  const chooseSession = (sessionId: string | null) => {
+    setSelectedSessionId(sessionId);
+    setMessages([]);
+    setComposer("");
+    setChatError("");
+    setSendStatus("");
+    setMobilePane("chat");
+  };
+
+  const sendDirectMessage = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const text = composer.trim();
+    if (!selectedAgentId || !text || sending) return;
+    setSending(true);
+    setChatError("");
+    setSendStatus("Waiting for the real Gateway and agent reply…");
+    try {
+      const result = await api.sendAgentMessage(selectedAgentId, text, selectedSessionId);
+      setMessages(result.messages);
+      setSelectedSessionId(result.session.sessionId);
+      setComposer("");
+      setSendStatus("Gateway reply completed");
+      const detail = await api.agentDetail(selectedAgentId, true).catch(() => null);
+      if (detail) setAgentDetail(detail);
+      const refreshedOverview = await api.agentOverview(true).catch(() => null);
+      if (refreshedOverview) setOverview(refreshedOverview);
+    } catch (requestError: any) {
+      setSendStatus("");
+      setChatError(requestError?.message ?? "The Gateway did not complete this message.");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  if (loading && !organization) return <PageState kind="loading" title="Opening Agent Messenger" detail="Reading the active workspace roster, real Gateway sessions, and Julie task ownership." />;
+  if (loadError && !organization) return <PageState kind="error" title="Agent Messenger unavailable" detail={loadError} onRetry={() => loadInbox(true)} />;
+  if (!organization) return null;
+
+  return (
+    <section className={`agent-messenger mobile-pane-${mobilePane}`}>
+      <header className="messenger-head">
+        <div><span className="tasks-eyebrow">Office communications</span><h2>Agent Messenger</h2><p>{mode === "direct" ? "Direct messages use real, agent-owned Gateway sessions. Opening or browsing never creates a session." : "Task rooms relay a shared confirmed transcript through each participating agent's own Gateway session."}</p></div>
+        <div className="messenger-head-actions"><div className="messenger-mode-toggle"><button className={mode === "direct" ? "active" : ""} onClick={() => setMode("direct")}>Direct messages</button><button className={mode === "rooms" ? "active" : ""} onClick={() => setMode("rooms")}>Task rooms</button></div><span>{organization.workspace.name}</span><button className="btn-secondary" onClick={() => loadInbox(true)} disabled={loading}>{loading ? "Refreshing…" : "Refresh"}</button></div>
+      </header>
+
+      {mode === "direct" && <div className="messenger-shell">
+        <aside className="messenger-agents">
+          <div className="messenger-pane-head"><div><strong>Direct messages</strong><span>{members.length} office agents</span></div></div>
+          <label className="messenger-search"><span>⌕</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search agents…" /></label>
+          <div className="messenger-agent-list">
+            {filteredMembers.map((member) => {
+              const state = activityLabel(member.agentId);
+              const overviewAgent = activityMap.get(member.agentId);
+              return <button key={member.agentId} className={selectedAgentId === member.agentId ? "active" : ""} onClick={() => chooseAgent(member.agentId)}>
+                <span className="messenger-avatar">{member.emoji || agentInitials(member.displayName)}<i className={state.className} title={state.label} /></span>
+                <span className="messenger-agent-copy"><strong>{member.displayName}</strong><small>{member.role || "Role not configured"}</small><em>{state.label} · {overviewAgent?.activity.visibleSessions ?? 0} session{overviewAgent?.activity.visibleSessions === 1 ? "" : "s"}</em></span>
+                {(taskCountMap.get(member.agentId) ?? 0) > 0 && <span className="messenger-task-count" title="Open assigned tasks">{taskCountMap.get(member.agentId)}</span>}
+              </button>;
+            })}
+            {filteredMembers.length === 0 && <div className="messenger-empty">No agents match this search.</div>}
+          </div>
+        </aside>
+
+        <aside className="messenger-sessions">
+          <div className="messenger-pane-head">
+            <button className="messenger-mobile-back" onClick={() => setMobilePane("agents")} aria-label="Back to agents">←</button>
+            <div><strong>{selectedMember?.displayName || "Choose an agent"}</strong><span>{selectedMember?.department || "No department configured"}</span></div>
+            {selectedMember && <button className="messenger-new-session" onClick={() => chooseSession(null)}>＋ New</button>}
+          </div>
+          {sessionsLoading ? <div className="messenger-empty">Loading real sessions…</div> : !selectedMember ? <div className="messenger-empty">Select an agent to view their conversations.</div> : (
+            <div className="messenger-session-list">
+              <button className={selectedSessionId === null ? "active draft" : "draft"} onClick={() => chooseSession(null)}><span>＋</span><div><strong>New session</strong><small>Created only after you send</small></div></button>
+              {sessions.map((session) => <button key={session.sessionId} className={selectedSessionId === session.sessionId ? "active" : ""} onClick={() => chooseSession(session.sessionId)}>
+                <span className={session.hasActiveRun ? "session-mark active" : "session-mark"}>◉</span>
+                <div><strong>{session.displayName}</strong><small>{session.hasActiveRun ? "Active run" : session.status || "Status not reported"} · {relativeAgentTime(session.lastActivityAt)}</small><em>{session.model || "Model not reported"}</em></div>
+              </button>)}
+              {sessions.length === 0 && <div className="messenger-empty compact">No existing sessions. A new one starts only when you send a message.</div>}
+            </div>
+          )}
+        </aside>
+
+        <main className="messenger-chat">
+          <div className="messenger-chat-head">
+            <button className="messenger-mobile-back" onClick={() => setMobilePane("sessions")} aria-label="Back to sessions">←</button>
+            <span className="messenger-avatar large">{selectedMember?.emoji || (selectedMember ? agentInitials(selectedMember.displayName) : "◇")}</span>
+            <div><strong>{selectedMember?.displayName || "Agent conversation"}</strong><span>{selectedSession ? selectedSession.displayName : selectedMember ? "New session · not created yet" : "Choose an agent"}</span></div>
+            {selectedSession?.hasActiveRun && <span className="messenger-live-badge">Active run</span>}
+          </div>
+
+          <div className="messenger-transcript" ref={transcriptRef}>
+            {!selectedMember ? <div className="messenger-chat-empty"><span>✉</span><strong>Choose an office agent</strong><p>Each agent keeps its own real Gateway sessions and sanitized history.</p></div>
+              : historyLoading ? <div className="messenger-chat-empty"><span className="page-state-spinner" /><strong>Loading conversation…</strong></div>
+              : messages.length === 0 ? <div className="messenger-chat-empty"><span>{selectedMember.emoji || "◇"}</span><strong>{selectedSessionId ? "No text messages in this session" : `Start a new DM with ${selectedMember.displayName}`}</strong><p>{selectedSessionId ? "Tool and control rows are intentionally omitted." : "The session will be created only when this first message is sent."}</p></div>
+              : messages.map((message) => <article key={`${message.id}-${message.timestamp ?? "none"}`} className={`messenger-message ${message.role}`}>
+                  <div className="messenger-message-avatar">{message.role === "user" ? "You" : selectedMember.emoji || agentInitials(selectedMember.displayName)}</div>
+                  <div><header><strong>{message.role === "user" ? "You" : selectedMember.displayName}</strong><time>{message.timestamp ? new Date(message.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "Time not reported"}</time></header><Markdown text={message.text} /></div>
+                </article>)}
+            {sending && <div className="messenger-waiting"><span className="page-state-spinner" /><span>{sendStatus}</span></div>}
+          </div>
+
+          {chatError && <div className="messenger-error" role="alert">{chatError}</div>}
+          {selectedMember && <form className="messenger-composer" onSubmit={sendDirectMessage}>
+            <textarea value={composer} onChange={(event) => setComposer(event.target.value)} placeholder={`Message ${selectedMember.displayName}…`} rows={1} maxLength={20_000} disabled={sending} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} />
+            <button className="btn" disabled={sending || !composer.trim()}>{sending ? "Working…" : "Send"}</button>
+          </form>}
+          <div className="messenger-truth">History and run state come from OpenClaw Gateway. Julie stores no duplicate DM transcript and exposes no session keys.</div>
+        </main>
+      </div>}
+      {mode === "rooms" && <AgentRoomsView workspaceId={workspaceId} members={members} tasks={tasks} />}
+    </section>
+  );
+}
+
+type ChatLiveStatus = {
+  state: "idle" | "sending" | "accepted" | "status" | "responding" | "finalizing" | "complete" | "error" | "aborted";
+  phase?: string | null;
+  retry?: { attempt?: number; maxAttempts?: number; reason?: string } | null;
+  error?: string;
+  reconnecting?: boolean;
+};
+
+function chatRunStatusState(state: ChatRunSnapshot["state"] | undefined | null): ChatLiveStatus["state"] {
+  switch (state) {
+    case "sending": return "sending";
+    case "accepted": return "accepted";
+    case "status": return "status";
+    case "responding": return "responding";
+    case "finalizing": return "finalizing";
+    default: return "idle";
+  }
+}
+
+function chatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function chatLiveStatusLabel(status: ChatLiveStatus): string {
+  const phases: Record<string, string> = {
+    waiting_for_state: "Waiting for the current session state…",
+    preparing_workspace: "Preparing the workspace…",
+    naming_worktree: "Naming the worktree…",
+    creating_worktree: "Creating the worktree…",
+    running_setup: "Running workspace setup…",
+    provisioning_environment: "Provisioning the environment…",
+    preparing_context: "Preparing conversation context…",
+    memory_flushing: "Saving memory before the run…",
+    starting_model: "Starting the model…",
+  };
+  let label = "";
+  if (status.state === "sending") label = "Sending to the Gateway…";
+  else if (status.state === "accepted") label = "Gateway received your message · Julie is working…";
+  else if (status.state === "status") {
+    label = status.phase ? phases[status.phase] ?? "Julie is preparing the run…" : "Julie is preparing the run…";
+    if (status.retry?.reason === "rate_limit") {
+      const attempt = status.retry.attempt ?? 1;
+      const max = status.retry.maxAttempts;
+      label = `Model rate-limited · retrying ${attempt}${max ? ` of ${max}` : ""}…`;
+    }
+  } else if (status.state === "responding") label = "Julie is responding live…";
+  else if (status.state === "finalizing") label = "Gateway finished · saving the response…";
+  else if (status.state === "complete") label = "Response complete";
+  else if (status.state === "aborted") label = status.error || "Run stopped";
+  else if (status.state === "error") label = status.error || "The run failed";
+  if (status.reconnecting && status.state !== "complete" && status.state !== "error" && status.state !== "aborted") {
+    label += " · reconnecting live updates…";
+  }
+  return label;
+}
+
 function ChatView() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [convs, setConvs] = useState<Conversation[]>([]);
@@ -2846,12 +3784,34 @@ function ChatView() {
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [workspaceBusy, setWorkspaceBusy] = useState(false);
   const [conversationBusy, setConversationBusy] = useState(false);
+  const [deletingConversationId, setDeletingConversationId] = useState<number | null>(null);
+  const [conversationMenuOpen, setConversationMenuOpen] = useState(false);
   const [chatError, setChatError] = useState("");
+  const [attachment, setAttachment] = useState<File | null>(null);
+  const [streamedReply, setStreamedReply] = useState("");
+  const [liveStatus, setLiveStatus] = useState<ChatLiveStatus>({ state: "idle" });
   const [createOpen, setCreateOpen] = useState(false);
   const [newWorkspaceName, setNewWorkspaceName] = useState("");
   const [newWorkspaceDescription, setNewWorkspaceDescription] = useState("");
   const [createError, setCreateError] = useState("");
   const logRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const conversationPickerRef = useRef<HTMLDivElement>(null);
+
+  const runActive = liveStatus.state === "sending" || liveStatus.state === "accepted" || liveStatus.state === "status"
+    || liveStatus.state === "responding" || liveStatus.state === "finalizing";
+
+  // The shell-mounted microphone must target the conversation the owner chose,
+  // rather than creating a new one or guessing from Gateway history.
+  useEffect(() => { setVoiceConversationId(convId); }, [convId]);
+
+  const upsertMessage = useCallback((message: Message) => {
+    setMessages((current) => {
+      const existing = current.findIndex((row) => row.id === message.id);
+      if (existing >= 0) return current.map((row, index) => index === existing ? message : row);
+      return [...current, message].sort((left, right) => left.id - right.id);
+    });
+  }, []);
 
   const errorMessage = (error: unknown, fallback: string) =>
     error instanceof Error && error.message ? error.message : fallback;
@@ -2906,7 +3866,16 @@ function ChatView() {
     setLoadingMessages(true);
     setChatError("");
     api.messages(convId).then(d => {
-      if (!stale) setMessages(d.messages);
+      if (!stale) {
+        setMessages(d.messages);
+        // A server-monitored run may already be in flight for this conversation
+        // (e.g. sent from another tab): restore its observable state.
+        const run = d.activeRun;
+        if (run) {
+          if (run.state === "responding" || run.state === "finalizing") setStreamedReply(run.text);
+          setLiveStatus({ state: chatRunStatusState(run.state), phase: run.phase, retry: run.retry });
+        }
+      }
     }).catch((error) => {
       if (!stale) setChatError(errorMessage(error, "Could not load messages."));
     }).finally(() => {
@@ -2995,20 +3964,173 @@ function ChatView() {
     }
   };
 
+  // ---- live conversation updates (SSE) ----
+  // One persistent EventSource per conversation. The HTTP send returns as soon
+  // as the real Gateway acknowledges chat.send; every later update (run phase,
+  // streaming deltas, persisted reply) arrives on this channel.
+  useEffect(() => {
+    setStreamedReply("");
+    setLiveStatus({ state: "idle" });
+    setAttachment(null);
+    if (!convId) return;
+    let disposed = false;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const applyRunEvent = (run: Record<string, any>) => {
+      switch (run.state) {
+        case "sending":
+          setStreamedReply("");
+          setLiveStatus({ state: "sending" });
+          break;
+        case "accepted":
+          setLiveStatus({ state: "accepted" });
+          break;
+        case "status":
+          setLiveStatus({ state: "status", phase: run.phase ?? null, retry: run.retry ?? null });
+          break;
+        case "responding": {
+          const delta = typeof run.deltaText === "string" ? run.deltaText : "";
+          if (typeof run.snapshot === "string" && run.snapshot) setStreamedReply(run.snapshot);
+          else if (run.replace === true) setStreamedReply(delta);
+          else setStreamedReply((current) => current + delta);
+          setLiveStatus({ state: "responding" });
+          break;
+        }
+        case "finalizing":
+          setLiveStatus({ state: "finalizing" });
+          break;
+        case "complete": {
+          if (run.message) upsertMessage(run.message as Message);
+          setStreamedReply("");
+          setLiveStatus({ state: "idle" });
+          break;
+        }
+        default: { // error / aborted
+          setStreamedReply("");
+          setLiveStatus({ state: "idle" });
+          setChatError(String(run.error ?? (run.state === "aborted" ? "The run was stopped." : "The chat run failed.")));
+        }
+      }
+    };
+
+    const connect = () => {
+      if (disposed) return;
+      const source = new EventSource(`/api/conversations/${convId}/events`);
+      source.onmessage = (event) => {
+        if (disposed) return;
+        try {
+          const data = JSON.parse(event.data) as Record<string, any>;
+          if (data?.type === "message" && data.message) {
+            upsertMessage(data.message as Message);
+          } else if (data?.type === "message-removed" && typeof data.id === "number") {
+            // The Gateway rejected the turn: drop the optimistic user bubble.
+            setMessages((current) => current.filter((row) => row.id !== data.id));
+          } else if (data?.type === "hello" && data.activeRun) {
+            // Reconnect / late join: restore the observable state of a run the
+            // server is still monitoring instead of showing a frozen UI.
+            const run = data.activeRun as ChatRunSnapshot;
+            if (run.state === "responding" || run.state === "finalizing") setStreamedReply(String(run.text ?? ""));
+            setLiveStatus({ state: chatRunStatusState(run.state), phase: run.phase, retry: run.retry });
+          } else if (data?.type === "run") {
+            applyRunEvent(data);
+          }
+        } catch { /* malformed frame: ignore */ }
+      };
+      source.onerror = () => {
+        source.close();
+        if (disposed) return;
+        setLiveStatus((current) => current.state === "idle" ? current : { ...current, reconnecting: true });
+        reconnectTimer = setTimeout(connect, 3000);
+      };
+    };
+    connect();
+    return () => {
+      disposed = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+    };
+  }, [convId, upsertMessage]);
+
+  // Close the conversation picker on outside click / Escape.
+  useEffect(() => {
+    if (!conversationMenuOpen) return;
+    const onPointerDown = (event: MouseEvent) => {
+      if (!conversationPickerRef.current?.contains(event.target as Node)) setConversationMenuOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setConversationMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [conversationMenuOpen]);
+
   const send = async () => {
-    if (!input.trim() || !convId) return;
+    if (!convId || busy || runActive) return;
+    const text = input.trim();
+    const file = attachment;
+    if (!text && !file) return;
     setBusy(true);
-    const text = input;
+    setChatError("");
     setInput("");
+    setAttachment(null);
+    setStreamedReply("");
+    setLiveStatus({ state: "sending" });
     try {
-      await api.sendMessage(convId, text);
-      const d = await api.messages(convId);
-      setMessages(d.messages);
-    } catch (error) {
+      const result = file
+        ? await api.uploadChatAttachment(convId, text, file)
+        : await api.sendMessage(convId, text);
+      if (result.userMessage) upsertMessage(result.userMessage);
+      // 202 = the real Gateway acknowledged the send; streaming continues via SSE.
+      setLiveStatus({ state: "accepted" });
+    } catch (error: any) {
       setInput(text);
-      setChatError(errorMessage(error, "Message could not be sent."));
+      if (file) setAttachment(file);
+      setLiveStatus({ state: "idle" });
+      setStreamedReply("");
+      setChatError(error?.status === 409
+        ? "Julie is still working in this conversation — wait for the current run to finish."
+        : errorMessage(error, file ? "Attachment could not be sent." : "Message could not be sent."));
+    } finally {
+      setBusy(false);
     }
-    finally { setBusy(false); }
+  };
+
+  const removeConversation = async (id: number) => {
+    if (conversationBusy) return;
+    if (!window.confirm("Delete this conversation? This cannot be undone.")) return;
+    setConversationBusy(true);
+    setDeletingConversationId(id);
+    setChatError("");
+    try {
+      await api.deleteConversation(id);
+      const next = convs.filter((conversation) => conversation.id !== id);
+      setConvs(next);
+      if (convId === id) setConvId(next[0]?.id ?? null);
+      setConversationMenuOpen(false);
+    } catch (error: any) {
+      setChatError(error?.status === 409
+        ? "Julie is still working in this conversation — it can only be deleted between runs."
+        : errorMessage(error, "Could not delete conversation."));
+    } finally {
+      setDeletingConversationId(null);
+      setConversationBusy(false);
+    }
+  };
+
+  const handleFileSelected = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0] ?? null;
+    event.target.value = "";
+    if (file) {
+      if (file.size > 8 * 1024 * 1024) {
+        setChatError("Files up to 8 MB are supported (images up to 6 MB).");
+        return;
+      }
+      setChatError("");
+      setAttachment(file);
+    }
   };
 
   const activeWorkspace = workspaces.find((workspace) => workspace.id === activeWorkspaceId);
@@ -3043,19 +4165,64 @@ function ChatView() {
             <span aria-hidden="true">＋</span><span>Workspace</span>
           </button>
 
-          <label className="chat-toolbar-field conversation-field">
+          <div className="chat-toolbar-field conversation-field">
             <span>Conversation</span>
-            <select
-              className="conv-select"
-              value={convId ?? ""}
-              onChange={(event) => setConvId(Number(event.target.value))}
-              disabled={!activeWorkspaceId || loadingConvs || convs.length === 0}
-            >
-              {loadingConvs && <option value="">Loading conversations…</option>}
-              {!loadingConvs && convs.length === 0 && <option value="">No conversations</option>}
-              {convs.map((conversation) => <option key={conversation.id} value={conversation.id}>{conversation.title}</option>)}
-            </select>
-          </label>
+            <div className="conv-picker" ref={conversationPickerRef}>
+              <button
+                type="button"
+                className="conv-select conv-picker-trigger"
+                onClick={() => setConversationMenuOpen((open) => !open)}
+                aria-haspopup="listbox"
+                aria-expanded={conversationMenuOpen}
+                disabled={!activeWorkspaceId || loadingConvs}
+              >
+                <span className="conv-picker-label">
+                  {loadingConvs
+                    ? "Loading conversations…"
+                    : !activeWorkspaceId
+                      ? "Create a workspace first"
+                      : convs.length === 0
+                        ? "No conversations"
+                        : activeConversation?.title ?? "Select conversation"}
+                </span>
+                <span aria-hidden="true" className="conv-picker-caret">▾</span>
+              </button>
+              {conversationMenuOpen && (
+                <div className="conv-picker-menu" role="listbox" aria-label="Conversations">
+                  {convs.length === 0 && <div className="conv-picker-empty">No conversations yet</div>}
+                  {convs.map((conversation) => (
+                    <div
+                      key={conversation.id}
+                      role="option"
+                      aria-selected={conversation.id === convId}
+                      tabIndex={0}
+                      className={`conv-picker-row${conversation.id === convId ? " active" : ""}`}
+                      onClick={() => { setConvId(conversation.id); setConversationMenuOpen(false); }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          setConvId(conversation.id);
+                          setConversationMenuOpen(false);
+                        }
+                      }}
+                    >
+                      <span className="conv-picker-title" title={conversation.title}>{conversation.title}</span>
+                      <button
+                        type="button"
+                        className="conv-picker-delete"
+                        onClick={(event) => { event.stopPropagation(); void removeConversation(conversation.id); }}
+                        disabled={conversationBusy || deletingConversationId === conversation.id}
+                        aria-label={`Delete conversation ${conversation.title}`}
+                        title="Delete conversation"
+                      >
+                        {deletingConversationId === conversation.id ? "…" : "🗑"}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
           <button className="chat-toolbar-button icon-only" onClick={createConversation}
             disabled={!activeWorkspaceId || conversationBusy} aria-label="Create conversation" title="Create conversation">
             {conversationBusy ? "…" : "＋"}
@@ -3093,13 +4260,42 @@ function ChatView() {
               {m.role === "assistant" ? <Markdown text={m.text} /> : <span className="msg-plain">{m.text}</span>}
             </div>
           ))}
+          {runActive && (
+            <>
+              {streamedReply && (
+                <div className="msg assistant streaming"><Markdown text={streamedReply} /></div>
+              )}
+              <div className="chat-run-status" role="status" aria-live="polite">
+                <span className="chat-run-spinner" aria-hidden="true" />
+                <span>{chatLiveStatusLabel(liveStatus)}</span>
+              </div>
+            </>
+          )}
         </div>
+        {attachment && (
+          <div className="chat-attachments">
+            <span className="chat-attachment-chip" title={`${attachment.name} — ${attachment.type || "unknown type"}`}>
+              <span className="chat-attachment-name">{attachment.name}</span>
+              <span className="chat-attachment-size">{chatFileSize(attachment.size)}</span>
+              <button type="button" className="chat-attachment-remove" onClick={() => setAttachment(null)}
+                aria-label={`Remove attachment ${attachment.name}`}>×</button>
+            </span>
+          </div>
+        )}
         <div className="chat-input">
+          <input ref={fileInputRef} type="file" accept={CHAT_ATTACHMENT_ACCEPT} onChange={handleFileSelected} style={{ display: "none" }} />
+          <button type="button" className="chat-attach-button" onClick={() => fileInputRef.current?.click()}
+            disabled={!convId || busy || runActive} aria-label="Attach a file" title="Attach a file (image, PDF, or text)">
+            📎
+          </button>
           <textarea value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => {
-            if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+            if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); }
           }} placeholder={convId ? `Message Julie in ${activeWorkspace?.name ?? "this workspace"}…` : "Create a conversation to begin"}
             disabled={!convId || busy} />
-          <button className="send-btn" onClick={send} disabled={busy || !convId || !input.trim()}>{busy ? "Sending…" : "Send"}</button>
+          <button className="send-btn" onClick={() => void send()}
+            disabled={busy || runActive || !convId || (!input.trim() && !attachment)}>
+            {busy ? "Sending…" : runActive ? "Working…" : "Send"}
+          </button>
         </div>
       </div>
 
@@ -3137,57 +4333,146 @@ function ChatView() {
   );
 }
 
-// --- Task Board View (Enhanced) ---
+// --- Task Operations Board ---
+type TaskEditorState = {
+  title: string;
+  description: string;
+  status: Task["status"];
+  priority: Task["priority"];
+  assignedAgentId: string;
+};
+
+const EMPTY_TASK_EDITOR: TaskEditorState = {
+  title: "",
+  description: "",
+  status: "backlog",
+  priority: 2,
+  assignedAgentId: "",
+};
+
+const TASK_PRIORITY: Record<Task["priority"], { label: string; className: string }> = {
+  1: { label: "High", className: "high" },
+  2: { label: "Medium", className: "medium" },
+  3: { label: "Low", className: "low" },
+};
+
+function taskTimestamp(value?: string | null): string {
+  if (!value) return "No date";
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return "Unknown date";
+  const delta = Date.now() - parsed;
+  if (delta < 60_000) return "just now";
+  if (delta < 3_600_000) return `${Math.max(1, Math.floor(delta / 60_000))}m ago`;
+  if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)}h ago`;
+  if (delta < 604_800_000) return `${Math.floor(delta / 86_400_000)}d ago`;
+  return new Date(parsed).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
+function agentInitials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  return (parts.length > 1 ? `${parts[0][0]}${parts[1][0]}` : name.slice(0, 2)).toUpperCase();
+}
+
 function BoardView() {
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [newTitle, setNewTitle] = useState("");
-  const [activeWorkspaceId, setActiveWorkspaceId] = useState<number>(1);
-  const [workspaces, setWorkspaces] = useState<{id: number; name: string}[]>([]);
+  const [summary, setSummary] = useState<TaskSummary | null>(null);
+  const [runningTaskIds, setRunningTaskIds] = useState<number[]>([]);
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState(0);
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [agents, setAgents] = useState<AgentAssignmentRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [agentError, setAgentError] = useState("");
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | Task["status"]>("all");
+  const [priorityFilter, setPriorityFilter] = useState<"all" | "1" | "2" | "3">("all");
+  const [assigneeFilter, setAssigneeFilter] = useState("all");
+  const [view, setView] = useState<"board" | "list">("board");
+  const [editorOpen, setEditorOpen] = useState(false);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
-  const [editForm, setEditForm] = useState<{title: string; description: string; status: string; priority: number}>({
-    title: "",
-    description: "",
-    status: "backlog",
-    priority: 2
-  });
+  const [editForm, setEditForm] = useState<TaskEditorState>(EMPTY_TASK_EDITOR);
+  const [activity, setActivity] = useState<TaskActivity[]>([]);
+  const [activityLoading, setActivityLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [actionError, setActionError] = useState("");
 
-  // Load workspaces and tasks
+  const refreshTasks = useCallback(async (quiet = false) => {
+    if (!activeWorkspaceId) return;
+    if (!quiet) setLoading(true);
+    setError("");
+    try {
+      const data = await api.tasks(activeWorkspaceId);
+      setTasks(data.tasks);
+      setSummary(data.summary);
+      setRunningTaskIds(data.runningTaskIds);
+      if (editingTask) {
+        const current = data.tasks.find((task) => task.id === editingTask.id);
+        if (current) setEditingTask(current);
+      }
+    } catch (requestError: any) {
+      setError(requestError?.message ?? "Could not load tasks.");
+    } finally {
+      if (!quiet) setLoading(false);
+    }
+  }, [activeWorkspaceId, editingTask?.id]);
+
   useEffect(() => {
-    api.workspaces().then(d => {
-      if (d.workspaces.length > 0) {
-        const activeId = d.activeWorkspaceId || d.workspaces[0].id;
-        setActiveWorkspaceId(activeId);
-        setWorkspaces(d.workspaces.map(w => ({ id: w.id, name: w.name })));
+    let cancelled = false;
+    api.workspaces().then((data) => {
+      if (cancelled) return;
+      setWorkspaces(data.workspaces);
+      const initial = data.workspaces.some((workspace) => workspace.id === data.activeWorkspaceId)
+        ? data.activeWorkspaceId
+        : data.workspaces[0]?.id;
+      setActiveWorkspaceId(initial ?? 0);
+      if (!initial) setLoading(false);
+    }).catch((requestError: any) => {
+      if (!cancelled) {
+        setError(requestError?.message ?? "Could not load workspaces.");
+        setLoading(false);
       }
     });
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
-    api.tasks(activeWorkspaceId).then(d => setTasks(d.tasks)).catch(() => {});
+    if (!activeWorkspaceId) return;
+    void refreshTasks();
+    setAgentError("");
+    api.agentAssignments(activeWorkspaceId)
+      .then((data) => setAgents(data.agents.filter((agent) => agent.assigned)))
+      .catch((requestError: any) => {
+        setAgents([]);
+        setAgentError(requestError?.message ?? "Agent roster unavailable.");
+      });
   }, [activeWorkspaceId]);
 
-  const add = async () => {
-    if (!newTitle.trim()) return;
-    await api.createTask(activeWorkspaceId, newTitle, "backlog");
-    setNewTitle("");
-    api.tasks(activeWorkspaceId).then(d => setTasks(d.tasks));
-  };
+  useEffect(() => {
+    if (runningTaskIds.length === 0) return;
+    const timer = window.setInterval(() => { void refreshTasks(true); }, 4000);
+    return () => window.clearInterval(timer);
+  }, [runningTaskIds.length, refreshTasks]);
 
-  const updateTask = async (id: number, patch: any) => {
-    await api.updateTask(id, patch);
-    api.tasks(activeWorkspaceId).then(d => setTasks(d.tasks));
-  };
+  const agentMap = new Map(agents.map((agent) => [agent.id, agent]));
+  const assignedAgents = [...agents].sort((left, right) => left.displayName.localeCompare(right.displayName));
+  const normalizedQuery = query.trim().toLowerCase();
+  const filteredTasks = tasks.filter((task) => {
+    if (statusFilter !== "all" && task.status !== statusFilter) return false;
+    if (priorityFilter !== "all" && task.priority !== Number(priorityFilter)) return false;
+    if (assigneeFilter === "unassigned" && task.assigned_agent_id) return false;
+    if (assigneeFilter !== "all" && assigneeFilter !== "unassigned" && task.assigned_agent_id !== assigneeFilter) return false;
+    if (normalizedQuery && !`${task.id} ${task.title} ${task.description} ${task.assigned_agent_id}`.toLowerCase().includes(normalizedQuery)) return false;
+    return true;
+  });
+  const visibleStatuses: readonly Task["status"][] = statusFilter === "all" ? TASK_STATUSES : [statusFilter];
+  const filtersActive = Boolean(normalizedQuery || statusFilter !== "all" || priorityFilter !== "all" || assigneeFilter !== "all");
 
-  const deleteTask = async (id: number) => {
-    if (!confirm("Delete this task?")) return;
-    await api.deleteTask(id);
-    api.tasks(activeWorkspaceId).then(d => setTasks(d.tasks));
-  };
-
-  const runTask = async (id: number) => {
-    if (!confirm("Run this task? This will execute it via the agent.")) return;
-    await api.runTask(id);
-    api.tasks(activeWorkspaceId).then(d => setTasks(d.tasks));
+  const openCreate = () => {
+    setEditingTask(null);
+    setEditForm(EMPTY_TASK_EDITOR);
+    setActivity([]);
+    setActionError("");
+    setEditorOpen(true);
   };
 
   const openEdit = (task: Task) => {
@@ -3196,184 +4481,310 @@ function BoardView() {
       title: task.title,
       description: task.description,
       status: task.status,
-      priority: task.priority
+      priority: task.priority,
+      assignedAgentId: task.assigned_agent_id,
     });
+    setActivity([]);
+    setActionError("");
+    setEditorOpen(true);
+    setActivityLoading(true);
+    api.taskActivity(task.id)
+      .then((data) => setActivity(data.activity))
+      .catch((requestError: any) => setActionError(requestError?.message ?? "Could not load task activity."))
+      .finally(() => setActivityLoading(false));
   };
 
-  const saveEdit = async () => {
-    if (!editingTask) return;
-    await updateTask(editingTask.id, editForm);
-    setEditingTask(null);
-  };
-
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'backlog': return 'var(--text-dim)';
-      case 'ready': return 'var(--accent-bright)';
-      case 'in_progress': return 'var(--accent)';
-      case 'pending_review': return '#AAB8CC';
-      case 'done': return '#4ade80';
-      case 'blocked': return '#ff3b30';
-      default: return 'var(--text-dim)';
+  const saveTask = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!editForm.title.trim() || saving || !activeWorkspaceId) return;
+    setSaving(true);
+    setActionError("");
+    try {
+      const input = {
+        title: editForm.title.trim(),
+        description: editForm.description.trim(),
+        status: editForm.status,
+        priority: editForm.priority,
+        assignedAgentId: editForm.assignedAgentId || null,
+      };
+      if (editingTask) await api.updateTask(editingTask.id, input);
+      else await api.createTask({ workspaceId: activeWorkspaceId, ...input });
+      setEditorOpen(false);
+      setEditingTask(null);
+      await refreshTasks();
+    } catch (requestError: any) {
+      setActionError(requestError?.message ?? "Could not save task.");
+    } finally {
+      setSaving(false);
     }
   };
 
-  const formatDate = (dateStr?: string) => {
-    if (!dateStr) return 'N/A';
-    return new Date(dateStr).toLocaleString();
+  const removeTask = async () => {
+    if (!editingTask || saving || !window.confirm(`Delete task #${editingTask.id}? This cannot be undone.`)) return;
+    setSaving(true);
+    setActionError("");
+    try {
+      await api.deleteTask(editingTask.id);
+      setEditorOpen(false);
+      setEditingTask(null);
+      await refreshTasks();
+    } catch (requestError: any) {
+      setActionError(requestError?.message ?? "Could not delete task.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const runTask = async () => {
+    if (!editingTask || saving || !window.confirm(`Run task #${editingTask.id} with ${editingTask.assigned_agent_id || "Julie (main)"}?`)) return;
+    setSaving(true);
+    setActionError("");
+    try {
+      await api.runTask(editingTask.id);
+      setEditorOpen(false);
+      setEditingTask(null);
+      await refreshTasks();
+    } catch (requestError: any) {
+      setActionError(requestError?.message ?? "Could not start task.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const clearFilters = () => {
+    setQuery("");
+    setStatusFilter("all");
+    setPriorityFilter("all");
+    setAssigneeFilter("all");
+  };
+
+  const statCards = [
+    { label: "Open work", value: summary?.open ?? "—", detail: `${summary?.total ?? 0} total tasks`, tone: "orange" },
+    { label: "In progress", value: summary?.active ?? "—", detail: runningTaskIds.length ? `${runningTaskIds.length} live agent run${runningTaskIds.length === 1 ? "" : "s"}` : "No live agent runs", tone: "blue" },
+    { label: "High priority", value: summary?.highPriority ?? "—", detail: "Open priority-one work", tone: "red" },
+    { label: "Completion", value: summary ? `${summary.completionRate}%` : "—", detail: `${summary?.done ?? 0} completed`, tone: "green" },
+    { label: "Assigned", value: summary ? `${summary.assigned}/${summary.total}` : "—", detail: `${summary?.unassigned ?? 0} unassigned`, tone: "violet" },
+  ];
+
+  const renderAssignee = (task: Task) => {
+    if (!task.assigned_agent_id) return <span className="task-assignee unassigned"><span className="task-agent-avatar">J</span><span>Julie · unassigned fallback</span></span>;
+    const agent = agentMap.get(task.assigned_agent_id);
+    const name = agent?.displayName ?? task.assigned_agent_id;
+    return (
+      <span className="task-assignee">
+        <span className="task-agent-avatar">{agent?.emoji ?? agentInitials(name)}</span>
+        <span>{name}</span>
+      </span>
+    );
   };
 
   return (
-    <section style={{ flex: 1 }}>
-      <div style={{ display: "flex", gap: 10, marginBottom: 20, alignItems: "center" }}>
-        <select 
-          className="conv-select" 
-          style={{ maxWidth: 200 }}
-          value={activeWorkspaceId}
-          onChange={e => setActiveWorkspaceId(Number(e.target.value))}
-        >
-          {workspaces.map(w => (
-            <option key={w.id} value={w.id}>{w.name}</option>
-          ))}
-        </select>
-        <input 
-          className="conv-select" 
-          style={{ flex: 1, maxWidth: 400 }} 
-          value={newTitle} 
-          onChange={e => setNewTitle(e.target.value)} 
-          placeholder="New task…" 
-        />
-        <button className="btn" onClick={add}>Add Task</button>
-      </div>
-      
-      <div className="dashboard-grid">
-        {TASK_STATUSES.map(status => (
-          <div key={status} className="card" style={{ minHeight: 280 }}>
-            <div className="card-title">{STATUS_LABEL[status]}</div>
-            <div className="card-content" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {tasks.filter(t => t.status === status).map(t => (
-                <div 
-                  key={t.id} 
-                  className="task-card mb-4 p-4" 
-                  style={{ 
-                    background: "rgba(0,0,0,0.2)", 
-                    borderRadius: 8,
-                    border: `1px solid ${getStatusColor(t.status)}`,
-                    cursor: 'pointer'
-                  }}
-                  onClick={() => openEdit(t)}
-                >
-                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-                    <div style={{ fontWeight: 600, flex: 1 }}>{t.title}</div>
-                    <span 
-                      className="status-dot" 
-                      style={{ 
-                        background: getStatusColor(t.status),
-                        width: 8,
-                        height: 8,
-                        borderRadius: '50%',
-                        marginRight: 8
-                      }} 
-                    />
-                  </div>
-                  {t.description && (
-                    <div className="text-dim" style={{ fontSize: "0.8rem", marginBottom: 6 }}>
-                      {t.description.length > 120 ? t.description.slice(0, 120) + "..." : t.description}
-                    </div>
-                  )}
-                  {t.last_run_output && (
-                    <div className="text-dim" style={{ fontSize: "0.75rem", marginBottom: 4 }}>
-                      Run: {t.last_run_output.slice(0, 60)}{t.last_run_output.length > 60 ? "..." : ""}
-                    </div>
-                  )}
-                  <div className="text-dim" style={{ fontSize: "0.7rem", marginTop: 8 }}>
-                    {t.run_started_at ? `Started: ${formatDate(t.run_started_at)}` : `Created: ${formatDate(t.created_at)}`}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
+    <section className="tasks-page">
+      <header className="tasks-hero">
+        <div>
+          <span className="tasks-eyebrow">Operations</span>
+          <h2>Task command board</h2>
+          <p>Priorities, ownership, execution, and review in one real workspace view.</p>
+        </div>
+        <div className="tasks-hero-actions">
+          <label className="task-workspace-select">
+            <span>Workspace</span>
+            <select value={activeWorkspaceId} onChange={(event) => setActiveWorkspaceId(Number(event.target.value))} disabled={workspaces.length === 0}>
+              {workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
+            </select>
+          </label>
+          <button className="btn task-new-button" onClick={openCreate} disabled={!activeWorkspaceId}>＋ New task</button>
+        </div>
+      </header>
+
+      <div className="task-stats" aria-label="Task statistics">
+        {statCards.map((stat) => (
+          <article className={`task-stat ${stat.tone}`} key={stat.label}>
+            <span>{stat.label}</span>
+            <strong>{stat.value}</strong>
+            <small>{stat.detail}</small>
+          </article>
         ))}
       </div>
 
-      {/* Edit Modal */}
-      {editingTask && (
-        <div style={{
-          position: "fixed",
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          background: "rgba(0,0,0,0.7)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          zIndex: 1000
-        }}>
-          <div className="card" style={{ width: "100%", maxWidth: 500, maxHeight: "90vh", overflow: "auto" }}>
-            <div className="card-title">
-              Edit Task
-              <button className="icon-btn" onClick={() => setEditingTask(null)}>×</button>
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              <div>
-                <label className="text-dim" style={{ fontSize: "0.8rem", display: "block", marginBottom: 4 }}>Title</label>
-                <input 
-                  value={editForm.title} 
-                  onChange={e => setEditForm(f => ({ ...f, title: e.target.value }))}
-                />
-              </div>
-              <div>
-                <label className="text-dim" style={{ fontSize: "0.8rem", display: "block", marginBottom: 4 }}>Description</label>
-                <textarea 
-                  value={editForm.description}
-                  onChange={e => setEditForm(f => ({ ...f, description: e.target.value }))}
-                  rows={4}
-                  style={{ resize: "vertical" }}
-                />
-              </div>
-              <div style={{ display: "flex", gap: 12 }}>
-                <div style={{ flex: 1 }}>
-                  <label className="text-dim" style={{ fontSize: "0.8rem", display: "block", marginBottom: 4 }}>Status</label>
-                  <select 
-                    value={editForm.status}
-                    onChange={e => setEditForm(f => ({ ...f, status: e.target.value }))}
-                  >
-                    {TASK_STATUSES.map(s => (
-                      <option key={s} value={s}>{STATUS_LABEL[s]}</option>
-                    ))}
-                  </select>
+      <div className="task-toolbar">
+        <label className="task-search">
+          <span aria-hidden="true">⌕</span>
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search tasks, descriptions, agents…" aria-label="Search tasks" />
+        </label>
+        <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as "all" | Task["status"])} aria-label="Filter by status">
+          <option value="all">All statuses</option>
+          {TASK_STATUSES.map((status) => <option key={status} value={status}>{STATUS_LABEL[status]}</option>)}
+        </select>
+        <select value={priorityFilter} onChange={(event) => setPriorityFilter(event.target.value as "all" | "1" | "2" | "3")} aria-label="Filter by priority">
+          <option value="all">All priorities</option>
+          <option value="1">High priority</option>
+          <option value="2">Medium priority</option>
+          <option value="3">Low priority</option>
+        </select>
+        <select value={assigneeFilter} onChange={(event) => setAssigneeFilter(event.target.value)} aria-label="Filter by assignee">
+          <option value="all">All assignees</option>
+          <option value="unassigned">Unassigned</option>
+          {assignedAgents.map((agent) => <option key={agent.id} value={agent.id}>{agent.displayName}</option>)}
+        </select>
+        <div className="task-view-toggle" aria-label="Task layout">
+          <button className={view === "board" ? "active" : ""} onClick={() => setView("board")} aria-pressed={view === "board"}>Board</button>
+          <button className={view === "list" ? "active" : ""} onClick={() => setView("list")} aria-pressed={view === "list"}>List</button>
+        </div>
+      </div>
+
+      <div className="task-results-line">
+        <span>Showing <strong>{filteredTasks.length}</strong> of {tasks.length}</span>
+        {agentError && <span className="task-agent-warning" title={agentError}>Agent roster unavailable · IDs remain visible</span>}
+        {filtersActive && <button onClick={clearFilters}>Clear filters</button>}
+      </div>
+
+      {loading && tasks.length === 0 ? (
+        <PageState kind="loading" title="Loading task operations…" />
+      ) : error ? (
+        <PageState kind="error" title="Task board unavailable" detail={error} onRetry={() => void refreshTasks()} />
+      ) : tasks.length === 0 ? (
+        <PageState kind="empty" title="No tasks in this workspace" detail="Create the first task to establish ownership and workflow." action={<button className="btn" onClick={openCreate}>Create task</button>} />
+      ) : view === "board" ? (
+        <div className="task-board" aria-label="Task status board">
+          {visibleStatuses.map((status) => {
+            const rows = filteredTasks.filter((task) => task.status === status);
+            return (
+              <section className={`task-column status-${status}`} key={status}>
+                <header>
+                  <span className="task-status-dot" />
+                  <h3>{STATUS_LABEL[status]}</h3>
+                  <span className="task-column-count">{rows.length}</span>
+                </header>
+                <div className="task-column-body">
+                  {rows.length === 0 && <div className="task-column-empty">No matching work</div>}
+                  {rows.map((task) => {
+                    const priority = TASK_PRIORITY[task.priority];
+                    const running = runningTaskIds.includes(task.id);
+                    return (
+                      <article className={`task-operation-card${running ? " running" : ""}`} key={task.id}>
+                        <div className="task-card-meta">
+                          <span className={`task-priority ${priority.className}`}>{priority.label}</span>
+                          <span>#{task.id}</span>
+                          {running && <span className="task-running">Live</span>}
+                        </div>
+                        <button className="task-card-open" onClick={() => openEdit(task)} aria-label={`Open task ${task.id}: ${task.title}`}>
+                          <strong>{task.title}</strong>
+                          {task.description && <span>{task.description}</span>}
+                        </button>
+                        {renderAssignee(task)}
+                        <footer>
+                          <span>{task.session_linked ? "Agent context linked" : "No run yet"}</span>
+                          <time dateTime={task.updated_at}>{taskTimestamp(task.updated_at)}</time>
+                        </footer>
+                      </article>
+                    );
+                  })}
                 </div>
-                <div style={{ flex: 1 }}>
-                  <label className="text-dim" style={{ fontSize: "0.8rem", display: "block", marginBottom: 4 }}>Priority</label>
-                  <select 
-                    value={editForm.priority}
-                    onChange={e => setEditForm(f => ({ ...f, priority: Number(e.target.value) }))}
-                  >
-                    <option value="1">High</option>
-                    <option value="2">Medium</option>
-                    <option value="3">Low</option>
-                  </select>
+              </section>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="task-list" role="table" aria-label="Task list">
+          <div className="task-list-head" role="row">
+            <span>Task</span><span>Status</span><span>Priority</span><span>Owner</span><span>Updated</span><span />
+          </div>
+          {filteredTasks.map((task) => {
+            const priority = TASK_PRIORITY[task.priority];
+            return (
+              <div className="task-list-row" role="row" key={task.id}>
+                <div className="task-list-title"><small>#{task.id}</small><strong>{task.title}</strong>{task.description && <span>{task.description}</span>}</div>
+                <span className={`task-status-chip status-${task.status}`}><i />{STATUS_LABEL[task.status]}</span>
+                <span className={`task-priority ${priority.className}`}>{priority.label}</span>
+                {renderAssignee(task)}
+                <time dateTime={task.updated_at}>{taskTimestamp(task.updated_at)}</time>
+                <button className="task-row-open" onClick={() => openEdit(task)} aria-label={`Open task ${task.id}`}>→</button>
+              </div>
+            );
+          })}
+          {filteredTasks.length === 0 && <div className="task-list-empty">No tasks match these filters.</div>}
+        </div>
+      )}
+
+      {editorOpen && (
+        <div className="task-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) setEditorOpen(false); }}>
+          <section className="task-dialog" role="dialog" aria-modal="true" aria-labelledby="task-dialog-title">
+            <header>
+              <div>
+                <span className="tasks-eyebrow">{editingTask ? `Task #${editingTask.id}` : "New work"}</span>
+                <h3 id="task-dialog-title">{editingTask ? "Task details" : "Create task"}</h3>
+              </div>
+              <button className="task-dialog-close" onClick={() => setEditorOpen(false)} disabled={saving} aria-label="Close task dialog">×</button>
+            </header>
+            <div className="task-dialog-grid">
+              <form className="task-editor" onSubmit={saveTask}>
+                <label>
+                  <span>Title</span>
+                  <input value={editForm.title} onChange={(event) => setEditForm((current) => ({ ...current, title: event.target.value }))} maxLength={500} required autoFocus={!editingTask} />
+                </label>
+                <label>
+                  <span>Description <small>optional</small></span>
+                  <textarea value={editForm.description} onChange={(event) => setEditForm((current) => ({ ...current, description: event.target.value }))} maxLength={5000} rows={6} placeholder="Outcome, constraints, and acceptance criteria…" />
+                </label>
+                <div className="task-editor-fields">
+                  <label>
+                    <span>Status</span>
+                    <select value={editForm.status} onChange={(event) => setEditForm((current) => ({ ...current, status: event.target.value as Task["status"] }))} disabled={Boolean(editingTask && runningTaskIds.includes(editingTask.id))}>
+                      {TASK_STATUSES.map((status) => <option key={status} value={status}>{STATUS_LABEL[status]}</option>)}
+                    </select>
+                  </label>
+                  <label>
+                    <span>Priority</span>
+                    <select value={editForm.priority} onChange={(event) => setEditForm((current) => ({ ...current, priority: Number(event.target.value) as Task["priority"] }))}>
+                      <option value={1}>High</option><option value={2}>Medium</option><option value={3}>Low</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Assigned agent</span>
+                    <select value={editForm.assignedAgentId} onChange={(event) => setEditForm((current) => ({ ...current, assignedAgentId: event.target.value }))} disabled={Boolean(editingTask && runningTaskIds.includes(editingTask.id)) || Boolean(agentError)}>
+                      <option value="">Unassigned · Julie fallback</option>
+                      {assignedAgents.map((agent) => <option key={agent.id} value={agent.id}>{agent.emoji ? `${agent.emoji} ` : ""}{agent.displayName}{agent.role ? ` · ${agent.role}` : ""}</option>)}
+                    </select>
+                  </label>
                 </div>
-              </div>
-              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-                <button className="btn" onClick={saveEdit}>Save</button>
-                <button className="icon-btn" onClick={() => setEditingTask(null)}>Cancel</button>
-                <button 
-                  className="icon-btn" 
-                  style={{ color: "#ff3b30", marginLeft: "auto" }}
-                  onClick={() => { deleteTask(editingTask.id); setEditingTask(null); }}
-                >
-                  🗑 Delete
-                </button>
-              </div>
-              {editingTask.status === 'ready' && (
-                <button className="btn" style={{ background: "var(--accent)", color: "var(--on-accent)" }} onClick={() => runTask(editingTask.id)}>
-                  ▶ Run Task
-                </button>
+                {editingTask?.last_run_output && (
+                  <div className="task-run-output">
+                    <span>Latest agent result</span>
+                    <pre>{editingTask.last_run_output}</pre>
+                  </div>
+                )}
+                {actionError && <div className="task-form-error" role="alert">{actionError}</div>}
+                <div className="task-dialog-actions">
+                  {editingTask && <button type="button" className="task-delete-button" onClick={removeTask} disabled={saving || runningTaskIds.includes(editingTask.id)}>Delete</button>}
+                  <span />
+                  <button type="button" className="btn-secondary" onClick={() => setEditorOpen(false)} disabled={saving}>Cancel</button>
+                  {editingTask?.status === "ready" && <button type="button" className="btn-secondary task-run-button" onClick={runTask} disabled={saving}>▶ Run with {editingTask.assigned_agent_id || "Julie"}</button>}
+                  <button type="submit" className="btn" disabled={saving || !editForm.title.trim()}>{saving ? "Saving…" : editingTask ? "Save changes" : "Create task"}</button>
+                </div>
+              </form>
+
+              {editingTask && (
+                <aside className="task-activity-panel">
+                  <div className="task-activity-heading"><span>Activity</span><small>{activity.length} events</small></div>
+                  {activityLoading ? <div className="task-activity-empty">Loading timeline…</div> : activity.length === 0 ? <div className="task-activity-empty">No activity recorded.</div> : (
+                    <ol>
+                      {activity.map((event) => (
+                        <li key={event.id}>
+                          <span className={`task-event-icon ${event.actor_type}`}>{event.actor_type === "owner" ? "Y" : event.actor_type === "agent" ? "A" : "S"}</span>
+                          <div>
+                            <strong>{event.event_type.replaceAll("_", " ")}</strong>
+                            <p>{event.details || "Recorded by Julie"}</p>
+                            <small>{event.actor_id ? `${event.actor_id} · ` : ""}{taskTimestamp(event.created_at)}</small>
+                          </div>
+                        </li>
+                      ))}
+                    </ol>
+                  )}
+                </aside>
               )}
             </div>
-          </div>
+          </section>
         </div>
       )}
     </section>
