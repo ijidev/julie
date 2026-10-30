@@ -4,6 +4,7 @@ import {
   getAgentProfileMap,
   getWorkspaceAgentIds,
   replaceAgentOrganization,
+  replaceAgentHumanNames,
   type AgentOrganizationInput,
 } from "./agent-profiles.js";
 import { invalidateAgentDetail } from "./agent-detail.js";
@@ -44,7 +45,8 @@ export async function getAgentOrganization(workspaceId: number) {
       const configured = Boolean(profile?.role && profile?.department && profile?.reportsTo && profile?.orgLevel);
       return {
         agentId: agent.id,
-        displayName: agent.identity?.name ?? agent.name ?? agent.id,
+        displayName: profile?.humanName || agent.identity?.name || agent.name || agent.id,
+        gatewayIdentityName: agent.identity?.name ?? agent.name ?? agent.id,
         emoji: agent.identity?.emoji ?? null,
         model: modelName(agent.model),
         role: profile?.role || null,
@@ -151,5 +153,29 @@ export async function configureAgentOrganization(workspaceId: number, rawMembers
   invalidateAgentOverview();
   db.prepare("INSERT INTO audit_logs (command, exit_code, duration_ms) VALUES (?, 0, 0)")
     .run(`agent.organization.replace:${workspaceId}:${entries.length}`);
+  return getAgentOrganization(workspaceId);
+}
+
+export async function configureAgentHumanNames(workspaceId: number, rawNames: unknown, confirmed: boolean) {
+  if (!confirmed) throw new AgentOrganizationError("name confirmation required");
+  if (!rawNames || typeof rawNames !== "object" || Array.isArray(rawNames)) throw new AgentOrganizationError("names object required");
+  const roster = await gateway.getAgentRoster();
+  const liveIds = new Set(roster.agents.map((agent) => agent.id));
+  const expectedIds = getWorkspaceAgentIds(workspaceId).filter((id) => liveIds.has(id));
+  const names = rawNames as Record<string, unknown>;
+  const entries = expectedIds.map((agentId) => {
+    const value = names[agentId];
+    if (typeof value !== "string" || !value.trim()) throw new AgentOrganizationError(`human name required for ${agentId}`);
+    const humanName = value.replace(/[\r\n\0]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 60);
+    if (!/^[\p{L}][\p{L}\p{M}' .-]{0,59}$/u.test(humanName)) throw new AgentOrganizationError(`invalid human name for ${agentId}`);
+    return { agentId, humanName };
+  });
+  const normalized = entries.map((entry) => entry.humanName.toLocaleLowerCase());
+  if (new Set(normalized).size !== normalized.length) throw new AgentOrganizationError("human names must be unique");
+  replaceAgentHumanNames(entries);
+  for (const entry of entries) invalidateAgentDetail(entry.agentId);
+  invalidateAgentOverview();
+  db.prepare("INSERT INTO audit_logs (command, exit_code, duration_ms) VALUES (?, 0, 0)")
+    .run(`agent.names.replace:${workspaceId}:${entries.length}`);
   return getAgentOrganization(workspaceId);
 }

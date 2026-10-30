@@ -271,7 +271,7 @@ async function buildAgentDetail(agentId: string) {
     agent: {
       id: agent.id,
       configuredName: text(agent.name, 200),
-      displayName: text(identity.name, 200) ?? text(agent.name, 200) ?? agent.id,
+      displayName: localProfile?.humanName || text(identity.name, 200) || text(agent.name, 200) || agent.id,
       isDefault: roster.defaultId === agent.id,
       identity: {
         name: text(identity.name, 200),

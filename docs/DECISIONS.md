@@ -296,3 +296,48 @@ projects queued/dispatching/complete state, messages, and a sanitized reconnect
 snapshot—never room session keys or run IDs. Room transcripts/membership survive
 Julie restarts; an in-flight dispatch is process-local and is not claimed to
 recover across a Julie restart.
+
+## D-029 — Delegation is dispatched by the runtime, not left to the model
+Date: 2026-10-30
+An owner `@mention` is resolved server-side against the live roster (human name
+or canonical ID). Before Julie's own Gateway turn starts, the runtime opens a
+named durable session with the mentioned agent and dispatches the owner's text
+with delegation disabled for that child. Julie then receives a directive that
+the dispatch already happened, plus the real session IDs and any failures. This
+replaces the previous model-discretion approach, where Julie could answer the
+request herself while claiming a delegation. Unknown mentions are reported as
+unknown. Delegation and completion/failure are persisted as system messages so
+the owner can see the actual handoff.
+
+## D-030 — Agent activity is reduced from real Gateway frames only
+Date: 2026-10-30
+Julie advertises the Gateway `tool-events` capability and subscribes to `agent`
+frames. `server/src/agent-actions.ts` normalizes `tool`, `lifecycle`, and
+`item` streams into durable `run_actions` rows and publishes SSE `action`
+events. The timeline shows real tool names/arguments, commands, file paths,
+outputs, approval waits, fallbacks, and terminal end/error/abort states. No
+progress row is synthesized; if the Gateway does not report an action, it does
+not appear. Terminal lifecycle frames also mark an in-flight turn failed or
+stopped immediately, so the UI cannot keep showing a dead run as active.
+
+## D-031 — Session labels are the durable fallback for session names
+Date: 2026-10-30
+OpenClaw background title generation can clear a session `displayName` when the
+utility model is unavailable, leaving a real session unnamed. A session `label`
+is durable and is projected as the display name, and `sessions.patch` accepts a
+label. Julie therefore claims a unique label at session creation, retries with a
+short suffix only on a label collision, and falls back to `label` when reading
+sessions. This is an owner-assigned session title, not a duplicate of agent
+identity.
+
+## D-032 — One owner per fact; channel front door deferred
+Date: 2026-10-30
+`docs/ARCHITECTURE_AUDIT_2026-10-30.md` establishes the target ownership split:
+OpenClaw owns agents, identity, models, tools, skills, sessions, transcripts,
+and channels; Julie owns org metadata, tasks, rooms, queue, plans, and audit.
+Julie will not merge databases or write OpenClaw configuration. Removing the
+duplicated `agent_profiles.workspace_id`, reconciling transcripts, moving
+deployment identity to configuration, hardening permissions, and deciding the
+Telegram front door are accepted as later phases. The owner explicitly chose to
+finish E6 first and decide channel routing after a Phase 0 installability and
+security pass.

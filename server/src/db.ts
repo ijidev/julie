@@ -45,8 +45,33 @@ CREATE TABLE IF NOT EXISTS messages (
   conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
   role TEXT NOT NULL CHECK (role IN ('user','assistant','system')),
   text TEXT NOT NULL,
+  delivery_state TEXT NOT NULL DEFAULT 'complete',
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
+CREATE TABLE IF NOT EXISTS workspace_plans (
+  token TEXT PRIMARY KEY,
+  workspace_name TEXT NOT NULL,
+  purpose TEXT NOT NULL,
+  team_mode TEXT NOT NULL CHECK (team_mode IN ('shared','dedicated')),
+  status TEXT NOT NULL DEFAULT 'planned' CHECK (status IN ('planned','applied')),
+  julie_session_id TEXT NOT NULL,
+  plan_json TEXT NOT NULL,
+  catalog_json TEXT NOT NULL,
+  result_json TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  applied_at TEXT
+);
+CREATE TABLE IF NOT EXISTS conversation_turn_queue (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  message_id INTEGER NOT NULL UNIQUE REFERENCES messages(id) ON DELETE CASCADE,
+  prompt TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','dispatching','cancelled')),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS conversation_turn_queue_next_idx
+  ON conversation_turn_queue(conversation_id, status, id);
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -66,6 +91,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 );
 CREATE TABLE IF NOT EXISTS agent_profiles (
   agent_id TEXT PRIMARY KEY,
+  human_name TEXT NOT NULL DEFAULT '',
   role TEXT NOT NULL DEFAULT '',
   personality TEXT NOT NULL DEFAULT '',
   schedule_mode TEXT NOT NULL DEFAULT 'manual'
@@ -103,6 +129,8 @@ CREATE TABLE IF NOT EXISTS agent_rooms (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
   task_id INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
+  kind TEXT NOT NULL DEFAULT 'task',
+  department TEXT NOT NULL DEFAULT '',
   title TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','archived')),
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
@@ -114,6 +142,7 @@ CREATE TABLE IF NOT EXISTS agent_room_members (
   room_id INTEGER NOT NULL REFERENCES agent_rooms(id) ON DELETE CASCADE,
   agent_id TEXT NOT NULL,
   gateway_session_key TEXT NOT NULL,
+  gateway_session_id TEXT NOT NULL DEFAULT '',
   sort_order INTEGER NOT NULL DEFAULT 0,
   last_dispatched_message_id INTEGER,
   joined_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
@@ -191,9 +220,25 @@ function migrateTasks(): void {
 }
 migrateTasks();
 
+function migrateMessages(): void {
+  const cols = (db.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>).map((column) => column.name);
+  if (!cols.includes("delivery_state")) db.exec("ALTER TABLE messages ADD COLUMN delivery_state TEXT NOT NULL DEFAULT 'complete'");
+}
+migrateMessages();
+
+function migrateAgentRooms(): void {
+  const roomCols = (db.prepare("PRAGMA table_info(agent_rooms)").all() as Array<{ name: string }>).map((column) => column.name);
+  if (!roomCols.includes("kind")) db.exec("ALTER TABLE agent_rooms ADD COLUMN kind TEXT NOT NULL DEFAULT 'task'");
+  if (!roomCols.includes("department")) db.exec("ALTER TABLE agent_rooms ADD COLUMN department TEXT NOT NULL DEFAULT ''");
+  const memberCols = (db.prepare("PRAGMA table_info(agent_room_members)").all() as Array<{ name: string }>).map((column) => column.name);
+  if (!memberCols.includes("gateway_session_id")) db.exec("ALTER TABLE agent_room_members ADD COLUMN gateway_session_id TEXT NOT NULL DEFAULT ''");
+}
+migrateAgentRooms();
+
 function migrateAgentProfiles(): void {
   const cols = (db.prepare("PRAGMA table_info(agent_profiles)").all() as Array<{ name: string }>).map((column) => column.name);
   const has = (name: string) => cols.includes(name);
+  if (!has("human_name")) db.exec("ALTER TABLE agent_profiles ADD COLUMN human_name TEXT NOT NULL DEFAULT ''");
   if (!has("department")) db.exec("ALTER TABLE agent_profiles ADD COLUMN department TEXT NOT NULL DEFAULT ''");
   if (!has("reports_to")) db.exec("ALTER TABLE agent_profiles ADD COLUMN reports_to TEXT NOT NULL DEFAULT ''");
   if (!has("org_level")) db.exec("ALTER TABLE agent_profiles ADD COLUMN org_level TEXT NOT NULL DEFAULT ''");

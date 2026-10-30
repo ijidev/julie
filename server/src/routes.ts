@@ -8,13 +8,20 @@ import { getWeather } from "./weather.js";
 import { getTrending } from "./trending.js";
 import { getAgentOverview, invalidateAgentOverview } from "./agent-overview.js";
 import { AgentNotFoundError, getAgentDetail, invalidateAgentDetail } from "./agent-detail.js";
-import { AgentChatTargetError, getAgentSessionHistory, sendAgentMessage } from "./agent-chat.js";
+import { AgentChatTargetError, getAgentSessionHistory, resolveAgentSession } from "./agent-chat.js";
+import { cancelAgentTurn, listAgentTurns, startAgentTurn, subscribeAgentTurns } from "./agent-chat-live.js";
+import { listRunActions, subscribeRunActions } from "./agent-actions.js";
+import { AgentSessionControlError, abortAgentSession, deleteAgentSession, renameAgentSession, setAgentSessionArchived } from "./agent-session-control.js";
 import { AgentOnboardingInputError, createOnboardedAgent, getAgentOnboardingOptions } from "./agent-onboarding.js";
+import { applyWorkspacePlan, getWorkspacePlan, planWorkspace, WorkspacePlanError } from "./workspace-plan.js";
 import { AgentUpdateInputError, updateManagedAgent } from "./agent-update.js";
 import { AgentAssignmentInputError, getWorkspaceAgentAssignments, replaceWorkspaceAgentAssignments } from "./agent-assignments.js";
 import { isAgentAssignedToWorkspace } from "./agent-profiles.js";
-import { AgentOrganizationError, configureAgentOrganization, getAgentOrganization } from "./agent-organization.js";
-import { AgentRoomError, createAgentRoom, getAgentRoom, getAgentRoomActiveRun, hasAgentRoom, listAgentRooms, setAgentRoomArchived, startAgentRoomTurn, subscribeAgentRoom } from "./agent-rooms.js";
+import { AgentOrganizationError, configureAgentHumanNames, configureAgentOrganization, getAgentOrganization } from "./agent-organization.js";
+import { AgentRoomError, createAgentRoom, ensureDepartmentTeamRooms, getAgentRoom, getAgentRoomActiveRun, hasAgentRoom, listAgentRooms, replaceAgentRoomMembers, setAgentRoomArchived, startAgentRoomTurn, subscribeAgentRoom } from "./agent-rooms.js";
+import { engineeringTaskPolicy } from "./engineering-policy.js";
+import { agentDirectoryContext, composeAgentPrompt, delegationDirective, loadAgentDirectory, resolveAgentMentions } from "./agent-directory.js";
+import { julieOperationsContext } from "./julie-operations.js";
 import { AgentAvatarError, addAgentAvatarModelUrl, applyAgentAvatar, applyAgentAvatarUrl, buildAgentFallbackSvg, generateAgentAvatar, getAgentAvatarStudio, importAgentAvatarImage, importAgentAvatarModel, previewAgentAvatar, readAgentAvatarAsset, readAgentAvatarModel } from "./agent-avatar.js";
 import { loginHandler, logoutHandler, requireAuth, parseCookies, SESSION_COOKIE, safeEqual } from "./auth.js";
 import { config } from "./config.js";
@@ -68,6 +75,7 @@ function recordPromptUsage(raw: string): void {
 // sanitized local projection: Gateway session keys and run IDs stay server-side.
 type ActiveConversationRun = {
   conversationId: number;
+  userMessageId: number;
   sessionKey: string;
   runId: string;
   prompt: string;
@@ -120,6 +128,9 @@ function finishConversationRun(run: ActiveConversationRun, text: string): void {
   run.state = "finalizing";
   publishConversationEvent(run.conversationId, { type: "run", state: "finalizing" });
   try {
+    db.prepare("UPDATE messages SET delivery_state = 'complete' WHERE id = ?").run(run.userMessageId);
+    const completedUserMessage = db.prepare("SELECT id, role, text, delivery_state, created_at FROM messages WHERE id = ?").get(run.userMessageId);
+    publishConversationEvent(run.conversationId, { type: "message", message: completedUserMessage });
     const info = db.prepare("INSERT INTO messages (conversation_id, role, text) VALUES (?, 'assistant', ?)").run(run.conversationId, reply);
     db.prepare("UPDATE conversations SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?").run(run.conversationId);
     const message = db.prepare("SELECT id, role, text, created_at FROM messages WHERE id = ?").get(info.lastInsertRowid);
@@ -133,6 +144,7 @@ function finishConversationRun(run: ActiveConversationRun, text: string): void {
     });
   } finally {
     if (activeConversationRuns.get(run.conversationId) === run) activeConversationRuns.delete(run.conversationId);
+    queueMicrotask(() => { void dispatchNextConversationTurn(run.conversationId); });
   }
 }
 
@@ -140,12 +152,16 @@ function failConversationRun(run: ActiveConversationRun, error: unknown, state: 
   if (run.finished || run.finalizing) return;
   run.finished = true;
   const detail = error instanceof Error ? error.message : typeof error === "string" ? error : "chat run failed";
+  db.prepare("UPDATE messages SET delivery_state = ? WHERE id = ?").run(state === "aborted" ? "cancelled" : "failed", run.userMessageId);
+  const failedUserMessage = db.prepare("SELECT id, role, text, delivery_state, created_at FROM messages WHERE id = ?").get(run.userMessageId);
+  publishConversationEvent(run.conversationId, { type: "message", message: failedUserMessage });
   publishConversationEvent(run.conversationId, {
     type: "run",
     state,
     error: detail.slice(0, 500),
   });
   if (activeConversationRuns.get(run.conversationId) === run) activeConversationRuns.delete(run.conversationId);
+  queueMicrotask(() => { void dispatchNextConversationTurn(run.conversationId); });
 }
 
 gateway.subscribeChat((event) => {
@@ -370,6 +386,21 @@ api.put("/agents/organization", async (req, res) => {
   }
 });
 
+api.put("/agents/names", async (req, res) => {
+  const workspaceId = Number(req.body?.workspaceId ?? getSetting("active_workspace_id") ?? 0);
+  try {
+    const result = await configureAgentHumanNames(workspaceId, req.body?.names, req.body?.confirmed === true);
+    res.setHeader("Cache-Control", "no-store");
+    res.json(result);
+  } catch (error: any) {
+    if (error instanceof AgentOrganizationError) {
+      res.status(error.status).json({ ok: false, error: error.message, source: "gateway+local" });
+      return;
+    }
+    res.status(503).json({ ok: false, error: error?.message ?? "agent name update failed", source: "gateway+local" });
+  }
+});
+
 // ---- agent rooms: task-linked, persistent local transcript + real Gateway turns ----
 api.get("/agent-rooms", async (req, res) => {
   const workspaceId = Number(req.query.workspaceId ?? getSetting("active_workspace_id") ?? 0);
@@ -403,6 +434,18 @@ api.post("/agent-rooms", async (req, res) => {
       return;
     }
     res.status(503).json({ ok: false, error: error?.message ?? "room creation failed", source: "local+gateway" });
+  }
+});
+
+api.post("/agent-rooms/department-rooms", async (req, res) => {
+  const workspaceId = Number(req.body?.workspaceId ?? getSetting("active_workspace_id") ?? 0);
+  try {
+    const result = await ensureDepartmentTeamRooms(workspaceId, req.body?.confirmed === true);
+    res.setHeader("Cache-Control", "no-store");
+    res.status(201).json(result);
+  } catch (error: any) {
+    if (error instanceof AgentRoomError) { res.status(error.status).json({ ok: false, error: error.message, source: "local+gateway" }); return; }
+    res.status(503).json({ ok: false, error: error?.message ?? "department room setup failed", source: "local+gateway" });
   }
 });
 
@@ -446,6 +489,19 @@ api.patch("/agent-rooms/:id", async (req, res) => {
   } catch (error: any) {
     if (error instanceof AgentRoomError) { res.status(error.status).json({ ok: false, error: error.message, source: "local+gateway" }); return; }
     res.status(503).json({ ok: false, error: error?.message ?? "room update failed", source: "local+gateway" });
+  }
+});
+
+api.put("/agent-rooms/:id/members", async (req, res) => {
+  const roomId = Number(req.params.id);
+  if (!Number.isInteger(roomId) || roomId <= 0) { res.status(400).json({ ok: false, error: "valid room id required" }); return; }
+  try {
+    const result = await replaceAgentRoomMembers(roomId, req.body?.agentIds, req.body?.confirmed === true);
+    res.setHeader("Cache-Control", "no-store");
+    res.json(result);
+  } catch (error: any) {
+    if (error instanceof AgentRoomError) { res.status(error.status).json({ ok: false, error: error.message, source: "local+gateway" }); return; }
+    res.status(503).json({ ok: false, error: error?.message ?? "room membership update failed", source: "local+gateway" });
   }
 });
 
@@ -777,21 +833,93 @@ api.get("/agents/:id/sessions/:sessionId/history", async (req, res) => {
   }
 });
 
+api.patch("/agents/:id/sessions/:sessionId", async (req, res) => {
+  const agentId = typeof req.params.id === "string" ? req.params.id.trim() : "";
+  const sessionId = typeof req.params.sessionId === "string" ? req.params.sessionId.trim() : "";
+  if (!agentId || !sessionId || agentId.length > 200 || sessionId.length > 200) {
+    res.status(400).json({ ok: false, error: "valid agent and session ids required", source: "gateway" });
+    return;
+  }
+  if (!requireActiveWorkspaceAgent(agentId, res)) return;
+  try {
+    const result = Object.prototype.hasOwnProperty.call(req.body ?? {}, "title")
+      ? await renameAgentSession(agentId, sessionId, req.body.title)
+      : typeof req.body?.archived === "boolean"
+        ? await setAgentSessionArchived(agentId, sessionId, req.body.archived)
+        : (() => { throw new AgentSessionControlError("title or archived state required"); })();
+    res.setHeader("Cache-Control", "no-store");
+    res.json(result);
+  } catch (error: any) {
+    if (error instanceof AgentChatTargetError || error instanceof AgentSessionControlError) {
+      res.status(error.status).json({ ok: false, error: error.message, source: "gateway" });
+      return;
+    }
+    res.status(502).json({ ok: false, error: error?.message ?? "session update failed", source: "gateway" });
+  }
+});
+
+api.post("/agents/:id/sessions/:sessionId/abort", async (req, res) => {
+  const agentId = typeof req.params.id === "string" ? req.params.id.trim() : "";
+  const sessionId = typeof req.params.sessionId === "string" ? req.params.sessionId.trim() : "";
+  if (!agentId || !sessionId || agentId.length > 200 || sessionId.length > 200) {
+    res.status(400).json({ ok: false, error: "valid agent and session ids required", source: "gateway" });
+    return;
+  }
+  if (!requireActiveWorkspaceAgent(agentId, res)) return;
+  try {
+    const result = await abortAgentSession(agentId, sessionId);
+    res.setHeader("Cache-Control", "no-store");
+    res.status(202).json(result);
+  } catch (error: any) {
+    if (error instanceof AgentChatTargetError || error instanceof AgentSessionControlError) {
+      res.status(error.status).json({ ok: false, error: error.message, source: "gateway" });
+      return;
+    }
+    res.status(502).json({ ok: false, error: error?.message ?? "session abort failed", source: "gateway" });
+  }
+});
+
+api.delete("/agents/:id/sessions/:sessionId", async (req, res) => {
+  const agentId = typeof req.params.id === "string" ? req.params.id.trim() : "";
+  const sessionId = typeof req.params.sessionId === "string" ? req.params.sessionId.trim() : "";
+  if (!agentId || !sessionId || agentId.length > 200 || sessionId.length > 200) {
+    res.status(400).json({ ok: false, error: "valid agent and session ids required", source: "gateway" });
+    return;
+  }
+  if (!requireActiveWorkspaceAgent(agentId, res)) return;
+  try {
+    const result = await deleteAgentSession(agentId, sessionId, req.body?.confirmed === true);
+    res.setHeader("Cache-Control", "no-store");
+    res.json(result);
+  } catch (error: any) {
+    if (error instanceof AgentChatTargetError || error instanceof AgentSessionControlError) {
+      res.status(error.status).json({ ok: false, error: error.message, source: "gateway" });
+      return;
+    }
+    res.status(502).json({ ok: false, error: error?.message ?? "session deletion failed", source: "gateway" });
+  }
+});
+
 api.post("/agents/:id/chat", async (req, res) => {
   const agentId = typeof req.params.id === "string" ? req.params.id.trim() : "";
   const sessionId = req.body?.sessionId == null ? null : (typeof req.body.sessionId === "string" ? req.body.sessionId.trim() : "");
   const message = typeof req.body?.text === "string" ? req.body.text : "";
+  const title = req.body?.title;
   if (!agentId || agentId.length > 200 || sessionId === "" || (sessionId && sessionId.length > 200)) {
     res.status(400).json({ ok: false, error: "valid agent and optional session ids required", source: "gateway" });
     return;
   }
   if (!requireActiveWorkspaceAgent(agentId, res)) return;
+  if (!message.trim()) {
+    res.status(400).json({ ok: false, error: "message required", source: "gateway" });
+    return;
+  }
   try {
-    const result = await sendAgentMessage(agentId, sessionId, message);
+    const result = await startAgentTurn(agentId, sessionId, message, title);
     invalidateAgentDetail(agentId);
     invalidateAgentOverview();
     res.setHeader("Cache-Control", "no-store");
-    res.json(result);
+    res.status(202).json(result);
   } catch (e: any) {
     if (e instanceof AgentChatTargetError) {
       res.status(e.status).json({ ok: false, error: e.message, source: "gateway" });
@@ -799,6 +927,64 @@ api.post("/agents/:id/chat", async (req, res) => {
     }
     res.status(502).json({ ok: false, error: e.message, source: "gateway" });
   }
+});
+
+api.get("/agents/:id/sessions/:sessionId/turns", async (req, res) => {
+  const agentId = typeof req.params.id === "string" ? req.params.id.trim() : "";
+  const sessionId = typeof req.params.sessionId === "string" ? req.params.sessionId.trim() : "";
+  if (!agentId || !sessionId || !requireActiveWorkspaceAgent(agentId, res)) return;
+  try {
+    await resolveAgentSession(agentId, sessionId, true);
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ ok: true, source: "gateway", agentId, sessionId, turns: listAgentTurns(sessionId) });
+  } catch (error: any) {
+    const status = error instanceof AgentChatTargetError ? error.status : 502;
+    res.status(status).json({ ok: false, error: error?.message ?? "turn list unavailable", source: "gateway" });
+  }
+});
+
+api.delete("/agents/:id/sessions/:sessionId/turns/:turnId", async (req, res) => {
+  const agentId = typeof req.params.id === "string" ? req.params.id.trim() : "";
+  const sessionId = typeof req.params.sessionId === "string" ? req.params.sessionId.trim() : "";
+  const turnId = typeof req.params.turnId === "string" ? req.params.turnId.trim() : "";
+  if (!agentId || !sessionId || !turnId || !requireActiveWorkspaceAgent(agentId, res)) return;
+  try {
+    await resolveAgentSession(agentId, sessionId, true);
+    const result = await cancelAgentTurn(agentId, sessionId, turnId);
+    res.setHeader("Cache-Control", "no-store");
+    res.status(202).json(result);
+  } catch (error: any) {
+    const status = error instanceof AgentChatTargetError ? error.status : /not found/i.test(error?.message ?? "") ? 404 : 502;
+    res.status(status).json({ ok: false, error: error?.message ?? "turn cancellation failed", source: "gateway" });
+  }
+});
+
+api.get("/agents/:id/sessions/:sessionId/events", async (req, res) => {
+  const agentId = typeof req.params.id === "string" ? req.params.id.trim() : "";
+  const sessionId = typeof req.params.sessionId === "string" ? req.params.sessionId.trim() : "";
+  if (!agentId || !sessionId || !requireActiveWorkspaceAgent(agentId, res)) return;
+  let sessionKey = "";
+  try {
+    const target = await resolveAgentSession(agentId, sessionId, true);
+    sessionKey = target.key;
+  } catch (error: any) {
+    const status = error instanceof AgentChatTargetError ? error.status : 502;
+    res.status(status).json({ ok: false, error: error?.message ?? "session unavailable", source: "gateway" });
+    return;
+  }
+  res.status(200);
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders();
+  res.write("retry: 3000\n\n");
+  const send = (event: Record<string, unknown>) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+  send({ type: "hello", agentId, sessionId, turns: listAgentTurns(sessionId), actions: listRunActions(sessionKey) });
+  const unsubscribe = subscribeAgentTurns(sessionId, send);
+  const unsubscribeActions = subscribeRunActions(sessionKey, (action) => send({ type: "action", action }));
+  const heartbeat = setInterval(() => res.write(": keepalive\n\n"), 15_000);
+  req.on("close", () => { clearInterval(heartbeat); unsubscribe(); unsubscribeActions(); });
 });
 
 // ---- tools (real gateway data; honest error states) ----
@@ -976,6 +1162,44 @@ api.get("/insights", (_req, res) => {
 });
 
 // ---- workspaces ----
+api.post("/workspaces/plan", async (req, res) => {
+  try {
+    const result = await planWorkspace(req.body);
+    res.setHeader("Cache-Control", "no-store");
+    res.status(201).json(result);
+  } catch (error: any) {
+    if (error instanceof WorkspacePlanError) {
+      res.status(error.status).json({ ok: false, error: error.message, source: "gateway+local", ...(error.details ?? {}) });
+      return;
+    }
+    res.status(502).json({ ok: false, error: error?.message ?? "workspace planning failed", source: "gateway+local" });
+  }
+});
+
+api.get("/workspaces/plans/:token", async (req, res) => {
+  try {
+    res.setHeader("Cache-Control", "no-store");
+    res.json(await getWorkspacePlan(String(req.params.token)));
+  } catch (error: any) {
+    const status = error instanceof WorkspacePlanError ? error.status : 500;
+    res.status(status).json({ ok: false, error: error?.message ?? "workspace plan unavailable" });
+  }
+});
+
+api.post("/workspaces/plans/:token/apply", async (req, res) => {
+  try {
+    const result = await applyWorkspacePlan(String(req.params.token), req.body?.confirmed === true);
+    res.setHeader("Cache-Control", "no-store");
+    res.status(201).json(result);
+  } catch (error: any) {
+    if (error instanceof WorkspacePlanError) {
+      res.status(error.status).json({ ok: false, error: error.message, source: "gateway+local" });
+      return;
+    }
+    res.status(503).json({ ok: false, error: error?.message ?? "workspace plan apply failed", source: "gateway+local" });
+  }
+});
+
 api.get("/workspaces", (_req, res) => {
   const rows = db.prepare("SELECT * FROM workspaces ORDER BY id").all();
   const activeId = getSetting("active_workspace_id");
@@ -1250,6 +1474,7 @@ type ConversationRow = {
   id: number;
   workspace_id: number;
   title: string;
+  agentIds: string[];
   gateway_session_key: string;
 };
 
@@ -1262,15 +1487,80 @@ type ConversationTurnInput = {
   conversation: ConversationRow;
   prompt: string;
   storedText: string;
+  existingMessageId?: number;
   usageText?: string;
   attachments?: GatewayChatAttachment[];
   responseExtra?: Record<string, unknown>;
 };
 
-async function beginConversationTurn(input: ConversationTurnInput, res: Response): Promise<void> {
+function insertConversationSystemMessage(conversationId: number, text: string): void {
+  const info = db.prepare("INSERT INTO messages (conversation_id, role, text) VALUES (?, 'system', ?)").run(conversationId, text.slice(0, 20_000));
+  const message = db.prepare("SELECT id, role, text, delivery_state, created_at FROM messages WHERE id = ?").get(info.lastInsertRowid);
+  publishConversationEvent(conversationId, { type: "message", message });
+}
+
+// Owner @mentions in Julie's own conversation are dispatched by the runtime to
+// the named agent's durable, named session. Julie then reports the delegation
+// instead of silently doing the work herself.
+async function delegateConversationMentions(conversation: ConversationRow, text: string): Promise<string> {
+  if (!conversation.gateway_session_key.startsWith("agent:main:")) return "";
+  const entries = await loadAgentDirectory();
+  const { matched, unknown } = resolveAgentMentions(text, entries);
+  if (matched.length === 0) return unknown.length > 0 ? delegationDirective({ ownerMessage: text, matched, unknown, dispatched: [] }) : "";
+  const dispatched: Array<{ entry: (typeof matched)[number]; sessionId: string }> = [];
+  const failures: string[] = [];
+  for (const entry of matched) {
+    try {
+      const child = await startAgentTurn(
+        entry.agentId,
+        null,
+        text,
+        `Delegated by Julie · ${text.split(/\r?\n/, 1)[0].slice(0, 80)}`,
+        [],
+        {
+          skipDelegation: true,
+          onComplete: (outcome) => {
+            const label = `**${entry.humanName}** (${entry.agentId})`;
+            const body = outcome.state === "complete"
+              ? `${label} finished the delegated work:\n\n${outcome.reply || "(empty reply)"}`
+              : `${label} did not complete the delegated work — **${outcome.state}**${outcome.error ? `: ${outcome.error}` : ""}`;
+            insertConversationSystemMessage(conversation.id, body);
+          },
+        },
+      );
+      dispatched.push({ entry, sessionId: child.session.sessionId ?? "session id unavailable" });
+    } catch (error) {
+      failures.push(`${entry.humanName} (${entry.agentId}): ${error instanceof Error ? error.message : "dispatch failed"}`);
+    }
+  }
+  const directive = delegationDirective({ ownerMessage: text, matched, unknown, dispatched });
+  const summary = dispatched.length > 0
+    ? `Delegated to ${dispatched.map((row) => `${row.entry.humanName} (${row.entry.agentId}) · session ${row.sessionId}`).join(", ")}.`
+    : "No delegated turn could be started.";
+  insertConversationSystemMessage(conversation.id, [summary, ...failures.map((row) => `Dispatch failed — ${row}`)].join("\n\n"));
+  if (dispatched.length > 0) {
+    db.prepare("INSERT INTO settings (key, value) VALUES ('last_delegation', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+      .run(JSON.stringify({ at: new Date().toISOString(), from: "main", conversationId: conversation.id, dispatched: dispatched.map((row) => ({ agentId: row.entry.agentId, humanName: row.entry.humanName, sessionId: row.sessionId })) }));
+  }
+  return failures.length > 0
+    ? `${directive}\nDelegation failures you must report honestly: ${failures.join("; ")}.`
+    : directive;
+}
+
+async function buildConversationPrompt(conversation: ConversationRow, text: string): Promise<string> {
+  try {
+    const directory = await agentDirectoryContext();
+    const directive = await delegateConversationMentions(conversation, text);
+    return composeAgentPrompt([julieOperationsContext(), directory, directive], text);
+  } catch {
+    return text;
+  }
+}
+
+async function beginConversationTurn(input: ConversationTurnInput, res?: Response): Promise<void> {
   const { conversation } = input;
   if (activeConversationRuns.has(conversation.id)) {
-    res.status(409).json({ ok: false, error: "this conversation already has an active run" });
+    res?.status(409).json({ ok: false, error: "this conversation already has an active run" });
     return;
   }
 
@@ -1278,6 +1568,7 @@ async function beginConversationTurn(input: ConversationTurnInput, res: Response
   const startedAt = Date.now();
   const run: ActiveConversationRun = {
     conversationId: conversation.id,
+    userMessageId: 0,
     sessionKey: conversation.gateway_session_key,
     runId: requestRunId,
     prompt: input.prompt,
@@ -1288,9 +1579,12 @@ async function beginConversationTurn(input: ConversationTurnInput, res: Response
     finished: false,
   };
 
-  const info = db.prepare("INSERT INTO messages (conversation_id, role, text) VALUES (?, 'user', ?)").run(conversation.id, input.storedText);
+  const info = input.existingMessageId
+    ? (db.prepare("UPDATE messages SET delivery_state = 'sending' WHERE id = ? AND conversation_id = ?").run(input.existingMessageId, conversation.id), { lastInsertRowid: input.existingMessageId })
+    : db.prepare("INSERT INTO messages (conversation_id, role, text, delivery_state) VALUES (?, 'user', ?, 'sending')").run(conversation.id, input.storedText);
   db.prepare("UPDATE conversations SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?").run(conversation.id);
-  const userMessage = db.prepare("SELECT id, role, text, created_at FROM messages WHERE id = ?").get(info.lastInsertRowid);
+  const userMessage = db.prepare("SELECT id, role, text, delivery_state, created_at FROM messages WHERE id = ?").get(info.lastInsertRowid) as { id: number };
+  run.userMessageId = userMessage.id;
   if (input.usageText?.trim()) recordPromptUsage(input.usageText);
 
   activeConversationRuns.set(conversation.id, run);
@@ -1298,15 +1592,29 @@ async function beginConversationTurn(input: ConversationTurnInput, res: Response
   publishConversationEvent(conversation.id, { type: "run", state: "sending", startedAt });
 
   try {
+    // Compose the runtime prompt from the live agent directory and resolve any
+    // owner @mentions first. Delegated turns start before Julie's own turn, so
+    // the named agent owns the work and Julie reports that delegation rather
+    // than silently doing it herself.
+    let prompt = input.prompt;
+    try {
+      prompt = await buildConversationPrompt(conversation, input.prompt);
+      run.prompt = prompt;
+    } catch {
+      prompt = input.prompt;
+    }
     const accepted = await gateway.startChat(
       conversation.gateway_session_key,
-      input.prompt,
+      prompt,
       input.attachments ?? [],
       requestRunId
     );
     run.runId = accepted.runId;
     run.startedAt = accepted.startedAt;
     run.state = "accepted";
+    db.prepare("UPDATE messages SET delivery_state = 'accepted' WHERE id = ?").run(run.userMessageId);
+    const acceptedMessage = db.prepare("SELECT id, role, text, delivery_state, created_at FROM messages WHERE id = ?").get(run.userMessageId);
+    publishConversationEvent(conversation.id, { type: "message", message: acceptedMessage });
     publishConversationEvent(conversation.id, {
       type: "run",
       state: "accepted",
@@ -1321,30 +1629,58 @@ async function beginConversationTurn(input: ConversationTurnInput, res: Response
       conversation.gateway_session_key,
       accepted.runId,
       CHAT_REPLY_MONITOR_TIMEOUT_MS,
-      input.prompt,
+      prompt,
       accepted.startedAt
     ).then((reply) => finishConversationRun(run, reply.text))
       .catch((error) => failConversationRun(run, error));
 
-    res.setHeader("Cache-Control", "no-store");
-    res.status(202).json({
-      ok: true,
-      status: "accepted",
-      gatewayStatus: accepted.status,
-      userMessage,
-      ...(input.responseExtra ?? {}),
-    });
+    if (res) {
+      res.setHeader("Cache-Control", "no-store");
+      res.status(202).json({
+        ok: true,
+        status: "accepted",
+        gatewayStatus: accepted.status,
+        userMessage: acceptedMessage,
+        ...(input.responseExtra ?? {}),
+      });
+    }
   } catch (error: any) {
-    // The Gateway never acknowledged this turn: roll back the stored user
-    // message so a retry cannot look like a duplicate send.
-    const storedId = (userMessage as { id: number }).id;
-    try { db.prepare("DELETE FROM messages WHERE id = ?").run(storedId); } catch { /* already gone */ }
-    publishConversationEvent(conversation.id, { type: "message-removed", id: storedId });
+    db.prepare("UPDATE messages SET delivery_state = 'failed' WHERE id = ?").run(run.userMessageId);
+    const failedMessage = db.prepare("SELECT id, role, text, delivery_state, created_at FROM messages WHERE id = ?").get(run.userMessageId);
+    publishConversationEvent(conversation.id, { type: "message", message: failedMessage });
     failConversationRun(run, error);
-    res.status(502).json({
+    res?.status(502).json({
       ok: false,
       error: `gateway did not acknowledge chat send: ${typeof error?.message === "string" ? error.message : "unknown error"}`,
     });
+  }
+}
+
+async function dispatchNextConversationTurn(conversationId: number): Promise<void> {
+  if (activeConversationRuns.has(conversationId)) return;
+  const queued = db.prepare(`
+    SELECT q.id, q.message_id, q.prompt, m.text
+    FROM conversation_turn_queue q
+    JOIN messages m ON m.id = q.message_id
+    WHERE q.conversation_id = ? AND q.status = 'queued'
+    ORDER BY q.id
+    LIMIT 1
+  `).get(conversationId) as { id: number; message_id: number; prompt: string; text: string } | undefined;
+  if (!queued) return;
+  const claimed = db.prepare("UPDATE conversation_turn_queue SET status = 'dispatching', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ? AND status = 'queued'")
+    .run(queued.id);
+  if (claimed.changes === 0) return;
+  const conversation = db.prepare("SELECT * FROM conversations WHERE id = ?").get(conversationId) as ConversationRow | undefined;
+  if (!conversation) return;
+  try {
+    await beginConversationTurn({
+      conversation,
+      prompt: queued.prompt,
+      storedText: queued.text,
+      existingMessageId: queued.message_id,
+    });
+  } finally {
+    db.prepare("DELETE FROM conversation_turn_queue WHERE id = ?").run(queued.id);
   }
 }
 
@@ -1371,7 +1707,7 @@ api.post("/conversations", (req, res) => {
 api.get("/conversations/:id/messages", (req, res) => {
   const conv = db.prepare("SELECT * FROM conversations WHERE id = ?").get(req.params.id) as any;
   if (!conv) { res.status(404).json({ ok: false, error: "conversation not found" }); return; }
-  const rows = db.prepare("SELECT id, role, text, created_at FROM messages WHERE conversation_id = ? ORDER BY id").all(conv.id);
+  const rows = db.prepare("SELECT id, role, text, delivery_state, created_at FROM messages WHERE conversation_id = ? ORDER BY id").all(conv.id);
   res.json({
     ok: true,
     messages: rows,
@@ -1384,7 +1720,65 @@ api.post("/conversations/:id/messages", async (req, res) => {
   if (!conv) { res.status(404).json({ ok: false, error: "conversation not found" }); return; }
   const text = typeof req.body?.text === "string" ? req.body.text.trim().slice(0, 20000) : "";
   if (!text) { res.status(400).json({ ok: false, error: "text required" }); return; }
+  if (activeConversationRuns.has(conv.id)) {
+    const queuedMessage = db.transaction(() => {
+      const info = db.prepare("INSERT INTO messages (conversation_id, role, text, delivery_state) VALUES (?, 'user', ?, 'queued')").run(conv.id, text);
+      const messageId = Number(info.lastInsertRowid);
+      db.prepare("INSERT INTO conversation_turn_queue (conversation_id, message_id, prompt) VALUES (?, ?, ?)").run(conv.id, messageId, text);
+      db.prepare("UPDATE conversations SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?").run(conv.id);
+      return db.prepare("SELECT id, role, text, delivery_state, created_at FROM messages WHERE id = ?").get(messageId);
+    })();
+    recordPromptUsage(text);
+    publishConversationEvent(conv.id, { type: "message", message: queuedMessage });
+    res.setHeader("Cache-Control", "no-store");
+    res.status(202).json({ ok: true, status: "queued", userMessage: queuedMessage });
+    return;
+  }
   await beginConversationTurn({ conversation: conv, prompt: text, storedText: text, usageText: text }, res);
+});
+
+api.post("/conversations/:id/abort", async (req, res) => {
+  const conversationId = Number(req.params.id);
+  const conversation = db.prepare("SELECT * FROM conversations WHERE id = ?").get(conversationId) as ConversationRow | undefined;
+  if (!conversation) { res.status(404).json({ ok: false, error: "conversation not found" }); return; }
+  const run = activeConversationRuns.get(conversationId);
+  if (!run) { res.status(409).json({ ok: false, error: "conversation has no active run" }); return; }
+  try {
+    await gateway.abortSession({ key: conversation.gateway_session_key });
+    res.status(202).json({ ok: true, status: "abort_requested" });
+  } catch (error: any) {
+    res.status(502).json({ ok: false, error: error?.message ?? "could not stop conversation" });
+  }
+});
+
+api.delete("/conversations/:id/messages/:messageId", (req, res) => {
+  const conversationId = Number(req.params.id);
+  const messageId = Number(req.params.messageId);
+  const message = db.prepare("SELECT * FROM messages WHERE id = ? AND conversation_id = ?").get(messageId, conversationId) as any;
+  if (!message) { res.status(404).json({ ok: false, error: "message not found" }); return; }
+  if (message.role !== "user") { res.status(409).json({ ok: false, error: "only owner messages can be removed" }); return; }
+  const queued = db.prepare("SELECT id, status FROM conversation_turn_queue WHERE message_id = ?").get(messageId) as { id: number; status: string } | undefined;
+  if (queued?.status === "queued") {
+    db.transaction(() => {
+      db.prepare("UPDATE conversation_turn_queue SET status = 'cancelled', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?").run(queued.id);
+      db.prepare("UPDATE messages SET delivery_state = 'cancelled' WHERE id = ?").run(messageId);
+    })();
+    const updated = db.prepare("SELECT id, role, text, delivery_state, created_at FROM messages WHERE id = ?").get(messageId);
+    publishConversationEvent(conversationId, { type: "message", message: updated });
+    res.json({ ok: true, status: "recalled_before_dispatch", message: updated });
+    return;
+  }
+  if (queued?.status === "dispatching" || activeConversationRuns.get(conversationId)?.userMessageId === messageId) {
+    res.status(409).json({ ok: false, error: "stop the active turn before removing this message" });
+    return;
+  }
+  if (req.body?.localOnlyConfirmed !== true) {
+    res.status(400).json({ ok: false, error: "local-only removal confirmation required; Gateway/model context cannot be recalled" });
+    return;
+  }
+  db.prepare("DELETE FROM messages WHERE id = ?").run(messageId);
+  publishConversationEvent(conversationId, { type: "message-removed", id: messageId });
+  res.json({ ok: true, status: "removed_from_julie_only" });
 });
 
 const CHAT_UPLOAD_MAX_BYTES = 8 * 1024 * 1024;
@@ -1459,7 +1853,26 @@ function declaredChatMimeMatches(declaredType: string, detectedType: string): bo
 }
 
 async function parseChatUpload(req: Request): Promise<{
-  conversationId: number;
+  conversationId: number | null;
+  sessionId: string | null;
+  title: string;
+  agentIds: string[];
+  message: string;
+  attachment: GatewayChatAttachment;
+}>;
+async function parseChatUpload(req: Request, requireConversationId?: boolean): Promise<{
+  conversationId: number | null;
+  sessionId: string | null;
+  title: string;
+  agentIds: string[];
+  message: string;
+  attachment: GatewayChatAttachment;
+}>;
+async function parseChatUpload(req: Request, requireConversationId = true): Promise<{
+  conversationId: number | null;
+  sessionId: string | null;
+  title: string;
+  agentIds: string[];
   message: string;
   attachment: GatewayChatAttachment;
 }> {
@@ -1481,7 +1894,21 @@ async function parseChatUpload(req: Request): Promise<{
   }
 
   const conversationId = Number(form.get("conversationId"));
-  if (!Number.isInteger(conversationId) || conversationId <= 0) throw new ChatUploadError("valid conversationId required");
+  if (requireConversationId && (!Number.isInteger(conversationId) || conversationId <= 0)) throw new ChatUploadError("valid conversationId required");
+  const sessionValue = form.get("sessionId");
+  const sessionId = typeof sessionValue === "string" && sessionValue.trim() ? sessionValue.trim().slice(0, 200) : null;
+  const titleValue = form.get("title");
+  const title = typeof titleValue === "string" ? titleValue.replace(/[\r\n\0]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 160) : "";
+  const agentIdsValue = form.get("agentIds");
+  let agentIds: string[] = [];
+  if (typeof agentIdsValue === "string" && agentIdsValue.trim()) {
+    try {
+      const parsed = JSON.parse(agentIdsValue);
+      if (Array.isArray(parsed)) agentIds = parsed.filter((value): value is string => typeof value === "string").map((value) => value.trim()).filter(Boolean).slice(0, 50);
+    } catch {
+      agentIds = agentIdsValue.split(",").map((value) => value.trim()).filter(Boolean).slice(0, 50);
+    }
+  }
   const messageValue = form.get("message");
   const message = typeof messageValue === "string" ? messageValue.trim().slice(0, 20000) : "";
   const entry = form.get("file");
@@ -1503,7 +1930,10 @@ async function parseChatUpload(req: Request): Promise<{
   }
 
   return {
-    conversationId,
+    conversationId: Number.isInteger(conversationId) && conversationId > 0 ? conversationId : null,
+    sessionId,
+    title,
+    agentIds,
     message,
     attachment: {
       type: mimeType.startsWith("image/") ? "image" : "file",
@@ -1519,6 +1949,7 @@ async function parseChatUpload(req: Request): Promise<{
 api.post("/upload", rawBody({ type: "multipart/form-data", limit: "9mb" }), async (req, res) => {
   try {
     const upload = await parseChatUpload(req);
+    if (!upload.conversationId) throw new ChatUploadError("valid conversationId required");
     const conv = db.prepare("SELECT * FROM conversations WHERE id = ?").get(upload.conversationId) as ConversationRow | undefined;
     if (!conv) { res.status(404).json({ ok: false, error: "conversation not found" }); return; }
 
@@ -1548,6 +1979,48 @@ api.post("/upload", rawBody({ type: "multipart/form-data", limit: "9mb" }), asyn
   }
 });
 
+api.post("/agents/:id/upload", rawBody({ type: "multipart/form-data", limit: "9mb" }), async (req, res) => {
+  const agentId = typeof req.params.id === "string" ? req.params.id.trim() : "";
+  if (!agentId || !requireActiveWorkspaceAgent(agentId, res)) return;
+  try {
+    const upload = await parseChatUpload(req, false);
+    const prompt = upload.message ? `${upload.message}\n\n📎 ${upload.attachment.fileName}` : `Please review the attached file "${upload.attachment.fileName}".\n\n📎 ${upload.attachment.fileName}`;
+    const result = await startAgentTurn(agentId, upload.sessionId, prompt, upload.title, [upload.attachment]);
+    res.setHeader("Cache-Control", "no-store");
+    res.status(202).json({
+      ...result,
+      attachment: { fileName: upload.attachment.fileName, mimeType: upload.attachment.mimeType, sizeBytes: upload.attachment.sizeBytes },
+    });
+  } catch (error: any) {
+    if (error instanceof ChatUploadError || error instanceof AgentChatTargetError) {
+      res.status(error.status).json({ ok: false, error: error.message, source: "gateway" });
+      return;
+    }
+    res.status(502).json({ ok: false, error: error?.message ?? "agent attachment send failed", source: "gateway" });
+  }
+});
+
+api.post("/agent-rooms/:id/upload", rawBody({ type: "multipart/form-data", limit: "9mb" }), async (req, res) => {
+  const roomId = Number(req.params.id);
+  if (!Number.isInteger(roomId) || roomId <= 0) { res.status(400).json({ ok: false, error: "valid room id required" }); return; }
+  try {
+    const upload = await parseChatUpload(req, false);
+    const ownerText = upload.message ? `${upload.message}\n\n📎 ${upload.attachment.fileName}` : `📎 ${upload.attachment.fileName}`;
+    const result = await startAgentRoomTurn(roomId, ownerText, upload.agentIds.length > 0 ? upload.agentIds : undefined, [upload.attachment]);
+    res.setHeader("Cache-Control", "no-store");
+    res.status(202).json({
+      ...result,
+      attachment: { fileName: upload.attachment.fileName, mimeType: upload.attachment.mimeType, sizeBytes: upload.attachment.sizeBytes },
+    });
+  } catch (error: any) {
+    if (error instanceof ChatUploadError || error instanceof AgentRoomError) {
+      res.status(error.status).json({ ok: false, error: error.message, source: "local+gateway" });
+      return;
+    }
+    res.status(502).json({ ok: false, error: error?.message ?? "room attachment send failed", source: "local+gateway" });
+  }
+});
+
 // ---- streaming: SSE forward of gateway chat deltas per conversation ----
 api.get("/conversations/:id/events", (req, res) => {
   const conv = db.prepare("SELECT * FROM conversations WHERE id = ?").get(req.params.id) as ConversationRow | undefined;
@@ -1562,7 +2035,8 @@ api.get("/conversations/:id/events", (req, res) => {
   const send = (obj: unknown) => {
     try { res.write(`data: ${JSON.stringify(obj)}\n\n`); } catch { /* client gone */ }
   };
-  send({ type: "hello", conversationId: conv.id, activeRun: publicRunSnapshot(activeConversationRuns.get(conv.id)) });
+  send({ type: "hello", conversationId: conv.id, activeRun: publicRunSnapshot(activeConversationRuns.get(conv.id)), actions: listRunActions(conv.gateway_session_key) });
+  const unsubscribeActions = subscribeRunActions(conv.gateway_session_key, (action) => send({ type: "action", action }));
   const heartbeat = setInterval(() => {
     try { res.write(": ping\n\n"); } catch { /* client gone */ }
   }, 15000);
@@ -1571,6 +2045,7 @@ api.get("/conversations/:id/events", (req, res) => {
   conversationSubscribers.set(conv.id, subscribers);
   req.on("close", () => {
     clearInterval(heartbeat);
+    unsubscribeActions();
     subscribers.delete(send);
     if (subscribers.size === 0) conversationSubscribers.delete(conv.id);
   });
@@ -1603,6 +2078,7 @@ function taskRunPrompt(task: { id: number; title: string; description: string },
     `Execute this JULIE task from the task board.`,
     `Task ID: ${task.id}`,
     `Assigned agent: ${agentId}`,
+    engineeringTaskPolicy(agentId),
     `Task: ${task.title}`,
     desc ? `\nDescription:\n${desc}` : "",
     `\nWork on it now using your available tools. When finished, reply with a short result summary as the final answer.`,

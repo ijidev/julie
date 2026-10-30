@@ -1,6 +1,72 @@
 # Project State: Julie AiOS
 
-## Status: Phase E5 — Office operations and agent communications complete
+## Status: Phase E6 — OpenCode-first collaboration, live activity, and architecture audit
+**Date:** 2026-10-30
+
+### Outcome
+The owner's E6 program (tasks 107–117) is implemented: engineering work is
+OpenCode-first, office agents have human names alongside canonical IDs,
+delegation is runtime-enforced into named durable sessions, chat has real queue
+custody and stop behavior, rooms and department rooms support membership and
+@mentions, and the workspace wizard plans before it creates. Agent commands and
+file edits now stream into a real activity timeline from Gateway frames.
+
+### Delivered
+- **OpenCode-first engineering:** project-native `.opencode` config and skill,
+  reviewed primary/fallback model policy, and an operations guide. The
+  Engineering Lead is told the effective tool/skill catalog and must report
+  unavailable state instead of guessing.
+- **Human names:** reviewed roster aliases (Julie, Victor, Ada, Ethan, Grace,
+  Samuel, Naomi, Daniel, Sophia, Olivia) shown with canonical IDs.
+- **Runtime delegation:** owner @mentions resolve server-side to canonical agent
+  IDs; the runtime opens a named durable session and dispatches before Julie's
+  turn. Julie receives a no-redundancy directive and reports the real result.
+  Delegated sessions claim a durable Gateway `label` so failed title generation
+  cannot leave them unnamed.
+- **Chat controls:** durable local FIFO queue, Gateway abort/Stop, pre-dispatch
+  recall, local-only removal, copy, attachment upload, @mentions, and session
+  deletion.
+- **Rooms and department rooms:** explicit add/remove membership, @mentions, a
+  persistent room per lead with its direct reports, sanitized live progress.
+- **Workspace wizard:** explicit shared-pool vs dedicated-team choice every time,
+  Julie plan → review → confirmation token → apply, with a receipt.
+- **Live activity:** `run_actions` storage and SSE `action` events reduce real
+  Gateway tool/lifecycle/item frames into commands, edits, approvals, outputs,
+  and terminal failed/stopped states. The default Chat and Agent Messenger show
+  the timeline; system coordination notes are visually distinct.
+- **Julie operations knowledge:** `docs/JULIE_OPERATIONS_GUIDE.md` and an injected
+  runtime context covering tools, files, setup templates, orchestration,
+  delegation, channels, and verification receipts.
+- **Architecture audit:** `docs/ARCHITECTURE_AUDIT_2026-10-30.md` documents the
+  duplicated-ownership and installability findings and the phased fix plan.
+
+### Verification
+- ✅ Backend `npm run build`; web `npx tsc --noEmit`; `npm run web:build`
+- ✅ Julie restarted; `/api/health` `ok` with Gateway 2026.10.5 connected
+- ✅ Unauthenticated `/api/conversations` and `/api/tools` return 401
+- ✅ Live `/api/gateway/status`, `/api/agents`, `/api/tools`, `/api/tasks`,
+  `/api/agent-rooms`, `/api/conversations` return real payloads
+- ✅ Conversation SSE `hello` includes `actions`; `run_actions` rows exist
+- ✅ Real `@Victor` round-trip: resolved to `dev-builder`, opened a named durable
+  session, inserted delegation/completion system messages, and Julie reported
+  the delegation and the child run's real failure instead of doing the work
+- ✅ Test conversation and delegated session cleaned up through the documented
+  archive-then-delete path
+
+### Honest boundaries / follow-up
+- The delegated `@Victor` child run failed because OpenClaw provider auth for the
+  utility/primary models is currently failing. The delegation mechanism and the
+  honest failure path are proven; task 108 remains `pending_review` until a live
+  OpenCode/agent run succeeds.
+- External channels (Telegram) still reach OpenClaw directly. The channel front
+  door is deferred until after the Phase 0 installability/security pass.
+- The structural changes in the architecture audit (single identity owner,
+  transcript reconciliation, config-root, migrations, permissions, terminal
+  default-off) are documented but not implemented yet.
+
+---
+
+## Previous status: Phase E5 — Office operations and agent communications complete
 **Date:** 2026-10-29
 
 ### Outcome
@@ -570,4 +636,4 @@ None.
 
 ---
 
-*Last updated: 2026-10-29*
+*Last updated: 2026-10-30*

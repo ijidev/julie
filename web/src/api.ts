@@ -34,6 +34,52 @@ async function uploadForm<T>(path: string, body: FormData): Promise<T> {
 }
 
 export type WorkspacesResponse = { ok: boolean; workspaces: Workspace[]; activeWorkspaceId: number | null };
+export type WorkspacePlan = {
+  summary: string;
+  teamModeRationale: string;
+  recommendedAgents: Array<{ agentId: string; reason: string }>;
+  newRoles: Array<{ name: string; role: string; emoji: string; reason: string; personality: string }>;
+  environment: { projectDirectory: string; runtime: string; setupSteps: string[] };
+  model: string | null;
+  tools: string[];
+  skills: string[];
+  operatingRules: string[];
+  acceptanceChecks: string[];
+  risks: string[];
+};
+export type WorkspacePlanResponse = {
+  ok: true;
+  source: "gateway+local";
+  planToken: string;
+  status: "planned" | "applied";
+  name: string;
+  purpose: string;
+  teamMode: "shared" | "dedicated";
+  plan: WorkspacePlan;
+  catalog: {
+    agents: Array<{ agentId: string; displayName: string; role: string; department: string; level: string | null; model: string | null; workspaces: string[] }>;
+    models: Array<{ id: string; name: string; available: boolean }>;
+    existingWorkspaces: Array<{ id: number; name: string; description: string }>;
+  };
+  julie: { sessionId: string; title?: string };
+  warnings: string[];
+  policy?: string;
+};
+export type WorkspacePlanAppliedResponse = {
+  ok: true;
+  source: "gateway+local";
+  planToken: string;
+  status: "applied";
+  appliedAt: string;
+  workspace: Workspace;
+  teamMode: "shared" | "dedicated";
+  julie: { sessionId: string };
+  assignedAgentIds: string[];
+  createdAgents: Array<{ agentId: string; name: string; role: string }>;
+  setupTaskId: number;
+  rooms: Array<{ id: number; title: string; kind: "task" | "department"; members: number }>;
+  warnings: string[];
+};
 export type WorkspaceCreatedResponse = { ok: boolean; workspace: Workspace };
 export type WorkspaceActivatedResponse = { ok: boolean; activeWorkspaceId: number };
 export type TaskSummary = {
@@ -51,6 +97,22 @@ export type TaskSummary = {
 export type TasksResponse = { ok: boolean; tasks: Task[]; runningTaskIds: number[]; summary: TaskSummary };
 export type ConversationsResponse = { ok: boolean; conversations: Conversation[] };
 export type ConversationCreatedResponse = { ok: boolean; conversation: Conversation };
+export type AgentRunAction = {
+  id: number;
+  sessionKey: string;
+  sessionId: string;
+  runId: string;
+  kind: "tool" | "run" | "note";
+  phase: string;
+  name: string;
+  title: string;
+  status: "running" | "completed" | "failed" | "blocked" | "stopped" | "unknown";
+  detail: string;
+  output: string;
+  isError: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
 export type ChatRunSnapshot = {
   state: "sending" | "accepted" | "status" | "responding" | "finalizing";
   phase: string | null;
@@ -61,8 +123,8 @@ export type ChatRunSnapshot = {
 export type MessagesResponse = { ok: boolean; messages: Message[]; activeRun: ChatRunSnapshot | null };
 export type ChatSendAcceptedResponse = {
   ok: true;
-  status: "accepted";
-  gatewayStatus: string;
+  status: "accepted" | "queued";
+  gatewayStatus?: string;
   userMessage: Message;
 };
 export type ChatUploadAcceptedResponse = ChatSendAcceptedResponse & {
@@ -78,6 +140,9 @@ export const api = {
   workspaces: () => jfetch<WorkspacesResponse>("/api/workspaces"),
   createWorkspace: (name: string, description = "") => jfetch<WorkspaceCreatedResponse>("/api/workspaces", { method: "POST", body: JSON.stringify({ name, description }) }),
   activateWorkspace: (id: number) => jfetch<WorkspaceActivatedResponse>(`/api/workspaces/${id}/activate`, { method: "POST" }),
+  planWorkspace: (input: { name: string; purpose: string; teamMode: "shared" | "dedicated" }) => jfetch<WorkspacePlanResponse>("/api/workspaces/plan", { method: "POST", body: JSON.stringify(input) }),
+  applyWorkspacePlan: (token: string) => jfetch<WorkspacePlanAppliedResponse>(`/api/workspaces/plans/${encodeURIComponent(token)}/apply`, { method: "POST", body: JSON.stringify({ confirmed: true }) }),
+  workspacePlan: (token: string) => jfetch<WorkspacePlanResponse>(`/api/workspaces/plans/${encodeURIComponent(token)}`),
   tasks: (workspaceId: number) => jfetch<TasksResponse>(`/api/tasks?workspaceId=${workspaceId}`),
   createTask: (input: TaskCreateInput) => jfetch<{ ok: true; task: Task }>("/api/tasks", { method: "POST", body: JSON.stringify(input) }),
   updateTask: (id: number, patch: Record<string, unknown>) => jfetch(`/api/tasks/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
@@ -89,6 +154,8 @@ export const api = {
   deleteConversation: (id: number) => jfetch<{ ok: true }>(`/api/conversations/${id}`, { method: "DELETE" }),
   messages: (conversationId: number) => jfetch<MessagesResponse>(`/api/conversations/${conversationId}/messages`),
   sendMessage: (conversationId: number, text: string) => jfetch<ChatSendAcceptedResponse>(`/api/conversations/${conversationId}/messages`, { method: "POST", body: JSON.stringify({ text }) }),
+  abortConversation: (conversationId: number) => jfetch<{ ok: true; status: "abort_requested" }>(`/api/conversations/${conversationId}/abort`, { method: "POST", body: JSON.stringify({}) }),
+  removeConversationMessage: (conversationId: number, messageId: number, localOnlyConfirmed = false) => jfetch<{ ok: true; status: "recalled_before_dispatch" | "removed_from_julie_only"; message?: Message }>(`/api/conversations/${conversationId}/messages/${messageId}`, { method: "DELETE", body: JSON.stringify({ localOnlyConfirmed }) }),
   uploadChatAttachment: (conversationId: number, message: string, file: File) => {
     const body = new FormData();
     body.append("conversationId", String(conversationId));
@@ -101,17 +168,41 @@ export const api = {
   agentDetail: (id: string, refresh = false) => jfetch<AgentDetailResponse>(`/api/agents/${encodeURIComponent(id)}${refresh ? "?refresh=1" : ""}`),
   updateAgent: (id: string, input: AgentUpdateInput) => jfetch<AgentUpdateResult>(`/api/agents/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(input) }),
   agentHistory: (id: string, sessionId: string) => jfetch<AgentHistoryResponse>(`/api/agents/${encodeURIComponent(id)}/sessions/${encodeURIComponent(sessionId)}/history`),
-  sendAgentMessage: (id: string, text: string, sessionId: string | null) => jfetch<AgentChatResponse>(`/api/agents/${encodeURIComponent(id)}/chat`, { method: "POST", body: JSON.stringify({ text, sessionId }) }),
+  sendAgentMessage: (id: string, text: string, sessionId: string | null, title?: string) => jfetch<AgentTurnAcceptedResponse>(`/api/agents/${encodeURIComponent(id)}/chat`, { method: "POST", body: JSON.stringify({ text, sessionId, title }) }),
+  agentTurns: (id: string, sessionId: string) => jfetch<AgentTurnsResponse>(`/api/agents/${encodeURIComponent(id)}/sessions/${encodeURIComponent(sessionId)}/turns`),
+  cancelAgentTurn: (id: string, sessionId: string, turnId: string) => jfetch<{ ok: true; source: "gateway"; turn: AgentChatTurn }>(`/api/agents/${encodeURIComponent(id)}/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}`, { method: "DELETE" }),
+  uploadAgentAttachment: (id: string, sessionId: string | null, title: string, message: string, file: File) => {
+    const body = new FormData();
+    if (sessionId) body.append("sessionId", sessionId);
+    if (title) body.append("title", title);
+    body.append("message", message);
+    body.append("file", file, file.name);
+    return uploadForm<AgentTurnAcceptedResponse & { attachment: { fileName: string; mimeType: string; sizeBytes: number } }>(`/api/agents/${encodeURIComponent(id)}/upload`, body);
+  },
+  renameAgentSession: (id: string, sessionId: string, title: string) => jfetch<AgentSessionMutationResponse>(`/api/agents/${encodeURIComponent(id)}/sessions/${encodeURIComponent(sessionId)}`, { method: "PATCH", body: JSON.stringify({ title }) }),
+  archiveAgentSession: (id: string, sessionId: string, archived: boolean) => jfetch<AgentSessionMutationResponse>(`/api/agents/${encodeURIComponent(id)}/sessions/${encodeURIComponent(sessionId)}`, { method: "PATCH", body: JSON.stringify({ archived }) }),
+  abortAgentSession: (id: string, sessionId: string) => jfetch<{ ok: true; source: "gateway"; agentId: string; sessionId: string; status: "abort_requested" }>(`/api/agents/${encodeURIComponent(id)}/sessions/${encodeURIComponent(sessionId)}/abort`, { method: "POST", body: JSON.stringify({}) }),
+  deleteAgentSession: (id: string, sessionId: string) => jfetch<AgentSessionDeleteResponse>(`/api/agents/${encodeURIComponent(id)}/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE", body: JSON.stringify({ confirmed: true }) }),
   agentOnboardingOptions: (refresh = false) => jfetch<AgentOnboardingOptions>(`/api/agents/onboarding/options${refresh ? "?refresh=1" : ""}`),
   createAgent: (input: AgentOnboardingInput) => jfetch<AgentOnboardingResult>("/api/agents", { method: "POST", body: JSON.stringify(input) }),
   agentAssignments: (workspaceId?: number) => jfetch<AgentAssignmentsResponse>(`/api/agents/assignments${workspaceId ? `?workspaceId=${workspaceId}` : ""}`),
   setAgentAssignments: (workspaceId: number, agentIds: string[]) => jfetch<AgentAssignmentsResponse>("/api/agents/assignments", { method: "PUT", body: JSON.stringify({ workspaceId, agentIds, confirmed: true }) }),
   agentOrganization: (workspaceId?: number) => jfetch<AgentOrganizationResponse>(`/api/agents/organization${workspaceId ? `?workspaceId=${workspaceId}` : ""}`),
   setAgentOrganization: (workspaceId: number, members: AgentOrganizationInput[]) => jfetch<AgentOrganizationResponse>("/api/agents/organization", { method: "PUT", body: JSON.stringify({ workspaceId, members, confirmed: true }) }),
+  setAgentNames: (workspaceId: number, names: Record<string, string>) => jfetch<AgentOrganizationResponse>("/api/agents/names", { method: "PUT", body: JSON.stringify({ workspaceId, names, confirmed: true }) }),
   agentRooms: (workspaceId: number) => jfetch<AgentRoomsResponse>(`/api/agent-rooms?workspaceId=${workspaceId}`),
   agentRoom: (id: number) => jfetch<AgentRoomResponse>(`/api/agent-rooms/${id}`),
   createAgentRoom: (input: { workspaceId: number; taskId: number; title?: string; agentIds: string[] }) => jfetch<AgentRoomResponse>("/api/agent-rooms", { method: "POST", body: JSON.stringify({ ...input, confirmed: true }) }),
-  sendAgentRoomMessage: (id: number, text: string, agentIds: string[]) => jfetch<AgentRoomSendResponse>(`/api/agent-rooms/${id}/messages`, { method: "POST", body: JSON.stringify({ text, agentIds }) }),
+  ensureDepartmentRooms: (workspaceId: number) => jfetch<{ ok: true; source: "local+gateway"; rooms: AgentRoomDetail[] }>("/api/agent-rooms/department-rooms", { method: "POST", body: JSON.stringify({ workspaceId, confirmed: true }) }),
+  setAgentRoomMembers: (id: number, agentIds: string[]) => jfetch<AgentRoomResponse>(`/api/agent-rooms/${id}/members`, { method: "PUT", body: JSON.stringify({ agentIds, confirmed: true }) }),
+  sendAgentRoomMessage: (id: number, text: string, agentIds?: string[]) => jfetch<AgentRoomSendResponse>(`/api/agent-rooms/${id}/messages`, { method: "POST", body: JSON.stringify({ text, ...(agentIds ? { agentIds } : {}) }) }),
+  uploadAgentRoomAttachment: (id: number, message: string, agentIds: string[] | undefined, file: File) => {
+    const body = new FormData();
+    body.append("message", message);
+    if (agentIds) body.append("agentIds", JSON.stringify(agentIds));
+    body.append("file", file, file.name);
+    return uploadForm<AgentRoomSendResponse & { attachment: { fileName: string; mimeType: string; sizeBytes: number } }>(`/api/agent-rooms/${id}/upload`, body);
+  },
   archiveAgentRoom: (id: number, archived: boolean) => jfetch<AgentRoomResponse>(`/api/agent-rooms/${id}`, { method: "PATCH", body: JSON.stringify({ archived, confirmed: true }) }),
   agentAvatarStudio: (id: string, refresh = false) => jfetch<AgentAvatarStudioResponse>(`/api/agents/${encodeURIComponent(id)}/avatar${refresh ? "?refresh=1" : ""}`),
   previewAgentAvatar: (id: string, input: AgentAvatarPreviewInput) => jfetch<AgentAvatarPreviewResponse>(`/api/agents/${encodeURIComponent(id)}/avatar/preview`, { method: "POST", body: JSON.stringify(input) }),
@@ -401,7 +492,10 @@ export type AgentChatSession = {
   hasActiveRun: boolean;
   lastActivityAt: number | null;
   model: string | null;
+  archived: boolean;
 };
+export type AgentSessionMutationResponse = { ok: true; source: "gateway"; agentId: string; session: AgentChatSession };
+export type AgentSessionDeleteResponse = { ok: true; source: "gateway"; agentId: string; sessionId: string; deleted: boolean; transcriptArchived: boolean };
 export type AgentChatMessage = { id: number; role: "user" | "assistant"; text: string; timestamp: number | null };
 export type AgentHistoryResponse = {
   ok: true;
@@ -415,6 +509,24 @@ export type AgentChatResponse = AgentHistoryResponse & {
   status: "completed";
   reply: string;
 };
+export type AgentChatTurn = {
+  turnId: string;
+  state: "queued" | "accepted" | "complete" | "cancel_requested" | "cancelled" | "error";
+  text: string;
+  createdAt: number;
+  updatedAt: number;
+  reply?: string;
+  error?: string;
+};
+export type AgentTurnAcceptedResponse = {
+  ok: true;
+  source: "gateway";
+  status: "queued" | "accepted";
+  agentId: string;
+  session: AgentChatSession;
+  turn: AgentChatTurn;
+};
+export type AgentTurnsResponse = { ok: true; source: "gateway"; agentId: string; sessionId: string; turns: AgentChatTurn[] };
 export type AgentOnboardingOptions = {
   ok: true;
   source: "gateway+local";
@@ -483,6 +595,7 @@ export type AgentOrganizationLevel = "executive" | "lead" | "specialist";
 export type AgentOrganizationMember = {
   agentId: string;
   displayName: string;
+  gatewayIdentityName: string;
   emoji: string | null;
   model: string | null;
   role: string | null;
@@ -548,6 +661,8 @@ export type AgentRoom = {
   id: number;
   workspaceId: number;
   task: null | { id: number; title: string; status: Task["status"] | null; assignedAgentId: string | null };
+  kind: "task" | "department";
+  department: string | null;
   title: string;
   status: "open" | "archived";
   members: AgentRoomMember[];
@@ -747,7 +862,7 @@ export type TaskActivity = {
 };
 export type TaskActivityResponse = { ok: true; activity: TaskActivity[]; source: "local" };
 export type Conversation = { id: number; workspace_id: number; title: string; created_at: string; updated_at: string };
-export type Message = { id: number; role: string; text: string; created_at: string };
+export type Message = { id: number; role: string; text: string; delivery_state: "queued" | "sending" | "accepted" | "complete" | "cancelled" | "failed"; created_at: string };
 export type GatewayStatus = { connected: boolean; serverVersion?: string | null; latencyMs?: number; error?: string };
 
 export type WeatherForecastDay = { day: string; tempC: number; minC: number; icon: string };

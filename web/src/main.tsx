@@ -6,7 +6,7 @@ import { VoiceFab, VOICE_STATE_EVENT, requestVoiceCapture } from "./voice-fab";
 import { useSpeaking, speakWithTracking } from "./speaking";
 import { Wave } from "./wave";
 import { setVoiceConversationId, speechSupported, startSpeechRecognition, submitVoiceText, type VoiceState } from "./voice";
-import { api, type ChatRunSnapshot, type Conversation, type GatewayStatus, type Message, type Task, type TaskActivity, type TaskSummary, type Workspace, type AgentAssignmentRow, type AgentOrganizationResponse, type AgentRoom, type AgentRoomActiveRun, type AgentRoomDetail, type AgentRoomMessage, type AgentOverviewItem, type AgentOverviewResponse, type AgentDetailResponse, type AgentChatMessage, type AgentOnboardingInput, type AgentOnboardingOptions, type AgentUpdateInput, type AgentUpdateResult, type AgentAssignmentsResponse, type AgentAvatarAsset, type AgentAvatarDirection, type AgentAvatarPreview, type AgentAvatarStudioResponse, type Tool, type Analytics, type Weather, type Device, type Insights, type TrendingItem, type OpencodeStatus, type OpencodeSessionRow, type OpencodeSessionsResponse, type OpencodeStatsResponse, type OpencodeActiveResponse, type OpencodeProjectsResponse, TASK_STATUSES } from "./api";
+import { api, type ChatRunSnapshot, type Conversation, type GatewayStatus, type Message, type Task, type TaskActivity, type TaskSummary, type Workspace, type AgentAssignmentRow, type AgentOrganizationResponse, type AgentRoom, type AgentRoomActiveRun, type AgentRoomDetail, type AgentRoomMessage, type AgentOverviewItem, type AgentOverviewResponse, type AgentDetailResponse, type AgentChatMessage, type AgentChatTurn, type AgentOnboardingInput, type AgentOnboardingOptions, type AgentUpdateInput, type AgentUpdateResult, type AgentAssignmentsResponse, type AgentAvatarAsset, type AgentAvatarDirection, type AgentAvatarPreview, type AgentAvatarStudioResponse, type Tool, type Analytics, type Weather, type Device, type Insights, type TrendingItem, type OpencodeStatus, type OpencodeSessionRow, type OpencodeSessionsResponse, type OpencodeStatsResponse, type OpencodeActiveResponse, type OpencodeProjectsResponse, type WorkspacePlanResponse, type WorkspacePlanAppliedResponse, type AgentRunAction, TASK_STATUSES } from "./api";
 
 // --- Router Hook ---
 function useRoute(): [string, (to: string) => void] {
@@ -1747,6 +1747,23 @@ function AgentOnboardingPage({ navigate }: { navigate: (to: string) => void }) {
 
 type AgentDetailTab = "overview" | "activity" | "chat" | "capabilities";
 
+function awaitAgentTurnEvent(agentId: string, sessionId: string, turnId: string, timeoutMs = 10 * 60_000): Promise<AgentChatTurn> {
+  return new Promise((resolve, reject) => {
+    const source = new EventSource(`/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/events`);
+    const timer = window.setTimeout(() => finish(() => reject(new Error("Agent turn timed out"))), timeoutMs);
+    const finish = (done: () => void) => { window.clearTimeout(timer); source.close(); done(); };
+    source.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data) as { type?: string; turn?: AgentChatTurn; turns?: AgentChatTurn[] };
+        const turn = data.turn?.turnId === turnId ? data.turn : data.turns?.find((row) => row.turnId === turnId);
+        if (!turn) return;
+        if (turn.state === "complete") finish(() => resolve(turn));
+        if (turn.state === "error" || turn.state === "cancelled") finish(() => reject(new Error(turn.error || `Turn ${turn.state}`)));
+      } catch { /* malformed frame: keep listening */ }
+    };
+  });
+}
+
 function detailTabFromHash(): AgentDetailTab {
   const value = window.location.hash.replace(/^#/, "");
   return value === "activity" || value === "chat" || value === "capabilities" ? value : "overview";
@@ -2292,23 +2309,25 @@ function AgentDetailPage({ agentId, navigate }: { agentId: string; navigate: (to
     if (!text || agentChatSending || selectedSessionId === undefined) return;
     setAgentChatSending(true);
     setHistoryError("");
-    setAgentChatStatus(selectedSessionId ? "OpenClaw accepted the request; waiting for the final reply…" : "Creating an agent-qualified session; waiting for the final reply…");
-    setAgentChatInput("");
+    setAgentChatStatus(selectedSessionId ? "Submitting to the Gateway…" : "Creating a named agent session…");
     try {
       const result = await api.sendAgentMessage(agentId, text, selectedSessionId);
-      setAgentMessages(result.messages);
-      setHistoryTruncated(result.truncated);
-      if (result.session.sessionId) setSelectedSessionId(result.session.sessionId);
-      setAgentChatStatus("Completed by OpenClaw Gateway.");
-      try {
-        setData(await api.agentDetail(agentId, true));
-      } catch {
-        setAgentChatStatus("Completed by OpenClaw Gateway. Profile refresh is pending.");
-      }
+      const nextSessionId = result.session.sessionId;
+      if (!nextSessionId) throw new Error("Gateway did not return a durable session id");
+      setSelectedSessionId(nextSessionId);
+      setAgentChatInput("");
+      setAgentChatStatus(result.status === "queued" ? "Queued behind current work. You may continue elsewhere." : "Gateway accepted the turn. You may continue elsewhere.");
+      void awaitAgentTurnEvent(agentId, nextSessionId, result.turn.turnId).then(async () => {
+        await fetchAgentHistory(nextSessionId);
+        setAgentChatStatus("Completed by OpenClaw Gateway.");
+        setData(await api.agentDetail(agentId, true).catch(() => data));
+      }).catch((turnError: any) => {
+        setHistoryError(turnError?.message ?? "The agent turn did not complete.");
+        setAgentChatStatus("");
+      });
     } catch (requestError: any) {
-      setAgentChatInput(text);
       setAgentChatStatus("");
-      setHistoryError(requestError?.message ?? "The Gateway did not complete this message.");
+      setHistoryError(requestError?.message ?? "The Gateway did not accept this message.");
     } finally {
       setAgentChatSending(false);
     }
@@ -3230,6 +3249,7 @@ function AgentRoomsView({ workspaceId, members, tasks }: {
   const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState("");
   const [composer, setComposer] = useState("");
+  const [roomAttachment, setRoomAttachment] = useState<File | null>(null);
   const [recipientIds, setRecipientIds] = useState<string[]>([]);
   const [activeRun, setActiveRun] = useState<AgentRoomActiveRun | null>(null);
   const [sending, setSending] = useState(false);
@@ -3239,8 +3259,12 @@ function AgentRoomsView({ workspaceId, members, tasks }: {
   const [createTaskId, setCreateTaskId] = useState("");
   const [createTitle, setCreateTitle] = useState("");
   const [createAgentIds, setCreateAgentIds] = useState<string[]>([]);
+  const [membersOpen, setMembersOpen] = useState(false);
+  const [memberDraftIds, setMemberDraftIds] = useState<string[]>([]);
+  const [memberBusy, setMemberBusy] = useState(false);
   const [mobileChatOpen, setMobileChatOpen] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
+  const roomFileRef = useRef<HTMLInputElement>(null);
 
   const loadRooms = useCallback(async (preferredId?: number) => {
     setLoading(true);
@@ -3330,12 +3354,20 @@ function AgentRoomsView({ workspaceId, members, tasks }: {
 
   const sendRoomMessage = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!detail || !composer.trim() || recipientIds.length === 0 || sending || activeRun || detail.status !== "open") return;
+    if (!detail || (!composer.trim() && !roomAttachment) || recipientIds.length === 0 || sending || activeRun || detail.status !== "open") return;
     setSending(true);
     setError("");
     try {
-      const result = await api.sendAgentRoomMessage(detail.id, composer.trim(), recipientIds);
+      const mentionedIds = detail.members.filter((member) => {
+        const escaped = member.displayName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
+        return new RegExp(`(^|\\s)@${escaped}(?=\\s|[,.!?;:]|$)`, "i").test(composer);
+      }).map((member) => member.agentId);
+      const targets = mentionedIds.length > 0 ? undefined : recipientIds;
+      const result = roomAttachment
+        ? await api.uploadAgentRoomAttachment(detail.id, composer.trim(), targets, roomAttachment)
+        : await api.sendAgentRoomMessage(detail.id, composer.trim(), targets);
       setComposer("");
+      setRoomAttachment(null);
       setActiveRun(result.activeRun);
       setDetail((current) => current && !current.messages.some((message) => message.id === result.ownerMessage.id)
         ? { ...current, messages: [...current.messages, result.ownerMessage], latestMessage: result.ownerMessage, messageCount: current.messageCount + 1 }
@@ -3344,6 +3376,43 @@ function AgentRoomsView({ workspaceId, members, tasks }: {
       setError(requestError?.message ?? "Could not dispatch this room message.");
     } finally {
       setSending(false);
+    }
+  };
+
+  const openMemberEditor = () => {
+    if (!detail) return;
+    setMemberDraftIds(detail.members.map((member) => member.agentId));
+    setMembersOpen(true);
+    setError("");
+  };
+
+  const saveRoomMembers = async () => {
+    if (!detail || memberBusy) return;
+    setMemberBusy(true);
+    setError("");
+    try {
+      const result = await api.setAgentRoomMembers(detail.id, memberDraftIds);
+      setDetail(result.room);
+      setMembersOpen(false);
+      await loadRooms(detail.id);
+    } catch (requestError: any) {
+      setError(requestError?.message ?? "Could not update room membership.");
+    } finally {
+      setMemberBusy(false);
+    }
+  };
+
+  const setupDepartmentRooms = async () => {
+    if (createBusy) return;
+    setCreateBusy(true);
+    setError("");
+    try {
+      const result = await api.ensureDepartmentRooms(workspaceId);
+      await loadRooms(result.rooms[0]?.id);
+    } catch (requestError: any) {
+      setError(requestError?.message ?? "Could not set up department rooms.");
+    } finally {
+      setCreateBusy(false);
     }
   };
 
@@ -3406,12 +3475,12 @@ function AgentRoomsView({ workspaceId, members, tasks }: {
   return (
     <section className={`agent-rooms-view${mobileChatOpen ? " mobile-chat-open" : ""}`}>
       <aside className="room-list-pane">
-        <div className="messenger-pane-head"><div><strong>Task rooms</strong><span>{rooms.length} persistent room{rooms.length === 1 ? "" : "s"}</span></div><button className="messenger-new-session" onClick={openCreate} disabled={openTasks.length === 0}>＋ Room</button></div>
+        <div className="messenger-pane-head"><div><strong>Team & task rooms</strong><span>{rooms.length} persistent room{rooms.length === 1 ? "" : "s"}</span></div><button className="room-team-setup" onClick={setupDepartmentRooms} disabled={createBusy}>Teams</button><button className="messenger-new-session" onClick={openCreate} disabled={openTasks.length === 0}>＋ Task</button></div>
         {loading && rooms.length === 0 ? <div className="messenger-empty">Loading task rooms…</div> : rooms.length === 0 ? <div className="room-list-empty"><strong>No task rooms yet</strong><span>Create one from an open task and choose the collaborating agents.</span><button className="btn" onClick={openCreate} disabled={openTasks.length === 0}>Create task room</button></div> : (
           <div className="room-list">
             {rooms.map((room) => <button key={room.id} className={selectedRoomId === room.id ? "active" : ""} onClick={() => selectRoom(room.id)}>
               <span className={`room-list-icon ${room.status}`}>{room.members.slice(0, 3).map((member) => member.emoji || agentInitials(member.displayName)).join(" ")}</span>
-              <span className="room-list-copy"><strong>{room.title}</strong><small>{room.task ? `#${room.task.id} · ${room.task.status ? STATUS_LABEL[room.task.status] : "Task deleted"}` : "Task deleted"} · {room.members.length} agents</small><em>{room.latestMessage ? `${senderName(room.latestMessage)}: ${room.latestMessage.text}` : "No messages"}</em></span>
+              <span className="room-list-copy"><strong>{room.title}</strong><small>{room.kind === "department" ? `${room.department} · permanent team` : room.task ? `#${room.task.id} · ${room.task.status ? STATUS_LABEL[room.task.status] : "Task deleted"}` : "Linked task deleted"} · {room.members.length} agents</small><em>{room.latestMessage ? `${senderName(room.latestMessage)}: ${room.latestMessage.text}` : "No messages"}</em></span>
               {room.activeRun && <i className="room-live-dot" title="Active room dispatch" />}
             </button>)}
           </div>
@@ -3422,13 +3491,14 @@ function AgentRoomsView({ workspaceId, members, tasks }: {
         {!detail || detailLoading ? <div className="messenger-chat-empty"><span>{detailLoading ? <span className="page-state-spinner" /> : "#"}</span><strong>{detailLoading ? "Loading room…" : "Choose a task room"}</strong><p>Confirmed agent responses and local delivery failures appear here.</p></div> : <>
           <header className="room-chat-head">
             <button className="messenger-mobile-back" onClick={() => setMobileChatOpen(false)} aria-label="Back to rooms">←</button>
-            <div><strong>{detail.title}</strong><span>{detail.task ? `Task #${detail.task.id} · ${detail.task.status ? STATUS_LABEL[detail.task.status] : "Deleted"}` : "Linked task deleted"} · {detail.messageCount} messages</span></div>
+            <div><strong>{detail.title}</strong><span>{detail.kind === "department" ? `${detail.department} · department planning` : detail.task ? `Task #${detail.task.id} · ${detail.task.status ? STATUS_LABEL[detail.task.status] : "Deleted"}` : "Linked task deleted"} · {detail.messageCount} messages</span></div>
             <span className={`room-state ${detail.status}`}>{detail.status}</span>
+            <button className="room-archive" onClick={openMemberEditor} disabled={Boolean(activeRun)}>Members</button>
             <button className="room-archive" onClick={toggleArchive} disabled={Boolean(activeRun)}>{detail.status === "open" ? "Archive" : "Reopen"}</button>
           </header>
 
           <div className="room-members-strip">
-            {detail.members.map((member) => <span key={member.agentId} title={`${member.role || "Role not configured"} · ${member.department || "No department"}`}><i>{member.emoji || agentInitials(member.displayName)}</i>{member.displayName}</span>)}
+            {detail.members.map((member) => <button key={member.agentId} type="button" title={`Mention ${member.displayName} · ${member.role || "Role not configured"}`} onClick={() => { setComposer((current) => `${current}${current && !current.endsWith(" ") ? " " : ""}@${member.displayName} `); setRecipientIds([member.agentId]); }}><i>{member.emoji || agentInitials(member.displayName)}</i>{member.displayName}</button>)}
           </div>
 
           <div className="room-transcript" ref={logRef}>
@@ -3443,12 +3513,22 @@ function AgentRoomsView({ workspaceId, members, tasks }: {
 
           {error && <div className="messenger-error" role="alert">{error}</div>}
           <form className="room-composer" onSubmit={sendRoomMessage}>
-            <div className="room-recipient-picker"><span>Send sequentially to</span><div>{detail.members.map((member) => <label key={member.agentId} className={recipientIds.includes(member.agentId) ? "selected" : ""}><input type="checkbox" checked={recipientIds.includes(member.agentId)} onChange={() => toggleRecipient(member.agentId)} disabled={Boolean(activeRun) || detail.status !== "open"} /><i>{member.emoji || agentInitials(member.displayName)}</i>{member.displayName}</label>)}</div></div>
-            <div className="room-compose-row"><textarea value={composer} onChange={(event) => setComposer(event.target.value)} placeholder={detail.status === "open" ? "Message the room…" : "Archived rooms are read-only"} rows={2} maxLength={20_000} disabled={sending || Boolean(activeRun) || detail.status !== "open"} /><button className="btn" disabled={sending || Boolean(activeRun) || !composer.trim() || recipientIds.length === 0 || detail.status !== "open"}>{activeRun ? "Agents talking…" : sending ? "Queuing…" : "Send to room"}</button></div>
+            <input ref={roomFileRef} type="file" accept={CHAT_ATTACHMENT_ACCEPT} onChange={(event) => { const file = event.target.files?.[0] ?? null; event.target.value = ""; if (file && file.size <= 8 * 1024 * 1024) setRoomAttachment(file); else if (file) setError("Files up to 8 MB are supported (images up to 6 MB)."); }} hidden />
+            <div className="room-recipient-picker"><span>Send sequentially to · @mention overrides</span><div>{detail.members.map((member) => <label key={member.agentId} className={recipientIds.includes(member.agentId) ? "selected" : ""}><input type="checkbox" checked={recipientIds.includes(member.agentId)} onChange={() => toggleRecipient(member.agentId)} disabled={Boolean(activeRun) || detail.status !== "open"} /><i>{member.emoji || agentInitials(member.displayName)}</i>{member.displayName}</label>)}</div></div>
+            {roomAttachment && <div className="messenger-attachment-chip"><span>📎 {roomAttachment.name}</span><small>{chatFileSize(roomAttachment.size)}</small><button type="button" onClick={() => setRoomAttachment(null)}>×</button></div>}
+            <div className="room-compose-row"><button type="button" className="messenger-attach" onClick={() => roomFileRef.current?.click()} disabled={sending || Boolean(activeRun) || detail.status !== "open"}>📎</button><textarea value={composer} onChange={(event) => setComposer(event.target.value)} placeholder={detail.status === "open" ? "Message the room or type @Name…" : "Archived rooms are read-only"} rows={2} maxLength={20_000} disabled={sending || Boolean(activeRun) || detail.status !== "open"} /><button className="btn" disabled={sending || Boolean(activeRun) || (!composer.trim() && !roomAttachment) || recipientIds.length === 0 || detail.status !== "open"}>{activeRun ? "Agents talking…" : sending ? "Queuing…" : "Send to room"}</button></div>
           </form>
           <div className="messenger-truth">Owner messages are local. Agent messages are shown only after that agent's Gateway turn completes; failed deliveries are labeled as system failures.</div>
         </>}
       </main>
+
+      {membersOpen && detail && <div className="task-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !memberBusy) setMembersOpen(false); }}>
+        <section className="room-create-dialog" role="dialog" aria-modal="true" aria-labelledby="room-members-title">
+          <header><div><span className="tasks-eyebrow">Room membership</span><h3 id="room-members-title">Manage {detail.title}</h3></div><button type="button" onClick={() => setMembersOpen(false)} disabled={memberBusy}>×</button></header>
+          <fieldset><legend>Office agents</legend><p>{detail.kind === "task" ? "Julie and the task's primary assignee are mandatory and will be restored by the server." : "A group requires at least two workspace agents."}</p><div>{members.map((member) => <label key={member.agentId} className={memberDraftIds.includes(member.agentId) ? "selected" : ""}><input type="checkbox" checked={memberDraftIds.includes(member.agentId)} onChange={() => setMemberDraftIds((current) => current.includes(member.agentId) ? current.filter((id) => id !== member.agentId) : [...current, member.agentId])} disabled={memberBusy} /><i>{member.emoji || agentInitials(member.displayName)}</i><span><strong>{member.displayName}</strong><small>{member.role || member.agentId}</small></span></label>)}</div></fieldset>
+          <footer><button type="button" className="btn-secondary" onClick={() => setMembersOpen(false)} disabled={memberBusy}>Cancel</button><button type="button" className="btn" onClick={() => void saveRoomMembers()} disabled={memberBusy || memberDraftIds.length < 2}>{memberBusy ? "Saving…" : "Save membership"}</button></footer>
+        </section>
+      </div>}
 
       {createOpen && <div className="task-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !createBusy) setCreateOpen(false); }}>
         <form className="room-create-dialog" onSubmit={createRoom} role="dialog" aria-modal="true" aria-labelledby="room-create-title">
@@ -3481,13 +3561,19 @@ function AgentMessengerPage() {
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<AgentChatMessage[]>([]);
+  const [turns, setTurns] = useState<AgentChatTurn[]>([]);
+  const [sessionActions, setSessionActions] = useState<AgentRunAction[]>([]);
+  const [newSessionTitle, setNewSessionTitle] = useState("");
   const [historyLoading, setHistoryLoading] = useState(false);
   const [chatError, setChatError] = useState("");
   const [composer, setComposer] = useState("");
+  const [directAttachment, setDirectAttachment] = useState<File | null>(null);
   const [sending, setSending] = useState(false);
+  const [sessionActionBusy, setSessionActionBusy] = useState(false);
   const [sendStatus, setSendStatus] = useState("");
   const [mobilePane, setMobilePane] = useState<MessengerPane>("agents");
   const transcriptRef = useRef<HTMLDivElement>(null);
+  const directFileRef = useRef<HTMLInputElement>(null);
 
   const loadInbox = useCallback(async (refresh = false) => {
     setLoading(true);
@@ -3545,14 +3631,20 @@ function AgentMessengerPage() {
   useEffect(() => {
     if (!selectedAgentId || !selectedSessionId) {
       setMessages([]);
+      setTurns([]);
+      setSessionActions([]);
       setHistoryLoading(false);
       return;
     }
     let cancelled = false;
     setHistoryLoading(true);
     setChatError("");
-    api.agentHistory(selectedAgentId, selectedSessionId).then((data) => {
-      if (!cancelled) setMessages(data.messages);
+    setSessionActions([]);
+    Promise.all([api.agentHistory(selectedAgentId, selectedSessionId), api.agentTurns(selectedAgentId, selectedSessionId)]).then(([history, turnData]) => {
+      if (!cancelled) {
+        setMessages(history.messages);
+        setTurns(turnData.turns);
+      }
     }).catch((requestError: any) => {
       if (!cancelled) {
         setMessages([]);
@@ -3560,6 +3652,37 @@ function AgentMessengerPage() {
       }
     }).finally(() => { if (!cancelled) setHistoryLoading(false); });
     return () => { cancelled = true; };
+  }, [selectedAgentId, selectedSessionId]);
+
+  useEffect(() => {
+    if (!selectedAgentId || !selectedSessionId) return;
+    const source = new EventSource(`/api/agents/${encodeURIComponent(selectedAgentId)}/sessions/${encodeURIComponent(selectedSessionId)}/events`);
+    source.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data) as { type?: string; turns?: AgentChatTurn[]; turn?: AgentChatTurn; actions?: AgentRunAction[]; action?: AgentRunAction };
+        if (data.type === "hello") {
+          if (Array.isArray(data.turns)) setTurns(data.turns);
+          if (Array.isArray(data.actions)) setSessionActions(data.actions);
+        }
+        if (data.type === "action" && data.action) {
+          const action = data.action;
+          setSessionActions((current) => current.some((row) => row.id === action.id)
+            ? current.map((row) => row.id === action.id ? action : row)
+            : [...current, action]);
+        }
+        if (data.type === "turn" && data.turn) {
+          const incoming = data.turn;
+          setTurns((current) => current.some((turn) => turn.turnId === incoming.turnId)
+            ? current.map((turn) => turn.turnId === incoming.turnId ? incoming : turn)
+            : [...current, incoming]);
+          if (incoming.state === "complete" || incoming.state === "error" || incoming.state === "cancelled") {
+            void api.agentHistory(selectedAgentId, selectedSessionId).then((history) => setMessages(history.messages)).catch(() => {});
+            void refreshSelectedAgent();
+          }
+        }
+      } catch { /* malformed frame: EventSource will reconnect */ }
+    };
+    return () => source.close();
   }, [selectedAgentId, selectedSessionId]);
 
   useEffect(() => {
@@ -3579,6 +3702,10 @@ function AgentMessengerPage() {
   const selectedMember = members.find((member) => member.agentId === selectedAgentId) ?? null;
   const sessions = (agentDetail?.agent.activity.sessions ?? []).filter((session): session is typeof session & { sessionId: string } => Boolean(session.sessionId));
   const selectedSession = sessions.find((session) => session.sessionId === selectedSessionId) ?? null;
+  const visibleTurns = turns.filter((turn) => turn.state !== "complete");
+  const sessionActivityState = latestRunStatus(sessionActions);
+  const showSessionActivity = sessionActions.length > 0 && (Boolean(selectedSession?.hasActiveRun) || sending
+    || sessionActivityState === "failed" || sessionActivityState === "stopped" || sessionActivityState === "blocked");
 
   const activityLabel = (agentId: string) => {
     const activity = activityMap.get(agentId)?.activity;
@@ -3594,7 +3721,10 @@ function AgentMessengerPage() {
     setSelectedAgentId(agentId);
     setSelectedSessionId(null);
     setMessages([]);
+    setTurns([]);
+    setNewSessionTitle("");
     setComposer("");
+    setDirectAttachment(null);
     setSendStatus("");
     setChatError("");
     setMobilePane("sessions");
@@ -3603,7 +3733,10 @@ function AgentMessengerPage() {
   const chooseSession = (sessionId: string | null) => {
     setSelectedSessionId(sessionId);
     setMessages([]);
+    setTurns([]);
+    setNewSessionTitle("");
     setComposer("");
+    setDirectAttachment(null);
     setChatError("");
     setSendStatus("");
     setMobilePane("chat");
@@ -3612,16 +3745,21 @@ function AgentMessengerPage() {
   const sendDirectMessage = async (event: React.FormEvent) => {
     event.preventDefault();
     const text = composer.trim();
-    if (!selectedAgentId || !text || sending) return;
+    const file = directAttachment;
+    if (!selectedAgentId || (!text && !file) || sending) return;
     setSending(true);
     setChatError("");
-    setSendStatus("Waiting for the real Gateway and agent reply…");
+    setSendStatus("Submitting to the real Gateway queue…");
     try {
-      const result = await api.sendAgentMessage(selectedAgentId, text, selectedSessionId);
-      setMessages(result.messages);
-      setSelectedSessionId(result.session.sessionId);
+      const result = file
+        ? await api.uploadAgentAttachment(selectedAgentId, selectedSessionId, selectedSessionId ? "" : newSessionTitle.trim(), text, file)
+        : await api.sendAgentMessage(selectedAgentId, text, selectedSessionId, selectedSessionId ? undefined : newSessionTitle.trim() || undefined);
+      if (result.session.sessionId) setSelectedSessionId(result.session.sessionId);
+      setTurns((current) => current.some((turn) => turn.turnId === result.turn.turnId) ? current : [...current, result.turn]);
       setComposer("");
-      setSendStatus("Gateway reply completed");
+      setDirectAttachment(null);
+      setNewSessionTitle("");
+      setSendStatus(result.status === "queued" ? "Queued behind current agent work." : "Gateway accepted; you can send another message or cancel this turn.");
       const detail = await api.agentDetail(selectedAgentId, true).catch(() => null);
       if (detail) setAgentDetail(detail);
       const refreshedOverview = await api.agentOverview(true).catch(() => null);
@@ -3631,6 +3769,93 @@ function AgentMessengerPage() {
       setChatError(requestError?.message ?? "The Gateway did not complete this message.");
     } finally {
       setSending(false);
+    }
+  };
+
+  const refreshSelectedAgent = async () => {
+    if (!selectedAgentId) return null;
+    const next = await api.agentDetail(selectedAgentId, true);
+    setAgentDetail(next);
+    return next;
+  };
+
+  const cancelQueuedTurn = async (turn: AgentChatTurn) => {
+    if (!selectedAgentId || !selectedSessionId || sessionActionBusy || ["complete", "cancelled", "error"].includes(turn.state)) return;
+    setSessionActionBusy(true);
+    setChatError("");
+    try {
+      const result = await api.cancelAgentTurn(selectedAgentId, selectedSessionId, turn.turnId);
+      setTurns((current) => current.map((row) => row.turnId === result.turn.turnId ? result.turn : row));
+      setSendStatus("Cancellation requested for that exact queued/active turn.");
+    } catch (requestError: any) {
+      setChatError(requestError?.message ?? "Could not cancel this turn.");
+    } finally {
+      setSessionActionBusy(false);
+    }
+  };
+
+  const renameSelectedSession = async () => {
+    if (!selectedAgentId || !selectedSessionId || !selectedSession || sessionActionBusy) return;
+    const title = window.prompt("Session title", selectedSession.displayName)?.trim();
+    if (!title || title === selectedSession.displayName) return;
+    setSessionActionBusy(true);
+    setChatError("");
+    try {
+      await api.renameAgentSession(selectedAgentId, selectedSessionId, title);
+      await refreshSelectedAgent();
+    } catch (requestError: any) {
+      setChatError(requestError?.message ?? "Could not rename this session.");
+    } finally {
+      setSessionActionBusy(false);
+    }
+  };
+
+  const stopSelectedSession = async () => {
+    if (!selectedAgentId || !selectedSessionId || sessionActionBusy) return;
+    setSessionActionBusy(true);
+    setChatError("");
+    try {
+      await api.abortAgentSession(selectedAgentId, selectedSessionId);
+      setSendStatus("Stop requested; queued follow-ups were cleared.");
+      await refreshSelectedAgent();
+    } catch (requestError: any) {
+      setChatError(requestError?.message ?? "Could not stop this session.");
+    } finally {
+      setSessionActionBusy(false);
+    }
+  };
+
+  const archiveSelectedSession = async () => {
+    if (!selectedAgentId || !selectedSessionId || !selectedSession || sessionActionBusy) return;
+    if (!window.confirm(`Archive “${selectedSession.displayName}”? Its transcript will be retained.`)) return;
+    setSessionActionBusy(true);
+    setChatError("");
+    try {
+      await api.archiveAgentSession(selectedAgentId, selectedSessionId, true);
+      setSelectedSessionId(null);
+      setMessages([]);
+      await refreshSelectedAgent();
+    } catch (requestError: any) {
+      setChatError(requestError?.message ?? "Could not archive this session.");
+    } finally {
+      setSessionActionBusy(false);
+    }
+  };
+
+  const deleteSelectedSession = async () => {
+    if (!selectedAgentId || !selectedSessionId || !selectedSession || sessionActionBusy) return;
+    if (!window.confirm(`Permanently delete “${selectedSession.displayName}”? OpenClaw will retain its verified deleted-transcript archive when supported.`)) return;
+    setSessionActionBusy(true);
+    setChatError("");
+    try {
+      await api.deleteAgentSession(selectedAgentId, selectedSessionId);
+      setSelectedSessionId(null);
+      setMessages([]);
+      await refreshSelectedAgent();
+    } catch (requestError: any) {
+      setChatError(requestError?.message ?? "Could not delete this session.");
+    } finally {
+      setSessionActionBusy(false);
     }
   };
 
@@ -3687,23 +3912,35 @@ function AgentMessengerPage() {
             <span className="messenger-avatar large">{selectedMember?.emoji || (selectedMember ? agentInitials(selectedMember.displayName) : "◇")}</span>
             <div><strong>{selectedMember?.displayName || "Agent conversation"}</strong><span>{selectedSession ? selectedSession.displayName : selectedMember ? "New session · not created yet" : "Choose an agent"}</span></div>
             {selectedSession?.hasActiveRun && <span className="messenger-live-badge">Active run</span>}
+            {selectedSession && <div className="messenger-session-actions"><button onClick={renameSelectedSession} disabled={sessionActionBusy}>Rename</button>{selectedSession.hasActiveRun && <button className="stop" onClick={stopSelectedSession} disabled={sessionActionBusy}>Stop</button>}<button onClick={archiveSelectedSession} disabled={sessionActionBusy || selectedSession.hasActiveRun}>Archive</button><button className="delete" onClick={deleteSelectedSession} disabled={sessionActionBusy || selectedSession.hasActiveRun}>Delete</button></div>}
           </div>
 
           <div className="messenger-transcript" ref={transcriptRef}>
             {!selectedMember ? <div className="messenger-chat-empty"><span>✉</span><strong>Choose an office agent</strong><p>Each agent keeps its own real Gateway sessions and sanitized history.</p></div>
               : historyLoading ? <div className="messenger-chat-empty"><span className="page-state-spinner" /><strong>Loading conversation…</strong></div>
-              : messages.length === 0 ? <div className="messenger-chat-empty"><span>{selectedMember.emoji || "◇"}</span><strong>{selectedSessionId ? "No text messages in this session" : `Start a new DM with ${selectedMember.displayName}`}</strong><p>{selectedSessionId ? "Tool and control rows are intentionally omitted." : "The session will be created only when this first message is sent."}</p></div>
+              : messages.length === 0 && visibleTurns.length === 0 ? <div className="messenger-chat-empty"><span>{selectedMember.emoji || "◇"}</span><strong>{selectedSessionId ? "No text messages in this session" : `Start a new DM with ${selectedMember.displayName}`}</strong><p>{selectedSessionId ? "Tool and control rows are intentionally omitted." : "The session will be created only when this first message is sent."}</p></div>
               : messages.map((message) => <article key={`${message.id}-${message.timestamp ?? "none"}`} className={`messenger-message ${message.role}`}>
                   <div className="messenger-message-avatar">{message.role === "user" ? "You" : selectedMember.emoji || agentInitials(selectedMember.displayName)}</div>
                   <div><header><strong>{message.role === "user" ? "You" : selectedMember.displayName}</strong><time>{message.timestamp ? new Date(message.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "Time not reported"}</time></header><Markdown text={message.text} /></div>
                 </article>)}
+            {visibleTurns.map((turn) => <article className={`messenger-pending-turn ${turn.state}`} key={turn.turnId}>
+              <header><strong>You</strong><span>{turn.state.replaceAll("_", " ")}</span><time>{new Date(turn.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time></header>
+              <p>{turn.text}</p>
+              {turn.error && <small>{turn.error}</small>}
+              {!(["cancelled", "error"] as string[]).includes(turn.state) && <button onClick={() => cancelQueuedTurn(turn)} disabled={sessionActionBusy}>{turn.state === "cancel_requested" ? "Stopping…" : "Cancel turn"}</button>}
+            </article>)}
+            {showSessionActivity && <AgentActivity actions={sessionActions} title={`${selectedMember?.displayName ?? "Agent"} activity`} />}
             {sending && <div className="messenger-waiting"><span className="page-state-spinner" /><span>{sendStatus}</span></div>}
           </div>
 
           {chatError && <div className="messenger-error" role="alert">{chatError}</div>}
-          {selectedMember && <form className="messenger-composer" onSubmit={sendDirectMessage}>
+          {selectedMember && <form className={`messenger-composer${selectedSessionId ? "" : " new-session"}`} onSubmit={sendDirectMessage}>
+            <input ref={directFileRef} type="file" accept={CHAT_ATTACHMENT_ACCEPT} onChange={(event) => { const file = event.target.files?.[0] ?? null; event.target.value = ""; if (file && file.size <= 8 * 1024 * 1024) setDirectAttachment(file); else if (file) setChatError("Files up to 8 MB are supported (images up to 6 MB)."); }} hidden />
+            {!selectedSessionId && <input className="messenger-session-title-input" value={newSessionTitle} onChange={(event) => setNewSessionTitle(event.target.value)} maxLength={160} placeholder="Session title (optional; first message used by default)" />}
+            {directAttachment && <div className="messenger-attachment-chip"><span>📎 {directAttachment.name}</span><small>{chatFileSize(directAttachment.size)}</small><button type="button" onClick={() => setDirectAttachment(null)}>×</button></div>}
+            <button type="button" className="messenger-attach" onClick={() => directFileRef.current?.click()} disabled={sending} aria-label="Attach file">📎</button>
             <textarea value={composer} onChange={(event) => setComposer(event.target.value)} placeholder={`Message ${selectedMember.displayName}…`} rows={1} maxLength={20_000} disabled={sending} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} />
-            <button className="btn" disabled={sending || !composer.trim()}>{sending ? "Working…" : "Send"}</button>
+            <button className="btn" disabled={sending || (!composer.trim() && !directAttachment)}>{sending ? "Submitting…" : visibleTurns.some((turn) => turn.state === "accepted" || turn.state === "queued") ? "Queue message" : "Send"}</button>
           </form>}
           <div className="messenger-truth">History and run state come from OpenClaw Gateway. Julie stores no duplicate DM transcript and exposes no session keys.</div>
         </main>
@@ -3771,6 +4008,104 @@ function chatLiveStatusLabel(status: ChatLiveStatus): string {
   return label;
 }
 
+const AGENT_ACTION_ICONS: Record<string, string> = {
+  exec: "⌘", bash: "⌘", shell: "⌘", process: "⌘",
+  read: "▤", ls: "▤", list: "▤", glob: "▤",
+  write: "✎", edit: "✎", apply_patch: "✎", str_replace_editor: "✎",
+  grep: "⌕", web_fetch: "⌕", web_search: "⌕",
+  sessions_send: "⇢", sessions_spawn: "⇢", sessions_history: "⇢",
+};
+
+const AGENT_ACTION_STATUS_LABEL: Record<AgentRunAction["status"], string> = {
+  running: "Running",
+  completed: "Done",
+  failed: "Failed",
+  blocked: "Needs approval",
+  stopped: "Stopped",
+  unknown: "Reported",
+};
+
+function agentActionIcon(action: AgentRunAction): string {
+  if (action.kind === "run") return action.status === "running" ? "◉" : action.status === "completed" ? "✓" : action.status === "stopped" ? "■" : "!";
+  if (action.kind === "note") return "◆";
+  return AGENT_ACTION_ICONS[action.name] ?? "•";
+}
+
+function latestRunStatus(actions: AgentRunAction[]): AgentRunAction["status"] | null {
+  if (actions.length === 0) return null;
+  const runId = actions[actions.length - 1].runId;
+  for (let index = actions.length - 1; index >= 0; index -= 1) {
+    if (actions[index].runId === runId && actions[index].kind === "run") return actions[index].status;
+  }
+  return actions[actions.length - 1].status;
+}
+
+// Real Gateway activity: commands, file edits, approval waits, output, and the
+// terminal run state. Every row comes from an actual `agent` frame, so the
+// timeline never claims progress the runtime did not report.
+function AgentActivity({ actions, title = "Live activity" }: { actions: AgentRunAction[]; title?: string }) {
+  const [showEarlier, setShowEarlier] = useState(false);
+  const [openOutput, setOpenOutput] = useState<number | null>(null);
+  if (actions.length === 0) return null;
+
+  const runs: Array<{ runId: string; actions: AgentRunAction[] }> = [];
+  const byRun = new Map<string, { runId: string; actions: AgentRunAction[] }>();
+  for (const action of actions) {
+    let run = byRun.get(action.runId);
+    if (!run) {
+      run = { runId: action.runId, actions: [] };
+      byRun.set(action.runId, run);
+      runs.push(run);
+    }
+    run.actions.push(action);
+  }
+  const latest = runs[runs.length - 1];
+  const earlier = runs.slice(0, -1);
+  const visible = showEarlier ? runs : [latest];
+  const runState = latestRunStatus(actions);
+
+  return (
+    <section className={`agent-activity state-${runState ?? "unknown"}`} aria-label={title}>
+      <header className="agent-activity-head">
+        <span className="agent-activity-title">{title}</span>
+        <span className="agent-activity-count">
+          {latest.actions.length} step{latest.actions.length === 1 ? "" : "s"}
+          {runState ? ` · ${AGENT_ACTION_STATUS_LABEL[runState]}` : ""}
+        </span>
+        {earlier.length > 0 && (
+          <button type="button" className="agent-activity-toggle" onClick={() => setShowEarlier((current) => !current)}>
+            {showEarlier ? "Show latest run" : `Show ${earlier.length} earlier run${earlier.length === 1 ? "" : "s"}`}
+          </button>
+        )}
+      </header>
+      {visible.map((run) => (
+        <ol className="agent-activity-run" key={run.runId}>
+          {run.actions.map((action) => (
+            <li key={action.id} className={`agent-action status-${action.status}${action.isError ? " is-error" : ""}`}>
+              <span className="agent-action-icon" aria-hidden="true">{agentActionIcon(action)}</span>
+              <div className="agent-action-body">
+                <div className="agent-action-line">
+                  <strong>{action.title || action.name || "Activity"}</strong>
+                  <span className={`agent-action-state status-${action.status}`}>{AGENT_ACTION_STATUS_LABEL[action.status] ?? action.status}</span>
+                </div>
+                {action.detail && <code className="agent-action-detail">{action.detail}</code>}
+                {action.output && (
+                  <>
+                    <button type="button" className="agent-action-output-toggle" onClick={() => setOpenOutput((current) => current === action.id ? null : action.id)}>
+                      {openOutput === action.id ? "Hide output" : "Show output"}
+                    </button>
+                    {openOutput === action.id && <pre className="agent-action-output">{action.output.slice(0, 4000)}</pre>}
+                  </>
+                )}
+              </div>
+            </li>
+          ))}
+        </ol>
+      ))}
+    </section>
+  );
+}
+
 function ChatView() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [convs, setConvs] = useState<Conversation[]>([]);
@@ -3787,12 +4122,21 @@ function ChatView() {
   const [deletingConversationId, setDeletingConversationId] = useState<number | null>(null);
   const [conversationMenuOpen, setConversationMenuOpen] = useState(false);
   const [chatError, setChatError] = useState("");
+  const [messageActionsId, setMessageActionsId] = useState<number | null>(null);
+  const [messageActionBusy, setMessageActionBusy] = useState(false);
   const [attachment, setAttachment] = useState<File | null>(null);
   const [streamedReply, setStreamedReply] = useState("");
   const [liveStatus, setLiveStatus] = useState<ChatLiveStatus>({ state: "idle" });
+  const [chatActions, setChatActions] = useState<AgentRunAction[]>([]);
   const [createOpen, setCreateOpen] = useState(false);
   const [newWorkspaceName, setNewWorkspaceName] = useState("");
   const [newWorkspaceDescription, setNewWorkspaceDescription] = useState("");
+  const [workspaceTeamMode, setWorkspaceTeamMode] = useState<"" | "shared" | "dedicated">("");
+  const [workspacePlan, setWorkspacePlan] = useState<WorkspacePlanResponse | null>(null);
+  const [workspaceReceipt, setWorkspaceReceipt] = useState<WorkspacePlanAppliedResponse | null>(null);
+  const [planBusy, setPlanBusy] = useState(false);
+  const [applyBusy, setApplyBusy] = useState(false);
+  const [planConfirmed, setPlanConfirmed] = useState(false);
   const [createError, setCreateError] = useState("");
   const logRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -3800,6 +4144,10 @@ function ChatView() {
 
   const runActive = liveStatus.state === "sending" || liveStatus.state === "accepted" || liveStatus.state === "status"
     || liveStatus.state === "responding" || liveStatus.state === "finalizing";
+  const activityState = latestRunStatus(chatActions);
+  const showActivity = chatActions.length > 0 && (runActive
+    || activityState === "failed" || activityState === "stopped" || activityState === "blocked");
+  const queuedFollowUps = messages.filter((row) => row.role === "user" && row.delivery_state === "queued").length;
 
   // The shell-mounted microphone must target the conversation the owner chose,
   // rather than creating a new one or guessing from Gateway history.
@@ -3921,31 +4269,52 @@ function ChatView() {
     }
   };
 
-  const createWorkspace = async (event: React.FormEvent) => {
+  const openWorkspaceWizard = () => {
+    setNewWorkspaceName("");
+    setNewWorkspaceDescription("");
+    setWorkspaceTeamMode("");
+    setWorkspacePlan(null);
+    setWorkspaceReceipt(null);
+    setPlanConfirmed(false);
+    setCreateError("");
+    setCreateOpen(true);
+  };
+
+  const requestWorkspacePlan = async (event: React.FormEvent) => {
     event.preventDefault();
     const name = newWorkspaceName.trim();
-    if (!name || workspaceBusy) return;
-    setWorkspaceBusy(true);
+    const purpose = newWorkspaceDescription.trim();
+    if (!name || !purpose || !workspaceTeamMode || planBusy) return;
+    setPlanBusy(true);
     setCreateError("");
     try {
-      const created = await api.createWorkspace(name, newWorkspaceDescription.trim());
-      // Creation and activation are separate real mutations. Only switch the UI
-      // after both calls succeed, then refresh from the server as source of truth.
-      await api.activateWorkspace(created.workspace.id);
+      const plan = await api.planWorkspace({ name, purpose, teamMode: workspaceTeamMode });
+      setWorkspacePlan(plan);
+    } catch (error: any) {
+      setCreateError(errorMessage(error, "Julie could not plan this workspace."));
+    } finally {
+      setPlanBusy(false);
+    }
+  };
+
+  const applyReviewedWorkspacePlan = async () => {
+    if (!workspacePlan || applyBusy) return;
+    setApplyBusy(true);
+    setCreateError("");
+    try {
+      const result = await api.applyWorkspacePlan(workspacePlan.planToken);
+      await api.activateWorkspace(result.workspace.id);
       const refreshed = await api.workspaces();
       setWorkspaces(refreshed.workspaces);
-      setActiveWorkspaceId(created.workspace.id);
-      setNewWorkspaceName("");
-      setNewWorkspaceDescription("");
-      setCreateOpen(false);
+      setActiveWorkspaceId(result.workspace.id);
+      setConvs([]);
+      setConvId(null);
+      setWorkspaceReceipt(result);
     } catch (error: any) {
-      const duplicate = error?.status === 409;
-      setCreateError(duplicate ? "A workspace with that name already exists." : errorMessage(error, "Could not create workspace."));
-      // If creation succeeded but activation/refresh failed, keep the real list
-      // synchronized instead of hiding the newly-created row.
+      setCreateError(errorMessage(error, "The confirmed workspace setup did not complete."));
       api.workspaces().then((data) => setWorkspaces(data.workspaces)).catch(() => {});
     } finally {
-      setWorkspaceBusy(false);
+      setApplyBusy(false);
     }
   };
 
@@ -3971,6 +4340,7 @@ function ChatView() {
   useEffect(() => {
     setStreamedReply("");
     setLiveStatus({ state: "idle" });
+    setChatActions([]);
     setAttachment(null);
     if (!convId) return;
     let disposed = false;
@@ -4025,12 +4395,20 @@ function ChatView() {
           } else if (data?.type === "message-removed" && typeof data.id === "number") {
             // The Gateway rejected the turn: drop the optimistic user bubble.
             setMessages((current) => current.filter((row) => row.id !== data.id));
-          } else if (data?.type === "hello" && data.activeRun) {
-            // Reconnect / late join: restore the observable state of a run the
-            // server is still monitoring instead of showing a frozen UI.
-            const run = data.activeRun as ChatRunSnapshot;
-            if (run.state === "responding" || run.state === "finalizing") setStreamedReply(String(run.text ?? ""));
-            setLiveStatus({ state: chatRunStatusState(run.state), phase: run.phase, retry: run.retry });
+          } else if (data?.type === "hello") {
+            if (Array.isArray(data.actions)) setChatActions(data.actions as AgentRunAction[]);
+            if (data.activeRun) {
+              // Reconnect / late join: restore the observable state of a run the
+              // server is still monitoring instead of showing a frozen UI.
+              const run = data.activeRun as ChatRunSnapshot;
+              if (run.state === "responding" || run.state === "finalizing") setStreamedReply(String(run.text ?? ""));
+              setLiveStatus({ state: chatRunStatusState(run.state), phase: run.phase, retry: run.retry });
+            }
+          } else if (data?.type === "action" && data.action) {
+            const action = data.action as AgentRunAction;
+            setChatActions((current) => current.some((row) => row.id === action.id)
+              ? current.map((row) => row.id === action.id ? action : row)
+              : [...current, action]);
           } else if (data?.type === "run") {
             applyRunEvent(data);
           }
@@ -4068,23 +4446,31 @@ function ChatView() {
   }, [conversationMenuOpen]);
 
   const send = async () => {
-    if (!convId || busy || runActive) return;
+    if (!convId || busy) return;
     const text = input.trim();
     const file = attachment;
     if (!text && !file) return;
+    if (file && runActive) {
+      setChatError("Text can be queued while Julie works; attachments wait until the active turn finishes so file bytes are never held in an unconfirmed memory queue.");
+      return;
+    }
     setBusy(true);
     setChatError("");
     setInput("");
     setAttachment(null);
-    setStreamedReply("");
-    setLiveStatus({ state: "sending" });
+    if (!runActive) {
+      setStreamedReply("");
+      setLiveStatus({ state: "sending" });
+      setChatActions([]);
+    }
     try {
       const result = file
         ? await api.uploadChatAttachment(convId, text, file)
         : await api.sendMessage(convId, text);
       if (result.userMessage) upsertMessage(result.userMessage);
-      // 202 = the real Gateway acknowledged the send; streaming continues via SSE.
-      setLiveStatus({ state: "accepted" });
+      // A queued response is local durable custody; accepted means the real
+      // Gateway acknowledged the send. Existing live state stays visible.
+      if (result.status === "accepted") setLiveStatus({ state: "accepted" });
     } catch (error: any) {
       setInput(text);
       if (file) setAttachment(file);
@@ -4095,6 +4481,46 @@ function ChatView() {
         : errorMessage(error, file ? "Attachment could not be sent." : "Message could not be sent."));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const stopConversationRun = async () => {
+    if (!convId || !runActive || messageActionBusy) return;
+    setMessageActionBusy(true);
+    setChatError("");
+    try {
+      await api.abortConversation(convId);
+    } catch (error) {
+      setChatError(errorMessage(error, "Could not stop the active turn."));
+    } finally {
+      setMessageActionBusy(false);
+    }
+  };
+
+  const copyChatMessage = async (message: Message) => {
+    try {
+      await navigator.clipboard.writeText(message.text);
+      setMessageActionsId(null);
+    } catch {
+      setChatError("Browser clipboard access was denied.");
+    }
+  };
+
+  const removeChatMessage = async (message: Message) => {
+    if (!convId || message.role !== "user" || messageActionBusy) return;
+    const queued = message.delivery_state === "queued";
+    if (!queued && !window.confirm("Remove this message from Julie's local transcript only? It cannot be recalled from Gateway/model context after dispatch.")) return;
+    setMessageActionBusy(true);
+    setChatError("");
+    try {
+      const result = await api.removeConversationMessage(convId, message.id, !queued);
+      if (result.message) upsertMessage(result.message);
+      else setMessages((current) => current.filter((row) => row.id !== message.id));
+      setMessageActionsId(null);
+    } catch (error) {
+      setChatError(errorMessage(error, queued ? "Could not recall the queued message." : "Could not remove the local message."));
+    } finally {
+      setMessageActionBusy(false);
     }
   };
 
@@ -4144,7 +4570,13 @@ function ChatView() {
           <h2>{activeWorkspace?.name ?? (loadingWorkspaces ? "Loading…" : "Chat")}</h2>
           {activeWorkspace?.description && <p>{activeWorkspace.description}</p>}
         </div>
-        {activeConversation && <span className="chat-context-pill">{activeConversation.title}</span>}
+        <div className="chat-heading-badges">
+          {activeConversation && <span className="chat-context-pill">{activeConversation.title}</span>}
+          <span className={`chat-live-pill${runActive ? " working" : convId ? " ready" : " idle"}`}>
+            <i aria-hidden="true" />
+            {runActive ? "Julie is working" : convId ? "Ready for a message" : "No conversation selected"}
+          </span>
+        </div>
       </div>
 
       <div className="card chat-shell">
@@ -4161,7 +4593,7 @@ function ChatView() {
               {workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
             </select>
           </label>
-          <button className="chat-toolbar-button" onClick={() => { setCreateError(""); setCreateOpen(true); }}>
+          <button className="chat-toolbar-button" onClick={openWorkspaceWizard}>
             <span aria-hidden="true">＋</span><span>Workspace</span>
           </button>
 
@@ -4249,17 +4681,25 @@ function ChatView() {
             <div className="chat-empty">
               <strong>No workspace yet</strong>
               <span>Create a workspace before starting a conversation.</span>
-              <button className="btn" onClick={() => setCreateOpen(true)}>Create workspace</button>
+              <button className="btn" onClick={openWorkspaceWizard}>Plan a workspace</button>
             </div>
           )}
           {!loadingMessages && convId && messages.length === 0 && (
             <div className="chat-empty"><strong>Ready when you are</strong><span>Send the first message in this conversation.</span></div>
           )}
-          {messages.map(m => (
-            <div key={m.id} className={`msg ${m.role}`}>
+          {messages.map(m => m.role === "system" ? (
+            <div key={m.id} className="msg system-note" role="note">
+              <span className="system-note-label">Julie coordination</span>
+              <Markdown text={m.text} />
+            </div>
+          ) : (
+            <div key={m.id} className={`msg ${m.role} state-${m.delivery_state}`} onClick={() => setMessageActionsId((current) => current === m.id ? null : m.id)}>
               {m.role === "assistant" ? <Markdown text={m.text} /> : <span className="msg-plain">{m.text}</span>}
+              {m.role === "user" && m.delivery_state !== "complete" && <small className="msg-delivery-state">{m.delivery_state.replaceAll("_", " ")}</small>}
+              {messageActionsId === m.id && <div className="msg-actions" onClick={(event) => event.stopPropagation()}><button onClick={() => void copyChatMessage(m)}>Copy</button>{m.role === "user" && <button onClick={() => void removeChatMessage(m)} disabled={messageActionBusy || m.delivery_state === "sending" || m.delivery_state === "accepted"}>{m.delivery_state === "queued" ? "Recall" : "Remove locally"}</button>}</div>}
             </div>
           ))}
+          {showActivity && <AgentActivity actions={chatActions} title="Julie's live activity" />}
           {runActive && (
             <>
               {streamedReply && (
@@ -4268,6 +4708,7 @@ function ChatView() {
               <div className="chat-run-status" role="status" aria-live="polite">
                 <span className="chat-run-spinner" aria-hidden="true" />
                 <span>{chatLiveStatusLabel(liveStatus)}</span>
+                <button type="button" onClick={() => void stopConversationRun()} disabled={messageActionBusy}>Stop</button>
               </div>
             </>
           )}
@@ -4282,6 +4723,12 @@ function ChatView() {
             </span>
           </div>
         )}
+        {queuedFollowUps > 0 && (
+          <div className="chat-queue-banner" role="status">
+            <strong>{queuedFollowUps} follow-up{queuedFollowUps === 1 ? "" : "s"} queued locally</strong>
+            <span>Dispatched in order after the current turn. Recall is available only before dispatch; removal afterwards is local-only.</span>
+          </div>
+        )}
         <div className="chat-input">
           <input ref={fileInputRef} type="file" accept={CHAT_ATTACHMENT_ACCEPT} onChange={handleFileSelected} style={{ display: "none" }} />
           <button type="button" className="chat-attach-button" onClick={() => fileInputRef.current?.click()}
@@ -4290,42 +4737,200 @@ function ChatView() {
           </button>
           <textarea value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => {
             if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); }
-          }} placeholder={convId ? `Message Julie in ${activeWorkspace?.name ?? "this workspace"}…` : "Create a conversation to begin"}
+          }} placeholder={convId ? runActive ? "Queue a follow-up while Julie works…" : `Message Julie in ${activeWorkspace?.name ?? "this workspace"}…` : "Create a conversation to begin"}
             disabled={!convId || busy} />
           <button className="send-btn" onClick={() => void send()}
-            disabled={busy || runActive || !convId || (!input.trim() && !attachment)}>
-            {busy ? "Sending…" : runActive ? "Working…" : "Send"}
+            disabled={busy || !convId || (!input.trim() && !attachment) || (runActive && Boolean(attachment))}>
+            {busy ? "Submitting…" : runActive ? "Queue" : "Send"}
           </button>
+        </div>
+        <div className="chat-composer-hint">
+          <span>Enter to send · Shift+Enter for a new line</span>
+          <span>{runActive ? "Text queues while Julie works; attachments wait for the current turn." : "Execution goes through the real OpenClaw Gateway."}</span>
         </div>
       </div>
 
       {createOpen && (
-        <div className="dialog-backdrop" onMouseDown={() => !workspaceBusy && setCreateOpen(false)}>
+        <div className="dialog-backdrop" onMouseDown={() => !workspaceBusy && !planBusy && !applyBusy && setCreateOpen(false)}>
           <div className="workspace-dialog card" role="dialog" aria-modal="true" aria-labelledby="create-workspace-title"
             onMouseDown={(event) => event.stopPropagation()}>
-            <button className="dialog-close" onClick={() => setCreateOpen(false)} disabled={workspaceBusy} aria-label="Close">×</button>
-            <div className="chat-eyebrow">New workspace</div>
-            <h2 id="create-workspace-title">Create a focused space</h2>
-            <p>Conversations and tasks stay scoped to this workspace.</p>
-            <form onSubmit={createWorkspace} className="workspace-form">
-              <label>
-                <span>Name</span>
-                <input autoFocus value={newWorkspaceName} onChange={(event) => setNewWorkspaceName(event.target.value)}
-                  maxLength={120} placeholder="e.g. Product launch" required disabled={workspaceBusy} />
-              </label>
-              <label>
-                <span>Description <small>optional</small></span>
-                <textarea value={newWorkspaceDescription} onChange={(event) => setNewWorkspaceDescription(event.target.value)}
-                  maxLength={2000} rows={4} placeholder="What is this workspace for?" disabled={workspaceBusy} />
-              </label>
-              {createError && <div className="chat-alert" role="alert">{createError}</div>}
-              <div className="dialog-actions">
-                <button type="button" className="btn-secondary" onClick={() => setCreateOpen(false)} disabled={workspaceBusy}>Cancel</button>
-                <button type="submit" className="btn" disabled={workspaceBusy || !newWorkspaceName.trim()}>
-                  {workspaceBusy ? "Creating…" : "Create & activate"}
-                </button>
-              </div>
-            </form>
+            <button className="dialog-close" onClick={() => setCreateOpen(false)}
+              disabled={workspaceBusy || planBusy || applyBusy} aria-label="Close">×</button>
+
+            {workspaceReceipt ? (
+              <>
+                <div className="chat-eyebrow">Workspace ready</div>
+                <h2 id="create-workspace-title">{workspaceReceipt.workspace.name}</h2>
+                <p>Julie planned and set this space up with a confirmed receipt.</p>
+                <dl className="wizard-receipt">
+                  <div><dt>Team mode</dt><dd>{workspaceReceipt.teamMode}</dd></div>
+                  <div><dt>Agents assigned</dt><dd>{workspaceReceipt.assignedAgentIds.length || "none"}</dd></div>
+                  <div><dt>Agents created</dt><dd>{workspaceReceipt.createdAgents.length || "none"}</dd></div>
+                  <div><dt>Rooms</dt><dd>{workspaceReceipt.rooms.length || "none"}</dd></div>
+                  <div><dt>Setup task</dt><dd>#{workspaceReceipt.setupTaskId}</dd></div>
+                  <div><dt>Applied</dt><dd>{taskTimestamp(workspaceReceipt.appliedAt)}</dd></div>
+                </dl>
+                {workspaceReceipt.rooms.length > 0 && (
+                  <ul className="wizard-list">
+                    {workspaceReceipt.rooms.map((room) => (
+                      <li key={room.id}><strong>{room.title}</strong> · {room.kind} · {room.members} member{room.members === 1 ? "" : "s"}</li>
+                    ))}
+                  </ul>
+                )}
+                {workspaceReceipt.warnings.length > 0 && (
+                  <div className="chat-alert" role="status">
+                    <strong>Warnings</strong>
+                    <ul className="wizard-list">{workspaceReceipt.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>
+                  </div>
+                )}
+                <div className="dialog-actions">
+                  <button type="button" className="btn" onClick={() => setCreateOpen(false)}>Open workspace</button>
+                </div>
+              </>
+            ) : workspacePlan ? (
+              <>
+                <div className="chat-eyebrow">Step 2 of 2 · Review Julie's plan</div>
+                <h2 id="create-workspace-title">{workspacePlan.name}</h2>
+                <p>{workspacePlan.plan.summary}</p>
+                <dl className="wizard-receipt">
+                  <div><dt>Team mode</dt><dd>{workspacePlan.teamMode}</dd></div>
+                  <div><dt>Model</dt><dd>{workspacePlan.plan.model ?? "project default"}</dd></div>
+                  <div><dt>Project</dt><dd>{workspacePlan.plan.environment.projectDirectory}</dd></div>
+                  <div><dt>Runtime</dt><dd>{workspacePlan.plan.environment.runtime}</dd></div>
+                </dl>
+                <p className="wizard-note">{workspacePlan.plan.teamModeRationale}</p>
+
+                <h3 className="wizard-heading">Recommended agents</h3>
+                {workspacePlan.plan.recommendedAgents.length === 0
+                  ? <p className="wizard-note">No existing agents were recommended for this purpose.</p>
+                  : <ul className="wizard-list">
+                      {workspacePlan.plan.recommendedAgents.map((entry) => {
+                        const agent = workspacePlan.catalog.agents.find((row) => row.agentId === entry.agentId);
+                        return (
+                          <li key={entry.agentId}>
+                            <strong>{agent?.displayName ?? entry.agentId}</strong>
+                            {agent?.role ? ` · ${agent.role}` : ""}
+                            {agent?.model ? ` · ${agent.model}` : ""}
+                            <div className="wizard-note">{entry.reason}</div>
+                          </li>
+                        );
+                      })}
+                    </ul>}
+
+                {workspacePlan.plan.newRoles.length > 0 && (
+                  <>
+                    <h3 className="wizard-heading">New agents to create</h3>
+                    <ul className="wizard-list">
+                      {workspacePlan.plan.newRoles.map((role) => (
+                        <li key={role.name}>
+                          <strong>{role.emoji} {role.name}</strong> · {role.role}
+                          <div className="wizard-note">{role.reason}</div>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+
+                <h3 className="wizard-heading">Environment & setup</h3>
+                <ul className="wizard-list">
+                  {workspacePlan.plan.environment.setupSteps.map((step) => <li key={step}>{step}</li>)}
+                </ul>
+
+                {workspacePlan.plan.tools.length > 0 && (
+                  <p className="wizard-note"><strong>Tools:</strong> {workspacePlan.plan.tools.join(", ")}</p>
+                )}
+                {workspacePlan.plan.skills.length > 0 && (
+                  <p className="wizard-note"><strong>Skills:</strong> {workspacePlan.plan.skills.join(", ")}</p>
+                )}
+                {workspacePlan.plan.operatingRules.length > 0 && (
+                  <>
+                    <h3 className="wizard-heading">Operating rules</h3>
+                    <ul className="wizard-list">{workspacePlan.plan.operatingRules.map((rule) => <li key={rule}>{rule}</li>)}</ul>
+                  </>
+                )}
+                {workspacePlan.plan.acceptanceChecks.length > 0 && (
+                  <>
+                    <h3 className="wizard-heading">Acceptance checks</h3>
+                    <ul className="wizard-list">{workspacePlan.plan.acceptanceChecks.map((check) => <li key={check}>{check}</li>)}</ul>
+                  </>
+                )}
+                {workspacePlan.plan.risks.length > 0 && (
+                  <>
+                    <h3 className="wizard-heading">Risks</h3>
+                    <ul className="wizard-list">{workspacePlan.plan.risks.map((risk) => <li key={risk}>{risk}</li>)}</ul>
+                  </>
+                )}
+                {workspacePlan.warnings.length > 0 && (
+                  <div className="chat-alert" role="status">
+                    <strong>Warnings</strong>
+                    <ul className="wizard-list">{workspacePlan.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>
+                  </div>
+                )}
+                <p className="wizard-note">
+                  Julie session: <code>{workspacePlan.julie.sessionId}</code>
+                  {workspacePlan.julie.title ? ` · ${workspacePlan.julie.title}` : ""}
+                </p>
+
+                <label className="wizard-confirm">
+                  <input type="checkbox" checked={planConfirmed} onChange={(event) => setPlanConfirmed(event.target.checked)}
+                    disabled={applyBusy} />
+                  <span>I reviewed this plan. Create the workspace, roles, rooms, and setup task.</span>
+                </label>
+
+                {createError && <div className="chat-alert" role="alert">{createError}</div>}
+                <div className="dialog-actions">
+                  <button type="button" className="btn-secondary" disabled={applyBusy}
+                    onClick={() => { setWorkspacePlan(null); setPlanConfirmed(false); setCreateError(""); }}>
+                    Back
+                  </button>
+                  <button type="button" className="btn" disabled={!planConfirmed || applyBusy}
+                    onClick={() => void applyReviewedWorkspacePlan()}>
+                    {applyBusy ? "Applying plan…" : "Confirm & create"}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="chat-eyebrow">Step 1 of 2 · New workspace</div>
+                <h2 id="create-workspace-title">Plan a focused space</h2>
+                <p>Julie will propose the team, environment, and checks before anything is created.</p>
+                <form onSubmit={requestWorkspacePlan} className="workspace-form">
+                  <label>
+                    <span>Name</span>
+                    <input autoFocus value={newWorkspaceName}
+                      onChange={(event) => { setNewWorkspaceName(event.target.value); setWorkspacePlan(null); }}
+                      maxLength={120} placeholder="e.g. Website redesign" required disabled={planBusy} />
+                  </label>
+                  <label>
+                    <span>Purpose</span>
+                    <textarea value={newWorkspaceDescription}
+                      onChange={(event) => { setNewWorkspaceDescription(event.target.value); setWorkspacePlan(null); }}
+                      maxLength={2000} rows={4} placeholder="What should this workspace achieve?" required disabled={planBusy} />
+                  </label>
+                  <fieldset className="wizard-team" disabled={planBusy}>
+                    <legend>Team</legend>
+                    <label>
+                      <input type="radio" name="workspace-team-mode" value="shared" checked={workspaceTeamMode === "shared"}
+                        onChange={() => { setWorkspaceTeamMode("shared"); setWorkspacePlan(null); }} />
+                      <span><strong>Shared team</strong> — reuse existing agents from the Julie pool</span>
+                    </label>
+                    <label>
+                      <input type="radio" name="workspace-team-mode" value="dedicated" checked={workspaceTeamMode === "dedicated"}
+                        onChange={() => { setWorkspaceTeamMode("dedicated"); setWorkspacePlan(null); }} />
+                      <span><strong>Dedicated team</strong> — give this workspace its own agents</span>
+                    </label>
+                  </fieldset>
+                  {createError && <div className="chat-alert" role="alert">{createError}</div>}
+                  <div className="dialog-actions">
+                    <button type="button" className="btn-secondary" onClick={() => setCreateOpen(false)} disabled={planBusy}>Cancel</button>
+                    <button type="submit" className="btn"
+                      disabled={planBusy || !newWorkspaceName.trim() || !newWorkspaceDescription.trim() || !workspaceTeamMode}>
+                      {planBusy ? "Julie is planning…" : "Ask Julie to plan"}
+                    </button>
+                  </div>
+                </form>
+              </>
+            )}
           </div>
         </div>
       )}

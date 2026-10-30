@@ -1,5 +1,53 @@
 # Changelog
 
+## Phase E6 — OpenCode-first collaboration and real activity streaming (2026-10-30)
+### Added
+- OpenCode-first engineering execution: project-native `.opencode` agent/skill
+  configuration, reviewed primary/fallback model policy, and
+  `docs/ENGINEERING_OPERATING_SYSTEM.md`.
+- Reviewed human names for the office roster while canonical Gateway IDs remain
+  the runtime identity.
+- Runtime-enforced delegation: owner `@mentions` resolve to canonical agent IDs,
+  open a named durable session before Julie's turn, persist delegation and
+  completion/failure system messages, and direct Julie to report rather than
+  repeat the work. Delegated sessions claim a durable Gateway label.
+- Default-chat controls: durable local FIFO queue, Gateway abort/Stop,
+  pre-dispatch recall, local-only removal, copy, attachment gating, @mentions,
+  and conversation deletion.
+- Room membership editing, @mentions, department rooms, and a lead team room.
+- Two-step workspace wizard with explicit shared-pool vs dedicated-team choice,
+  Julie planning, review, confirmation token, apply, and receipt.
+- `server/src/agent-actions.ts`: real Gateway `agent` frames reduced to durable
+  `run_actions` rows and live SSE `action` events; `tool-events` capability
+  advertised by the Gateway client.
+- Shared `AgentActivity` timeline in Chat and Agent Messenger showing commands,
+  file edits, approvals, outputs, and terminal failed/stopped states.
+- System coordination messages are visually distinct from owner/assistant chat.
+- `server/src/agent-directory.ts` and `server/src/julie-operations.ts`: live
+  roster context, mention resolution, delegation directive, and Julie's
+  operating rules injected into prompts.
+- `docs/JULIE_OPERATIONS_GUIDE.md` and `docs/ARCHITECTURE_AUDIT_2026-10-30.md`.
+
+### Changed
+- Conversation turns now compose the runtime prompt (operations context, live
+  roster, delegation directive) and dispatch mentions before Julie's own turn.
+- Chat header shows honest live state, queued follow-up custody, and composer
+  behavior; delegation notes render as system notes.
+- New direct/delegated sessions claim a unique Gateway label so a failed
+  background title generation cannot leave a real session unnamed.
+
+### Verified
+- Backend build, web typecheck, web build, restart, health (Gateway 2026.10.5).
+- Auth gate: unauthenticated conversation/tool reads return 401.
+- Live API reads and conversation SSE `hello` with `actions`.
+- Real `@Victor` delegation round-trip: resolved to `dev-builder`, durable named
+  session created, honest failure reported by Julie; test data cleaned up.
+
+### Known limits
+- The delegated child run failed on OpenClaw provider auth; task 108 stays
+  `pending_review` until a live agent/OpenCode run succeeds.
+- Channel front door and structural audit fixes remain future phases.
+
 ## Phase E5 — Office operations, hierarchy, messenger, and rooms (2026-10-29)
 ### Added
 - Nine high-priority E5 milestones (tasks 95–103), with real assignees and status

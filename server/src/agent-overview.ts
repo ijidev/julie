@@ -214,7 +214,7 @@ async function buildAgentOverview(workspaceId: number, workspaceName: string) {
     return {
       id: agent.id,
       configuredName,
-      displayName: identityName ?? configuredName ?? agent.id,
+      displayName: localProfile?.humanName || identityName || configuredName || agent.id,
       identity: {
         name: identityName,
         theme: safeString(identity.theme, 500),

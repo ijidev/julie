@@ -2,6 +2,7 @@ import { db } from "./db.js";
 
 export type AgentProfile = {
   agentId: string;
+  humanName: string;
   role: string;
   personality: string;
   scheduleMode: "always_available" | "weekdays" | "manual";
@@ -20,6 +21,7 @@ export type AgentProfile = {
 
 type AgentProfileRow = {
   agent_id: string;
+  human_name: string;
   role: string;
   personality: string;
   schedule_mode: AgentProfile["scheduleMode"];
@@ -66,6 +68,7 @@ function mapRow(row: AgentProfileRow, assignments: Array<{ id: number; name: str
     : null;
   return {
     agentId: row.agent_id,
+    humanName: row.human_name,
     role: row.role,
     personality: row.personality,
     scheduleMode: row.schedule_mode,
@@ -195,6 +198,20 @@ export function replaceAgentOrganization(entries: AgentOrganizationInput[]): voi
     for (const entry of entries) {
       upsert.run(entry.agentId, entry.role, entry.department, entry.reportsTo, entry.orgLevel);
     }
+  });
+  transaction();
+}
+
+export function replaceAgentHumanNames(entries: Array<{ agentId: string; humanName: string }>): void {
+  const transaction = db.transaction(() => {
+    const upsert = db.prepare(`
+      INSERT INTO agent_profiles (agent_id, human_name)
+      VALUES (?, ?)
+      ON CONFLICT(agent_id) DO UPDATE SET
+        human_name = excluded.human_name,
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+    `);
+    for (const entry of entries) upsert.run(entry.agentId, entry.humanName);
   });
   transaction();
 }

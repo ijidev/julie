@@ -140,6 +140,16 @@ function extractText(content: unknown): string {
   return "";
 }
 
+// Reduced, protocol-shaped `agent` event forwarded to action subscribers.
+export interface AgentStreamEvent {
+  runId?: string;
+  sessionKey?: string;
+  sessionId?: string;
+  seq?: number;
+  stream: string; // tool | lifecycle | item | assistant | plan | approval | …
+  data: Record<string, unknown>;
+}
+
 export class GatewayClient {
   private ws: WebSocket | null = null;
   private identity = loadOrCreateDeviceIdentity();
@@ -209,10 +219,32 @@ export class GatewayClient {
     };
   }
 
+  // Raw, reduced `agent` stream frames (tool execution, lifecycle, items,
+  // assistant snapshots). Tool frames are only delivered when the connection
+  // advertised the `tool-events` capability above.
+  subscribeAgentEvents(handler: (e: AgentStreamEvent) => void): () => void {
+    const listener = (event: string, payload: any) => {
+      if (event !== "agent" || !payload || typeof payload !== "object") return;
+      const stream = typeof payload.stream === "string" ? payload.stream : "";
+      if (!stream) return;
+      handler({
+        runId: typeof payload.runId === "string" ? payload.runId : undefined,
+        sessionKey: typeof payload.sessionKey === "string" ? payload.sessionKey : undefined,
+        sessionId: typeof payload.sessionId === "string" ? payload.sessionId : undefined,
+        seq: typeof payload.seq === "number" ? payload.seq : undefined,
+        stream,
+        data: payload.data && typeof payload.data === "object" ? payload.data : {},
+      });
+    };
+    this.eventListeners.push(listener);
+    return () => {
+      this.eventListeners = this.eventListeners.filter((l) => l !== listener);
+    };
+  }
+
   getStatus(): GatewayStatus {
     return { ...this.status };
   }
-
   async ensureConnected(): Promise<void> {
     if (this.ws && this.ws.readyState === 1) return;
     if (this.connecting) return this.connecting;
@@ -319,7 +351,9 @@ export class GatewayClient {
         client: { id: "gateway-client", version: "0.1.0", platform, mode: "backend" },
         role: "operator",
         scopes,
-        caps: [],
+        // Live tool-execution frames are gated on this capability; without it the
+        // Gateway silently sends no tool events at all.
+        caps: ["tool-events"],
         commands: [],
         permissions: {},
         auth: { token: config.gatewayToken },
@@ -378,7 +412,8 @@ export class GatewayClient {
     sessionKey: string,
     message: string,
     attachments: GatewayChatAttachment[] = [],
-    idempotencyKey = `julie-${crypto.randomBytes(8).toString("hex")}`
+    idempotencyKey = `julie-${crypto.randomBytes(8).toString("hex")}`,
+    options: { queueMode?: "steer" | "followup" | "collect" | "interrupt" } = {},
   ): Promise<{ runId: string; status: string; startedAt: number }> {
     await this.ensureConnected();
     const startedAt = Date.now();
@@ -388,6 +423,7 @@ export class GatewayClient {
         message,
         idempotencyKey,
         ...(attachments.length > 0 ? { attachments } : {}),
+        ...(options.queueMode ? { queueMode: options.queueMode } : {}),
       }, 60000
     );
     return {
@@ -553,6 +589,32 @@ export class GatewayClient {
   async listSessions(params: Record<string, unknown>): Promise<any> {
     await this.ensureConnected();
     return this.rpc<any>("sessions.list", params, 30000);
+  }
+
+  async createSession(params: Record<string, unknown>): Promise<any> {
+    await this.ensureConnected();
+    return this.rpc<any>("sessions.create", params, 120000);
+  }
+
+  async patchSession(params: Record<string, unknown>): Promise<any> {
+    await this.ensureConnected();
+    return this.rpc<any>("sessions.patch", params, 120000);
+  }
+
+  async abortSession(params: { key?: string; runId?: string; clearQueued?: boolean }): Promise<any> {
+    await this.ensureConnected();
+    return this.rpc<any>("sessions.abort", params, 120000);
+  }
+
+  async deleteSession(params: {
+    key: string;
+    agentId?: string;
+    expectedSessionId: string;
+    deleteTranscript?: boolean;
+    archivedOnly?: boolean;
+  }): Promise<any> {
+    await this.ensureConnected();
+    return this.rpc<any>("sessions.delete", params, 180000);
   }
 
   async getSessionsUsage(params: Record<string, unknown>): Promise<any> {

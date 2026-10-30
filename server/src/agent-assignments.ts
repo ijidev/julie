@@ -31,7 +31,7 @@ export async function getWorkspaceAgentAssignments(workspaceId: number) {
     const profile = profiles.get(agent.id);
     return {
       id: agent.id,
-      displayName: agent.identity?.name ?? agent.name ?? agent.id,
+      displayName: profile?.humanName || agent.identity?.name || agent.name || agent.id,
       emoji: agent.identity?.emoji ?? null,
       model: modelName(agent.model),
       role: profile?.role || null,
