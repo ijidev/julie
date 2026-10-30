@@ -1,11 +1,12 @@
 // Single-owner login gate. Session cookie is HttpOnly; value = ADMIN_TOKEN (constant-time compare).
 import type { NextFunction, Request, Response } from "express";
+import type { IncomingMessage } from "node:http";
 import crypto from "node:crypto";
 import { config } from "./config.js";
 
 export const SESSION_COOKIE = "julie_session";
 
-export function parseCookies(req: Request): Record<string, string> {
+export function parseCookies(req: IncomingMessage): Record<string, string> {
   const header = req.headers.cookie ?? "";
   const out: Record<string, string> = {};
   for (const part of header.split(";")) {

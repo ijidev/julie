@@ -380,3 +380,30 @@ rate-limited, blocked on secret-exposing patterns, and confined to
 `JULIE_TERMINAL_ROOT` with symlink resolution. The previous per-upgrade handler
 registration was also removed; it could attach duplicate connection handlers and
 re-execute a command more than once.
+
+## D-037 — Projects: filesystem-owned registry, real process state, staged restore
+Date: 2026-10-30
+Projects are discovered from immediate child directories of `JULIE_PROJECT_DIR`
+(default `./project`); the filesystem is the source of existence, SQLite only
+stores ownership (workspace, team, port). Launching allocates a port inside
+`JULIE_PROJECT_PORT_START..END`, spawns the project's own dev/start script
+detached, and marks it running only after a real TCP readiness probe answers.
+An exit, a failed probe, or a PID that no longer exists after a Julie restart
+moves the row to failed/stopped — the UI never renders cached state as current.
+Access from the browser goes through the owner-authenticated same-origin proxy
+at `/project/<slug>/`; HTML is rewritten at the edge to keep root-absolute
+asset URLs working under the prefix, and WebSocket upgrades are tunnelled.
+Apps that assume they own the URL root fall back to the direct port link, which
+is disclosed in the UI. Restores are staged (`restore-pending.json` +
+`julie-restore-staged.db`) and applied by `db.ts` before the live connection
+opens, with a safety copy of the replaced database, because better-sqlite3's
+backup API only writes to file destinations and a live WAL connection would
+clobber any mid-flight file swap.
+
+## D-038 — Feature Lab ideas live in the database, not in page text
+Date: 2026-10-30
+The capability gaps Julie identified are seeded as `feature_ideas` rows
+(source `julie`) idempotently by title, so they can be voted, re-statused,
+converted into tasks, and deleted like owner ideas instead of being decorative
+static text. Agents will post future ideas through the same store with source
+`agent`; the page renders only what the store contains.

@@ -230,6 +230,40 @@ export const api = {
   promptUsage: (limit = 3) => jfetch<{ ok: boolean; prompts: Array<{ prompt_hash: string; prompt: string; uses: number; last_used: string }>; total: number }>(`/api/prompt-usage?limit=${limit}`),
   avatar: () => jfetch<{ ok: boolean; avatar: string | null }>("/api/settings/avatar"),
   setAvatar: (image: string | null) => jfetch<{ ok: boolean; avatar: string | null }>("/api/settings/avatar", { method: "PUT", body: JSON.stringify({ image }) }),
+  // --- Projects ---
+  projects: () => jfetch<ProjectsResponse>("/api/projects"),
+  projectDirs: () => jfetch<ProjectDirsResponse>("/api/projects/dirs"),
+  project: (slug: string) => jfetch<ProjectResponse>(`/api/projects/${encodeURIComponent(slug)}`),
+  updateProject: (slug: string, input: ProjectUpdateInput) => jfetch<ProjectResponse>(`/api/projects/${encodeURIComponent(slug)}`, { method: "PUT", body: JSON.stringify(input) }),
+  startProject: (slug: string) => jfetch<ProjectResponse>(`/api/projects/${encodeURIComponent(slug)}/start`, { method: "POST" }),
+  stopProject: (slug: string) => jfetch<ProjectResponse>(`/api/projects/${encodeURIComponent(slug)}/stop`, { method: "POST" }),
+  projectLogs: (slug: string) => jfetch<ProjectLogsResponse>(`/api/projects/${encodeURIComponent(slug)}/logs`),
+  // --- Feature Lab ---
+  featureIdeas: (params?: { status?: string; category?: string }) => {
+    const qs = new URLSearchParams();
+    if (params?.status) qs.set("status", params.status);
+    if (params?.category) qs.set("category", params.category);
+    return jfetch<FeatureIdeasResponse>(`/api/feature-ideas${qs.toString() ? "?" + qs.toString() : ""}`);
+  },
+  createFeatureIdea: (input: FeatureIdeaCreateInput) => jfetch<FeatureIdeaResponse>("/api/feature-ideas", { method: "POST", body: JSON.stringify(input) }),
+  updateFeatureIdea: (id: number, patch: FeatureIdeaPatch) => jfetch<FeatureIdeaResponse>(`/api/feature-ideas/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  voteFeatureIdea: (id: number, delta: 1 | -1) => jfetch<FeatureIdeaResponse>(`/api/feature-ideas/${id}/vote`, { method: "POST", body: JSON.stringify({ delta }) }),
+  requestFeatureIdeaTask: (id: number) => jfetch<{ ok: boolean; task: Task }>(`/api/feature-ideas/${id}/request-task`, { method: "POST" }),
+  deleteFeatureIdea: (id: number) => jfetch<{ ok: boolean }>(`/api/feature-ideas/${id}`, { method: "DELETE" }),
+  // --- Settings ---
+  settingsHealth: () => jfetch<SettingsHealthResponse>("/api/settings/health"),
+  settingsBackup: () => jfetch<SettingsBackupResponse>("/api/settings/backup", { method: "POST" }),
+  settingsBackups: () => jfetch<SettingsBackupsResponse>("/api/settings/backups"),
+  restoreBackup: (file: string) => jfetch<SettingsRestoreResponse>(`/api/settings/backups/${encodeURIComponent(file)}/restore`, { method: "POST" }),
+  clearAuditLogs: () => jfetch<{ ok: boolean; cleared: boolean }>("/api/settings/audit/clear", { method: "POST" }),
+  clearPromptUsage: () => jfetch<{ ok: boolean; cleared: boolean }>("/api/settings/prompt-usage/clear", { method: "POST" }),
+  settings: () => jfetch<SettingsResponse>("/api/settings"),
+  saveSettings: (settings: Record<string, string>) => jfetch<{ ok: boolean }>("/api/settings", { method: "PUT", body: JSON.stringify({ settings }) }),
+  engineeringPolicy: () => jfetch<EngineeringPolicyResponse>("/api/settings/engineering"),
+  // --- Profile ---
+  profileStats: () => jfetch<ProfileStatsResponse>("/api/profile/stats"),
+  profileActivity: (limit = 50) => jfetch<ProfileActivityResponse>(`/api/profile/activity?limit=${limit}`),
+  profileSessions: (limit = 20) => jfetch<ProfileSessionsResponse>(`/api/profile/sessions?limit=${limit}`),
 };
 
 export type Agent = { id: string; name?: string; model?: string; status?: string; [key: string]: unknown };
@@ -976,6 +1010,165 @@ export type OpencodeProjectsResponse = {
   coverage: { projects: number; sessionsScanned: number };
   error?: string;
   source: string;
+};
+
+// --- Projects ---
+export type ProjectAgent = {
+  id: string;
+  humanName: string;
+  role: string;
+};
+export type Project = {
+  id: number;
+  slug: string;
+  name: string;
+  path: string;
+  description: string;
+  workspace_id: number | null;
+  port: number | null;
+  team_mode: "inherit" | "custom";
+  process_status: "stopped" | "starting" | "running" | "stopping" | "failed";
+  process_pid: number | null;
+  process_command: string;
+  last_started_at: string | null;
+  last_stopped_at: string | null;
+  last_error: string;
+  created_at: string;
+  updated_at: string;
+  kind: "node" | "static" | "unknown";
+  framework: string;
+  package_manager: string | null;
+  dev_script: string | null;
+  build_script: string | null;
+  node_modules: boolean;
+  exists: boolean;
+  workspace_name: string | null;
+  agent_ids: string[];
+  agents: ProjectAgent[];
+  team_source: "project" | "workspace";
+  local_url: string | null;
+  subpath_url: string;
+  uptime_seconds: number | null;
+};
+export type ProjectsResponse = { ok: true; projects: Project[] };
+export type ProjectDirsResponse = { ok: true; dirs: string[] };
+export type ProjectResponse = { ok: true; project: Project };
+export type ProjectUpdateInput = {
+  workspaceId?: number | null;
+  teamMode?: "inherit" | "custom";
+  agentIds?: string[];
+  port?: number | null;
+  description?: string;
+};
+export type ProjectLogsResponse = { ok: true; slug: string; lines: string[]; source: string };
+
+// --- Feature Lab ---
+export type FeatureIdea = {
+  id: number;
+  title: string;
+  description: string;
+  category: string;
+  source: "owner" | "julie" | "agent" | "system";
+  status: "proposed" | "planned" | "in_progress" | "shipped" | "declined";
+  votes: number;
+  task_id: number | null;
+  created_at: string;
+  updated_at: string;
+};
+export type FeatureIdeasResponse = { ok: true; ideas: FeatureIdea[] };
+export type FeatureIdeaResponse = { ok: true; idea: FeatureIdea };
+export type FeatureIdeaCreateInput = {
+  title: string;
+  description?: string;
+  category?: string;
+  source?: "owner" | "julie" | "agent" | "system";
+};
+export type FeatureIdeaPatch = {
+  title?: string;
+  description?: string;
+  category?: string;
+  status?: "proposed" | "planned" | "in_progress" | "shipped" | "declined";
+};
+
+// --- Settings ---
+export type SettingsHealthResponse = {
+  ok: true;
+  health: {
+    uptime_seconds: number;
+    memory_mb: number;
+    data_dir: string;
+    db_exists: boolean;
+    db_size_bytes: number;
+    backup_count: number;
+    latest_backup: { file: string; size: number; created_at: string } | null;
+    gateway: { connected: boolean; serverVersion?: string | null; latencyMs?: number; error?: string };
+    node_version: string;
+    schema_version: number;
+    terminal_enabled: boolean;
+    restore_pending: string | null;
+  };
+};
+export type SettingsBackupResponse = {
+  ok: true;
+  backup: { file: string; path: string; size: number; created_at: string };
+};
+export type SettingsBackupsResponse = { ok: true; backups: Array<{ file: string; size: number; created_at: string }> };
+export type SettingsRestoreResponse = {
+  ok: true;
+  staged: true;
+  restartRequired: boolean;
+  note: string;
+};
+export type SettingsResponse = { ok: true; settings: Record<string, string> };
+export type EngineeringPolicyResponse = {
+  ok: true;
+  source: "local";
+  policy: { primary: string; fallback: string; department: string; note: string };
+};
+
+// --- Profile ---
+export type ProfileStatsResponse = {
+  ok: true;
+  stats: {
+    workspaces: number;
+    tasks: number;
+    tasks_done: number;
+    tasks_running: number;
+    conversations: number;
+    messages: number;
+    projects: number;
+    projects_running: number;
+    agents: number;
+    ideas: number;
+    ideas_planned: number;
+  };
+};
+export type ProfileActivityResponse = {
+  ok: true;
+  activity: Array<{
+    id: number;
+    task_id: number;
+    actor_type: "owner" | "agent" | "system";
+    actor_id: string;
+    event_type: string;
+    details: string;
+    from_status: string | null;
+    to_status: string | null;
+    created_at: string;
+    task_title: string | null;
+  }>;
+};
+export type ProfileSessionsResponse = {
+  ok: true;
+  sessions: Array<{
+    id: number;
+    title: string;
+    gateway_session_key: string;
+    workspace_id: number;
+    created_at: string;
+    updated_at: string;
+    workspace_name: string | null;
+  }>;
 };
 
 export const TASK_STATUSES = ["backlog", "ready", "in_progress", "waiting_input", "pending_review", "done", "blocked"] as const;

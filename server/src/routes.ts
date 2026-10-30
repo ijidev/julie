@@ -1,6 +1,7 @@
 // REST API routes.
 import crypto from "node:crypto";
 import { createHash } from "node:crypto";
+import fs from "node:fs";
 import { Router, raw as rawBody, type Request, type Response } from "express";
 import { db, getSetting, setSetting, schemaVersion, TASK_STATUSES, type TaskStatus } from "./db.js";
 import { gateway, type ChatStreamEvent, type GatewayChatAttachment } from "./gateway.js";
@@ -20,11 +21,15 @@ import { isAgentAssignedToWorkspace } from "./agent-profiles.js";
 import { AgentOrganizationError, configureAgentHumanNames, configureAgentOrganization, getAgentOrganization } from "./agent-organization.js";
 import { AgentRoomError, createAgentRoom, ensureDepartmentTeamRooms, getAgentRoom, getAgentRoomActiveRun, hasAgentRoom, listAgentRooms, replaceAgentRoomMembers, setAgentRoomArchived, startAgentRoomTurn, subscribeAgentRoom } from "./agent-rooms.js";
 import { engineeringTaskPolicy } from "./engineering-policy.js";
+import { OPENCODE_PRIMARY_MODEL, OPENCODE_FALLBACK_MODEL, ENGINEERING_DEPARTMENT } from "./engineering-policy.js";
+import "./feature-lab.js"; // seeds the owner-visible capability gaps once at import
 import { agentDirectoryContext, composeAgentPrompt, delegationDirective, loadAgentDirectory, resolveAgentMentions } from "./agent-directory.js";
 import { julieOperationsContext } from "./julie-operations.js";
 import { AgentAvatarError, addAgentAvatarModelUrl, applyAgentAvatar, applyAgentAvatarUrl, buildAgentFallbackSvg, generateAgentAvatar, getAgentAvatarStudio, importAgentAvatarImage, importAgentAvatarModel, previewAgentAvatar, readAgentAvatarAsset, readAgentAvatarModel } from "./agent-avatar.js";
 import { loginHandler, logoutHandler, requireAuth, parseCookies, SESSION_COOKIE, safeEqual } from "./auth.js";
 import { config } from "./config.js";
+import { stageRestore, pendingRestore } from "./db-restore.js";
+import path from "node:path";
 import {
   getOpencodeStatus,
   getOpencodeStats,
@@ -2234,6 +2239,306 @@ api.put("/settings", (req, res) => {
     setSetting(k, String(v).slice(0, 5000));
   }
   res.json({ ok: true });
+});
+
+// ---- Projects (owner-facing; every project is a folder under JULIE_PROJECT_DIR) ----
+import {
+  listProjects,
+  getProject,
+  getProjectView,
+  toProjectView,
+  updateProject,
+  startProject,
+  stopProject,
+  projectLogs,
+  projectDirectoryEntries,
+  ProjectError,
+} from "./projects.js";
+
+api.get("/projects", (_req, res) => {
+  res.json({ ok: true, projects: listProjects() });
+});
+
+api.get("/projects/dirs", (_req, res) => {
+  res.json({ ok: true, dirs: projectDirectoryEntries() });
+});
+
+api.get("/projects/:slug", (req, res) => {
+  const view = getProjectView(req.params.slug);
+  if (!view) { res.status(404).json({ ok: false, error: "project not found" }); return; }
+  res.json({ ok: true, project: view });
+});
+
+api.put("/projects/:slug", (req, res) => {
+  try {
+    const view = updateProject(req.params.slug, req.body ?? {});
+    res.json({ ok: true, project: view });
+  } catch (e: any) {
+    const status = e instanceof ProjectError ? e.status : 500;
+    res.status(status).json({ ok: false, error: e?.message ?? "update failed" });
+  }
+});
+
+api.post("/projects/:slug/start", async (req, res) => {
+  try {
+    const view = await startProject(req.params.slug);
+    res.json({ ok: true, project: view });
+  } catch (e: any) {
+    const status = e instanceof ProjectError ? e.status : 502;
+    res.status(status).json({ ok: false, error: e?.message ?? "start failed" });
+  }
+});
+
+api.post("/projects/:slug/stop", async (req, res) => {
+  try {
+    const view = await stopProject(req.params.slug);
+    res.json({ ok: true, project: view });
+  } catch (e: any) {
+    const status = e instanceof ProjectError ? e.status : 500;
+    res.status(status).json({ ok: false, error: e?.message ?? "stop failed" });
+  }
+});
+
+api.get("/projects/:slug/logs", (req, res) => {
+  try {
+    res.json({ ok: true, ...projectLogs(req.params.slug) });
+  } catch (e: any) {
+    const status = e instanceof ProjectError ? e.status : 500;
+    res.status(status).json({ ok: false, error: e?.message ?? "logs unavailable" });
+  }
+});
+
+// ---- Feature Lab: persistent idea store with votes and a request-Julie bridge ----
+api.get("/feature-ideas", (req, res) => {
+  const status = typeof req.query.status === "string" ? req.query.status : null;
+  const category = typeof req.query.category === "string" ? req.query.category : null;
+  let query = "SELECT * FROM feature_ideas";
+  const params: (string | number)[] = [];
+  const where: string[] = [];
+  if (status) { where.push("status = ?"); params.push(status); }
+  if (category) { where.push("category = ?"); params.push(category); }
+  if (where.length) query += " WHERE " + where.join(" AND ");
+  query += " ORDER BY CASE status WHEN 'planned' THEN 0 WHEN 'in_progress' THEN 1 WHEN 'proposed' THEN 2 WHEN 'shipped' THEN 3 WHEN 'declined' THEN 4 ELSE 5 END, votes DESC, id DESC";
+  const rows = db.prepare(query).all(...params);
+  res.json({ ok: true, ideas: rows });
+});
+
+api.post("/feature-ideas", (req, res) => {
+  const title = typeof req.body?.title === "string" ? req.body.title.trim().slice(0, 160) : "";
+  const description = typeof req.body?.description === "string" ? req.body.description.trim().slice(0, 5000) : "";
+  const category = typeof req.body?.category === "string" ? req.body.category.trim().slice(0, 50) : "product";
+  const source = (["owner","julie","agent","system"].includes(req.body?.source) ? req.body.source : "owner") as "owner"|"julie"|"agent"|"system";
+  if (!title) { res.status(400).json({ ok: false, error: "title required" }); return; }
+  const info = db.prepare(
+    "INSERT INTO feature_ideas (title, description, category, source) VALUES (?, ?, ?, ?)"
+  ).run(title, description, category, source);
+  const row = db.prepare("SELECT * FROM feature_ideas WHERE id = ?").get(info.lastInsertRowid);
+  res.status(201).json({ ok: true, idea: row });
+});
+
+api.patch("/feature-ideas/:id", (req, res) => {
+  const id = Number(req.params.id);
+  const row = db.prepare("SELECT * FROM feature_ideas WHERE id = ?").get(id);
+  if (!row) { res.status(404).json({ ok: false, error: "not found" }); return; }
+  const updates: string[] = [];
+  const params: (string | number)[] = [];
+  if (typeof req.body?.title === "string" && req.body.title.trim()) {
+    updates.push("title = ?"); params.push(req.body.title.trim().slice(0, 160));
+  }
+  if (typeof req.body?.description === "string") {
+    updates.push("description = ?"); params.push(req.body.description.trim().slice(0, 5000));
+  }
+  if (typeof req.body?.category === "string" && req.body.category.trim()) {
+    updates.push("category = ?"); params.push(req.body.category.trim().slice(0, 50));
+  }
+  if (["proposed","planned","in_progress","shipped","declined"].includes(req.body?.status)) {
+    updates.push("status = ?"); params.push(req.body.status);
+  }
+  if (updates.length === 0) { res.status(400).json({ ok: false, error: "no valid fields" }); return; }
+  updates.push("updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')");
+  params.push(id);
+  db.prepare(`UPDATE feature_ideas SET ${updates.join(", ")} WHERE id = ?`).run(...params);
+  res.json({ ok: true, idea: db.prepare("SELECT * FROM feature_ideas WHERE id = ?").get(id) });
+});
+
+api.post("/feature-ideas/:id/vote", (req, res) => {
+  const id = Number(req.params.id);
+  const delta = req.body?.delta === -1 ? -1 : 1;
+  const row = db.prepare("SELECT * FROM feature_ideas WHERE id = ?").get(id) as { votes: number } | undefined;
+  if (!row) { res.status(404).json({ ok: false, error: "not found" }); return; }
+  const votes = Math.max(0, (row.votes || 0) + delta);
+  db.prepare("UPDATE feature_ideas SET votes = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?").run(votes, id);
+  res.json({ ok: true, idea: db.prepare("SELECT * FROM feature_ideas WHERE id = ?").get(id) });
+});
+
+// Request Julie to create a task from a feature idea.
+api.post("/feature-ideas/:id/request-task", (req, res) => {
+  const id = Number(req.params.id);
+  const row = db.prepare("SELECT * FROM feature_ideas WHERE id = ?").get(id) as { title: string; description: string | null } | undefined;
+  if (!row) { res.status(404).json({ ok: false, error: "not found" }); return; }
+  const activeWs = getSetting("active_workspace_id");
+  if (!activeWs) { res.status(400).json({ ok: false, error: "no active workspace" }); return; }
+  const title = `Feature: ${row.title}`;
+  const description = row.description || `Requested from Feature Lab idea #${id}.`;
+  const info = db.prepare(
+    "INSERT INTO tasks (workspace_id, title, description, status, priority) VALUES (?, ?, ?, 'ready', 2)"
+  ).run(Number(activeWs), title, description);
+  db.prepare("UPDATE feature_ideas SET status = 'planned', task_id = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?").run(info.lastInsertRowid, id);
+  const task = db.prepare("SELECT * FROM tasks WHERE id = ?").get(info.lastInsertRowid);
+  res.json({ ok: true, task });
+});
+
+api.delete("/feature-ideas/:id", (req, res) => {
+  const id = Number(req.params.id);
+  const info = db.prepare("DELETE FROM feature_ideas WHERE id = ?").run(id);
+  if (info.changes === 0) { res.status(404).json({ ok: false, error: "not found" }); return; }
+  res.json({ ok: true });
+});
+
+// ---- Settings center: real features, real data operations ----
+api.get("/settings/health", (_req, res) => {
+  const uptimeSec = Math.floor(process.uptime());
+  const mem = process.memoryUsage();
+  const dataDir = fs.existsSync(config.dataDir) ? config.dataDir : "";
+  const dbExists = fs.existsSync(config.dbPath);
+  let backupCount = 0;
+  let latestBackup = null;
+  try {
+    const backupDir = path.join(config.dataDir, "backups");
+    if (fs.existsSync(backupDir)) {
+      const files = fs.readdirSync(backupDir).filter((f) => f.endsWith(".db")).sort().reverse();
+      backupCount = files.length;
+      if (files[0]) {
+        const st = fs.statSync(path.join(backupDir, files[0]));
+        latestBackup = { file: files[0], size: st.size, created_at: st.mtime.toISOString() };
+      }
+    }
+  } catch { /* best effort */ }
+  let gatewayStatus = { connected: false };
+  try { gatewayStatus = gateway.getStatus(); } catch { /* ignore */ }
+  res.json({
+    ok: true,
+    health: {
+      uptime_seconds: uptimeSec,
+      memory_mb: Math.round(mem.rss / 1024 / 1024),
+      data_dir: dataDir,
+      db_exists: dbExists,
+      db_size_bytes: dbExists ? fs.statSync(config.dbPath).size : 0,
+      backup_count: backupCount,
+      latest_backup: latestBackup,
+      gateway: gatewayStatus,
+      node_version: process.version,
+      schema_version: schemaVersion(),
+      terminal_enabled: config.terminalEnabled,
+      restore_pending: pendingRestore(),
+    },
+  });
+});
+
+api.post("/settings/backup", async (_req, res) => {
+  const backupDir = path.join(config.dataDir, "backups");
+  fs.mkdirSync(backupDir, { recursive: true, mode: 0o700 });
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const dest = path.join(backupDir, `julie-backup-${stamp}.db`);
+  try {
+    await db.backup(dest);
+    try { fs.chmodSync(dest, 0o600); } catch { /* chmod may fail on some filesystems; backup still valid */ }
+    res.json({ ok: true, backup: { file: path.basename(dest), path: dest, size: fs.statSync(dest).size, created_at: new Date().toISOString() } });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+api.get("/settings/backups", (_req, res) => {
+  const backupDir = path.join(config.dataDir, "backups");
+  if (!fs.existsSync(backupDir)) { res.json({ ok: true, backups: [] }); return; }
+  const files = fs.readdirSync(backupDir).filter((f) => f.endsWith(".db")).sort().reverse();
+  const backups = files.map((file) => {
+    const st = fs.statSync(path.join(backupDir, file));
+    return { file, size: st.size, created_at: st.mtime.toISOString() };
+  });
+  res.json({ ok: true, backups });
+});
+
+api.post("/settings/backups/:file/restore", (req, res) => {
+  try {
+    stageRestore(String(req.params.file));
+    res.json({
+      ok: true,
+      staged: true,
+      restartRequired: true,
+      note: "Restore is staged. Restart the service (sudo systemctl restart julie) to apply; the current database is copied to data/backups/pre-restore-* during the restart.",
+    });
+  } catch (e: any) {
+    const status = e.message === "backup not found" ? 404 : 400;
+    res.status(status).json({ ok: false, error: e.message });
+  }
+});
+
+api.get("/settings/engineering", (_req, res) => {
+  res.json({
+    ok: true,
+    source: "local",
+    policy: {
+      primary: OPENCODE_PRIMARY_MODEL,
+      fallback: OPENCODE_FALLBACK_MODEL,
+      department: ENGINEERING_DEPARTMENT,
+      note: "OpenCode V2 has one configured default model. Fallback is an explicit second attempt with a new receipt, never a silent replay of a partial run.",
+    },
+  });
+});
+
+api.post("/settings/audit/clear", (_req, res) => {
+  db.prepare("DELETE FROM audit_logs").run();
+  res.json({ ok: true, cleared: true });
+});
+
+api.post("/settings/prompt-usage/clear", (_req, res) => {
+  db.prepare("DELETE FROM prompt_usage").run();
+  res.json({ ok: true, cleared: true });
+});
+
+// ---- Profile stats: real data, not fabricated ----
+api.get("/profile/stats", (_req, res) => {
+  const workspaces = (db.prepare("SELECT COUNT(*) AS n FROM workspaces").get() as { n: number }).n;
+  const tasks = (db.prepare("SELECT COUNT(*) AS n FROM tasks").get() as { n: number }).n;
+  const tasksDone = (db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE status = 'done'").get() as { n: number }).n;
+  const tasksRunning = (db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE status IN ('in_progress','waiting_input')").get() as { n: number }).n;
+  const conversations = (db.prepare("SELECT COUNT(*) AS n FROM conversations").get() as { n: number }).n;
+  const messages = (db.prepare("SELECT COUNT(*) AS n FROM messages").get() as { n: number }).n;
+  const projects = (db.prepare("SELECT COUNT(*) AS n FROM projects").get() as { n: number }).n;
+  const projectsRunning = (db.prepare("SELECT COUNT(*) AS n FROM projects WHERE process_status = 'running'").get() as { n: number }).n;
+  const agents = (db.prepare("SELECT COUNT(*) AS n FROM agent_profiles").get() as { n: number }).n;
+  const ideas = (db.prepare("SELECT COUNT(*) AS n FROM feature_ideas").get() as { n: number }).n;
+  const ideasPlanned = (db.prepare("SELECT COUNT(*) AS n FROM feature_ideas WHERE status IN ('planned','in_progress')").get() as { n: number }).n;
+  res.json({ ok: true, stats: {
+    workspaces, tasks, tasks_done: tasksDone, tasks_running: tasksRunning,
+    conversations, messages, projects, projects_running: projectsRunning,
+    agents, ideas, ideas_planned: ideasPlanned,
+  }});
+});
+
+api.get("/profile/activity", (req, res) => {
+  const limit = Math.min(Number(req.query.limit ?? 50), 200);
+  const rows = db.prepare(`
+    SELECT ta.*, t.title AS task_title
+    FROM task_activity ta
+    LEFT JOIN tasks t ON t.id = ta.task_id
+    ORDER BY ta.id DESC LIMIT ?
+  `).all(limit);
+  res.json({ ok: true, activity: rows });
+});
+
+api.get("/profile/sessions", (req, res) => {
+  const limit = Math.min(Number(req.query.limit ?? 20), 100);
+  const rows = db.prepare(`
+    SELECT c.id, c.title, c.gateway_session_key, c.workspace_id, c.created_at, c.updated_at,
+           w.name AS workspace_name
+    FROM conversations c
+    LEFT JOIN workspaces w ON w.id = c.workspace_id
+    ORDER BY c.updated_at DESC LIMIT ?
+  `).all(limit);
+  res.json({ ok: true, sessions: rows });
 });
 
 // ---- OpenCode bridge (read-only; E3-07) ----

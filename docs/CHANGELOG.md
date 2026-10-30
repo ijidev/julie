@@ -565,3 +565,29 @@
   (400-session) scan. Browser payloads carry display names, VCS kind, sandbox
   counts, registration/activity times, and session counts — not host paths
   (decision D-022 wording extended in D-023).
+
+## Phase E7 — Projects launcher, Settings center, Feature Lab, owner Profile (2026-10-30)
+### Added
+- `server/src/projects.ts`: discovery of `project/` folders into the `projects`
+  table (slug/name/workspace/team/port), real launch/stop lifecycle with TCP
+  readiness probes, PID reconciliation at boot, per-project log ring, static
+  folder serving, and the owner-authenticated `/project/<slug>/` HTTP+WebSocket
+  subpath proxy with edge HTML rewriting.
+- `server/src/feature-lab.ts`: 19 capability gaps seeded into `feature_ideas`
+  (source `julie`, two already `planned`) so the Feature Lab is a real store.
+- `server/src/db-restore.ts`: staged backup restore applied at boot with a
+  pre-restore safety copy; `/api/settings/health` reports `restore_pending`.
+- API: `/api/projects*` (list/get/config/start/stop/logs/dirs), `/api/feature-ideas*`
+  (CRUD, votes, request-task bridge), `/api/settings/health|backup|backups|restore|audit/clear|prompt-usage/clear|engineering`,
+  `/api/profile/stats|activity|sessions`. Schema v2 migration (`projects`,
+  `project_agents`, `feature_ideas`). Config: `JULIE_PROJECT_DIR`,
+  `JULIE_PROJECT_PORT_START/END`.
+### Changed
+- Projects page rebuilt around real state: workspace/team chips, launch/open/
+  port/stop/log/config actions, honest failure reasons, auto-refresh.
+- Settings page is now four working tabs (System diagnostics, Data & Backups,
+  Security posture, Engineering policy read live from the server).
+- Profile page redesigned as owner identity (avatar, name/title persisted to
+  settings, real session/gateway pills, workspace management, recent activity)
+  instead of a metrics board.
+- Feature Lab renders the database store only; static suggestion text removed.

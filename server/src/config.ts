@@ -63,6 +63,13 @@ export const config = {
   terminalEnabled: envBool("JULIE_TERMINAL_ENABLED", false),
   terminalRoot: path.resolve(ROOT, env("JULIE_TERMINAL_ROOT", ".")),
   openclawBin: env("OPENCLAW_BIN", "openclaw"),
+  // Project folders live in one directory tree; each immediate child directory
+  // becomes a project entry. Launched projects get an allocated port in the
+  // configured range, or are reached through the authenticated subpath proxy.
+  projectDir: path.resolve(ROOT, env("JULIE_PROJECT_DIR", "project")),
+  projectPortStart: parseInt(env("JULIE_PROJECT_PORT_START", "4100"), 10),
+  projectPortEnd: parseInt(env("JULIE_PROJECT_PORT_END", "4199"), 10),
+  projectPublicBase: env("JULIE_PUBLIC_BASE_URL", "").replace(/\/+$/, ""),
 };
 
 export function validateConfig(): string[] {
@@ -72,6 +79,9 @@ export function validateConfig(): string[] {
   if (!config.gatewayToken) problems.push("GATEWAY_TOKEN missing");
   if (config.adminPassword && config.adminPassword.length < 12) problems.push("ADMIN_PASSWORD must be at least 12 characters");
   if (config.adminToken && config.adminToken.length < 24) problems.push("ADMIN_TOKEN must be at least 24 characters");
+  if (!Number.isInteger(config.projectPortStart) || !Number.isInteger(config.projectPortEnd) || config.projectPortStart > config.projectPortEnd) {
+    problems.push("JULIE_PROJECT_PORT_START/END must be an inclusive integer range");
+  }
   if (!config.terminalEnabled) return problems;
   if (!fs.existsSync(config.terminalRoot)) problems.push(`JULIE_TERMINAL_ROOT does not exist: ${config.terminalRoot}`);
   return problems;

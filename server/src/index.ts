@@ -8,6 +8,11 @@ import { gateway } from "./gateway.js";
 import { WebSocketServer } from "ws";
 import http from "node:http";
 import { setupTerminal } from "./terminal.js";
+import { requireAuth, parseCookies, safeEqual, SESSION_COOKIE } from "./auth.js";
+import {
+  handleProjectHttp,
+  handleProjectUpgrade,
+} from "./projects.js";
 
 const problems = validateConfig();
 if (problems.length > 0) {
@@ -21,11 +26,20 @@ app.use(express.json({ limit: "1mb" }));
 
 app.use("/api", api);
 
+// Project subpath proxy at /project/<slug>/ — owner-session gated, like every
+// mutating surface: running apps and their cookies must not be public. Raw
+// project folders are deliberately NOT served statically; launch to view.
+app.use("/project", requireAuth, (req, res, next) => {
+  if (handleProjectHttp(req, res)) return;
+  next();
+});
+
 // Static web build + SPA fallback (no full-page reloads: server serves index.html for app routes)
 if (fs.existsSync(config.webDist)) {
   app.use(express.static(config.webDist, { index: "index.html" }));
   app.get("*", (req, res, next) => {
     if (req.path.startsWith("/api/")) { next(); return; }
+    if (req.path.startsWith("/project/")) { next(); return; } // let static/404 handle it
     res.sendFile(path.join(config.webDist, "index.html"));
   });
 } else {
@@ -52,21 +66,29 @@ const server = app.listen(config.port, config.host, () => {
   console.log(`[julie] listening on http://${config.host}:${config.port}`);
 });
 
-// Terminal WS bridge — attached to the main HTTP server (shares the port).
-// Owner shell execution is disabled unless explicitly enabled in configuration.
-if (config.terminalEnabled) {
-  const wss = new WebSocketServer({ noServer: true });
-  setupTerminal(wss);
-  server.on("upgrade", (req, socket, head) => {
-    if (req.url === "/terminal-ws") {
-      wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
-    } else {
-      socket.destroy();
+// Upgrade handler: owner-gated project WS proxy + terminal WS (if enabled)
+server.on("upgrade", (req, socket, head) => {
+  if ((req.url ?? "").startsWith("/project/")) {
+    const cookie = parseCookies(req)[SESSION_COOKIE];
+    if (!cookie || !safeEqual(cookie, config.adminToken)) {
+      socket.end("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+      return;
     }
-  });
+    if (handleProjectUpgrade(req, socket, head)) return;
+    socket.destroy();
+    return;
+  }
+  if (config.terminalEnabled && req.url === "/terminal-ws") {
+    const wss = new WebSocketServer({ noServer: true });
+    setupTerminal(wss);
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
+    return;
+  }
+  socket.destroy();
+});
+if (config.terminalEnabled) {
   console.log(`[julie] owner terminal enabled (root ${config.terminalRoot})`);
 } else {
-  server.on("upgrade", (_req, socket) => socket.destroy());
   console.log("[julie] owner terminal disabled (set JULIE_TERMINAL_ENABLED=true to enable)");
 }
 

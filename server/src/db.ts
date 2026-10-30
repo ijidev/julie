@@ -7,11 +7,17 @@ import Database from "better-sqlite3";
 import fs from "node:fs";
 import path from "node:path";
 import { config } from "./config.js";
+import { applyStagedRestore } from "./db-restore.js";
 
 // The data directory holds the database, device identity, backups, and generated
 // assets. It is owner-only: 0700 for the directory, 0600 for the database files.
 fs.mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
 try { fs.chmodSync(config.dataDir, 0o700); } catch { /* best effort on exotic filesystems */ }
+
+// A staged restore (from Settings → Data & Backups) must land before the live
+// connection opens; the current database is copied to backups during this step.
+const stagedRestoreApplied = applyStagedRestore();
+if (stagedRestoreApplied) console.log(`[julie] staged restore applied: ${stagedRestoreApplied} (previous database copied to data/backups/pre-restore-*)`);
 
 export const db = new Database(config.dbPath);
 db.pragma("journal_mode = WAL");
@@ -240,6 +246,47 @@ CREATE UNIQUE INDEX IF NOT EXISTS run_actions_run_key
   ON run_actions(run_id, action_key);
 CREATE INDEX IF NOT EXISTS run_actions_session_idx
   ON run_actions(session_key, id);
+CREATE TABLE IF NOT EXISTS projects (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  slug TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  path TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  workspace_id INTEGER REFERENCES workspaces(id) ON DELETE SET NULL,
+  port INTEGER,
+  team_mode TEXT NOT NULL DEFAULT 'inherit' CHECK (team_mode IN ('inherit','custom')),
+  process_status TEXT NOT NULL DEFAULT 'stopped'
+    CHECK (process_status IN ('stopped','starting','running','stopping','failed')),
+  process_pid INTEGER,
+  process_command TEXT NOT NULL DEFAULT '',
+  last_started_at TEXT,
+  last_stopped_at TEXT,
+  last_error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE TABLE IF NOT EXISTS project_agents (
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  agent_id TEXT NOT NULL,
+  added_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  PRIMARY KEY (project_id, agent_id)
+);
+CREATE TABLE IF NOT EXISTS feature_ideas (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  category TEXT NOT NULL DEFAULT 'product',
+  source TEXT NOT NULL DEFAULT 'owner'
+    CHECK (source IN ('owner','julie','agent','system')),
+  status TEXT NOT NULL DEFAULT 'proposed'
+    CHECK (status IN ('proposed','planned','in_progress','shipped','declined')),
+  votes INTEGER NOT NULL DEFAULT 0,
+  task_id INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS feature_ideas_status_idx
+  ON feature_ideas(status, votes DESC, id DESC);
 `);
 
 export const TASK_STATUSES = [
@@ -299,8 +346,59 @@ function migrateToV1(): void {
   `);
 }
 
+// v2 adds owner-facing project ownership (which workspace a folder belongs to,
+// which agents are on its team, whether a launch process is running) and the
+// Feature Lab idea store. Tables are created in the base schema too, so a fresh
+// database and an upgraded one converge on the same shape.
+function migrateToV2(): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS projects (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      slug TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      path TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      workspace_id INTEGER REFERENCES workspaces(id) ON DELETE SET NULL,
+      port INTEGER,
+      team_mode TEXT NOT NULL DEFAULT 'inherit' CHECK (team_mode IN ('inherit','custom')),
+      process_status TEXT NOT NULL DEFAULT 'stopped'
+        CHECK (process_status IN ('stopped','starting','running','stopping','failed')),
+      process_pid INTEGER,
+      process_command TEXT NOT NULL DEFAULT '',
+      last_started_at TEXT,
+      last_stopped_at TEXT,
+      last_error TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+      updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    );
+    CREATE TABLE IF NOT EXISTS project_agents (
+      project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      agent_id TEXT NOT NULL,
+      added_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+      PRIMARY KEY (project_id, agent_id)
+    );
+    CREATE TABLE IF NOT EXISTS feature_ideas (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      category TEXT NOT NULL DEFAULT 'product',
+      source TEXT NOT NULL DEFAULT 'owner'
+        CHECK (source IN ('owner','julie','agent','system')),
+      status TEXT NOT NULL DEFAULT 'proposed'
+        CHECK (status IN ('proposed','planned','in_progress','shipped','declined')),
+      votes INTEGER NOT NULL DEFAULT 0,
+      task_id INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+      updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    );
+    CREATE INDEX IF NOT EXISTS feature_ideas_status_idx
+      ON feature_ideas(status, votes DESC, id DESC);
+  `);
+}
+
 const MIGRATIONS: Array<{ version: number; up: () => void }> = [
   { version: 1, up: migrateToV1 },
+  { version: 2, up: migrateToV2 },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.reduce((max, migration) => Math.max(max, migration.version), 0);
@@ -319,6 +417,11 @@ function migrate(): void {
   }
   if (schemaVersion() < SCHEMA_VERSION) db.pragma(`user_version = ${SCHEMA_VERSION}`);
 }
+
+// Restoring an older backup can move user_version backwards. The restore route
+// calls this so the live database converges on the current schema again.
+export function runMigrations(): void { migrate(); }
+
 migrate();
 restrictDatabaseFileModes();
 

@@ -1,6 +1,6 @@
 # Project State: Julie AiOS
 
-## Status: Phase E6 + Phase 0 installability/security slice
+## Status: Phase E6 + Phase 0 + Phase E7 (Projects/Settings/Feature Lab/Profile)
 **Date:** 2026-10-30
 
 ### Outcome
@@ -649,3 +649,18 @@ None.
 ---
 
 *Last updated: 2026-10-30*
+
+
+### Phase E7 (2026-10-30) — Projects, Settings, Feature Lab, Profile
+- Schema v2: `projects`, `project_agents`, `feature_ideas`. Projects are
+  discovered from `project/` folders; each shows its workspace, agent team,
+  real process state, logs, and launch controls.
+- Same-origin subpath proxy `/project/<slug>/` (owner session) plus allocated
+  ports 4100-4199; honest failed/stopped states on exit or reboot.
+- Settings page: live health, backup create/list/staged restore (applied at
+  boot with pre-restore safety copy), audit/prompt maintenance, security
+  posture, and the engineering model policy read from the server.
+- Feature Lab: 19 Julie-seeded capability gaps in the store with votes,
+  statuses, categories, and a request→task bridge.
+- Profile: owner identity (avatar, name, title persisted to settings), real
+  session/gateway state, workspace management, recent task activity.

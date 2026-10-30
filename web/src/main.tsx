@@ -6,7 +6,7 @@ import { VoiceFab, VOICE_STATE_EVENT, requestVoiceCapture } from "./voice-fab";
 import { useSpeaking, speakWithTracking } from "./speaking";
 import { Wave } from "./wave";
 import { setVoiceConversationId, speechSupported, startSpeechRecognition, submitVoiceText, type VoiceState } from "./voice";
-import { api, type ChatRunSnapshot, type Conversation, type GatewayStatus, type Message, type Task, type TaskActivity, type TaskSummary, type Workspace, type AgentAssignmentRow, type AgentOrganizationResponse, type AgentRoom, type AgentRoomActiveRun, type AgentRoomDetail, type AgentRoomMessage, type AgentOverviewItem, type AgentOverviewResponse, type AgentDetailResponse, type AgentChatMessage, type AgentChatTurn, type AgentOnboardingInput, type AgentOnboardingOptions, type AgentUpdateInput, type AgentUpdateResult, type AgentAssignmentsResponse, type AgentAvatarAsset, type AgentAvatarDirection, type AgentAvatarPreview, type AgentAvatarStudioResponse, type Tool, type Analytics, type Weather, type Device, type Insights, type TrendingItem, type OpencodeStatus, type OpencodeSessionRow, type OpencodeSessionsResponse, type OpencodeStatsResponse, type OpencodeActiveResponse, type OpencodeProjectsResponse, type WorkspacePlanResponse, type WorkspacePlanAppliedResponse, type AgentRunAction, TASK_STATUSES } from "./api";
+import { api, type ChatRunSnapshot, type Conversation, type GatewayStatus, type Message, type Task, type TaskActivity, type TaskSummary, type Workspace, type AgentAssignmentRow, type AgentOrganizationResponse, type AgentRoom, type AgentRoomActiveRun, type AgentRoomDetail, type AgentRoomMessage, type AgentOverviewItem, type AgentOverviewResponse, type AgentDetailResponse, type AgentChatMessage, type AgentChatTurn, type AgentOnboardingInput, type AgentOnboardingOptions, type AgentUpdateInput, type AgentUpdateResult, type AgentAssignmentsResponse, type AgentAvatarAsset, type AgentAvatarDirection, type AgentAvatarPreview, type AgentAvatarStudioResponse, type Tool, type Analytics, type Weather, type Device, type Insights, type TrendingItem, type OpencodeStatus, type OpencodeSessionRow, type OpencodeSessionsResponse, type OpencodeStatsResponse, type OpencodeActiveResponse, type OpencodeProjectsResponse, type WorkspacePlanResponse, type WorkspacePlanAppliedResponse, type AgentRunAction, type Project, type FeatureIdea, type SettingsHealthResponse, type EngineeringPolicyResponse, type ProfileActivityResponse, TASK_STATUSES } from "./api";
 
 // --- Router Hook ---
 function useRoute(): [string, (to: string) => void] {
@@ -93,7 +93,7 @@ const SIDEBAR_SECTIONS: Array<{ label: string; items: ShellNavItem[] }> = [
     { path: "/terminal", label: "Terminal", icon: ">_" },
     { path: "/settings", label: "Settings", icon: "⚙" },
     { path: "/profile", label: "Profile", icon: "◎" },
-    { path: "/future", label: "Future Lab", icon: "✦" },
+    { path: "/future", label: "Feature Lab", icon: "✦" },
   ] },
 ];
 
@@ -185,16 +185,12 @@ function Shell({ route, navigate, onLogout }: { route: string; navigate: (to: st
     if (route === "/terminal") return <TerminalPage />;
     if (route === "/tasks") return <BoardView />;
     if (route === "/profile") return <ProfilePage />;
-    if (route === "/projects") return <ProjectsPage navigate={navigate} />;
+    if (route === "/projects") return <ProjectsPage />;
     if (route === "/automations") return <ComingSoonPage title="Automations" icon="↻"
       description="Schedules, approvals, run history, and failures will be managed from this page."
       dependency="Requires a documented OpenClaw or Julie scheduler contract before controls can be enabled." navigate={navigate} />;
-    if (route === "/settings") return <ComingSoonPage title="Settings" icon="⚙"
-      description="A dedicated configuration center for voice, models, privacy, integrations, and workspace defaults is planned."
-      dependency="Owner avatar and workspace controls remain available in Profile while this page is built." navigate={navigate} />;
-    if (route === "/future") return <ComingSoonPage title="Future Lab" icon="✦"
-      description="Experimental command-center capabilities will live here without pretending unfinished controls work."
-      dependency="Roadmap items are tracked in the Julie task board and will appear only with verified data sources." navigate={navigate} />;
+    if (route === "/settings") return <SettingsPage />;
+    if (route === "/future") return <FeatureLabPage />;
     return <HomePage navigate={navigate} gw={gw} />;
   };
 
@@ -2802,34 +2798,438 @@ async function downscaleImage(file: File, size = 256): Promise<string> {
   }
 }
 
-function ProfilePage() {
-  const [session, setSession] = useState<{authenticated: boolean; gateway?: any} | null>(null);
-  const [workspaces, setWorkspaces] = useState<{id: number; name: string; description: string}[]>([]);
-  const [newWsName, setNewWsName] = useState("");
-  const [newWsDesc, setNewWsDesc] = useState("");
-  const [avatar, setAvatar] = useState<string | null>(null);
-  const [avatarMsg, setAvatarMsg] = useState("");
+// --- Settings Page (real diagnostics, backups, security posture, policy) ---
+function SettingsPage() {
+  const [health, setHealth] = useState<SettingsHealthResponse | null>(null);
+  const [healthError, setHealthError] = useState<string | null>(null);
+  const [backups, setBackups] = useState<Array<{ file: string; size: number; created_at: string }>>([]);
+  const [policy, setPolicy] = useState<EngineeringPolicyResponse["policy"] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const [activeTab, setActiveTab] = useState<"system" | "data" | "security" | "engineering">("system");
 
-  useEffect(() => {
-    api.session().then(setSession).catch(() => {});
-    api.workspaces().then(d => setWorkspaces(d.workspaces)).catch(() => {});
-    api.avatar().then(d => setAvatar(d.avatar)).catch(() => {});
+  const loadAll = useCallback(async () => {
+    setHealthError(null);
+    const [h, b, p] = await Promise.allSettled([api.settingsHealth(), api.settingsBackups(), api.engineeringPolicy()]);
+    if (h.status === "fulfilled") setHealth(h.value);
+    else { setHealth(null); setHealthError(h.reason?.message ?? "health unavailable"); }
+    if (b.status === "fulfilled") setBackups(b.value.backups);
+    if (p.status === "fulfilled") setPolicy(p.value.policy);
   }, []);
 
-  // D2-7: owner avatar — pick a file, downscale to a 256px JPEG dataURL client
-  // side (keeps the payload well under the ~1MB API cap), PUT to the server.
+  useEffect(() => { loadAll(); }, [loadAll]);
+
+  const createBackup = async () => {
+    setBusy(true); setMsg(null);
+    try {
+      const res = await api.settingsBackup();
+      setMsg({ kind: "ok", text: `Backup written: ${res.backup.file} (${Math.round(res.backup.size / 1024)} KB)` });
+      loadAll();
+    } catch (e: any) { setMsg({ kind: "err", text: e?.message ?? "Backup failed" }); }
+    setBusy(false);
+  };
+
+  const restoreBackup = async (file: string) => {
+    if (!confirm(`Stage restore from "${file}"? On the next service restart the live database will be replaced with this snapshot (a safety copy of the current database is taken first).`)) return;
+    setBusy(true); setMsg(null);
+    try {
+      const res = await api.restoreBackup(file);
+      setMsg({ kind: "ok", text: res.note });
+      loadAll();
+    } catch (e: any) { setMsg({ kind: "err", text: e?.message ?? "Restore failed" }); }
+    setBusy(false);
+  };
+
+  const clearAudit = async () => {
+    if (!confirm("Clear all terminal audit logs? This cannot be undone.")) return;
+    try { await api.clearAuditLogs(); setMsg({ kind: "ok", text: "Audit logs cleared." }); }
+    catch (e: any) { setMsg({ kind: "err", text: e?.message ?? "Failed to clear audit logs" }); }
+  };
+
+  const clearPrompts = async () => {
+    if (!confirm("Clear learned prompt usage? Shortcut suggestions will rebuild from future messages.")) return;
+    try { await api.clearPromptUsage(); setMsg({ kind: "ok", text: "Prompt usage cleared." }); }
+    catch (e: any) { setMsg({ kind: "err", text: e?.message ?? "Failed to clear prompt usage" }); }
+  };
+
+  const h = health?.health ?? null;
+  const uptime = h ? (h.uptime_seconds < 3600 ? `${Math.floor(h.uptime_seconds / 60)}m` : `${Math.floor(h.uptime_seconds / 3600)}h ${Math.floor((h.uptime_seconds % 3600) / 60)}m`) : "—";
+
+  const tabBtn = (id: "system" | "data" | "security" | "engineering", label: string) => (
+    <button key={id} className={`tab-btn${activeTab === id ? " active" : ""}`} onClick={() => setActiveTab(id)}>{label}</button>
+  );
+
+  return (
+    <div className="settings-page">
+      <div className="card settings-header">
+        <div className="card-title">Settings<span className="opencode-card-subtitle">Live diagnostics, data operations, and system posture</span></div>
+        <button className="btn" onClick={loadAll}>Refresh</button>
+      </div>
+
+      <div className="settings-tabs">
+        {tabBtn("system", "System")}
+        {tabBtn("data", "Data & Backups")}
+        {tabBtn("security", "Security")}
+        {tabBtn("engineering", "Engineering")}
+      </div>
+
+      {activeTab === "system" && (
+        <div className="settings-panel">
+          {healthError ? (
+            <div className="card"><PageState kind="error" title="Health unavailable" detail={healthError} onRetry={loadAll} /></div>
+          ) : !h ? (
+            <div className="card"><PageState kind="loading" title="Reading live diagnostics…" /></div>
+          ) : (
+            <>
+              <div className="card">
+                <div className="card-title">Runtime</div>
+                <div className="health-grid">
+                  <HealthItem label="Service uptime" value={uptime} />
+                  <HealthItem label="Memory (RSS)" value={`${h.memory_mb} MB`} />
+                  <HealthItem label="Node.js" value={h.node_version} />
+                  <HealthItem label="Schema version" value={`v${h.schema_version}`} />
+                </div>
+              </div>
+              <div className="card">
+                <div className="card-title">Gateway</div>
+                {h.gateway.connected ? (
+                  <div className="health-grid">
+                    <HealthItem label="State" value="Connected" />
+                    <HealthItem label="Server version" value={h.gateway.serverVersion ?? "not reported"} />
+                  </div>
+                ) : (
+                  <p className="settings-note err">Gateway disconnected — {h.gateway.error ?? "no error detail reported"}. Status surfaces elsewhere show the real state, never a cached “connected”.</p>
+                )}
+              </div>
+              <div className="card">
+                <div className="card-title">Storage</div>
+                <div className="health-grid">
+                  <HealthItem label="Data directory" value={h.data_dir} />
+                  <HealthItem label="Database size" value={`${Math.round(h.db_size_bytes / 1024)} KB`} />
+                  <HealthItem label="Backups stored" value={String(h.backup_count)} />
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {activeTab === "data" && (
+        <div className="settings-panel">
+          {h?.restore_pending && (
+            <div className="settings-note warn">
+              A restore is staged from <code>{h.restore_pending}</code>. Apply it by restarting the service: <code>sudo systemctl restart julie</code>. The current database will be copied to <code>data/backups/pre-restore-*</code> before the swap.
+            </div>
+          )}
+          <div className="card">
+            <div className="card-title">Database backups
+              <button className="btn" onClick={createBackup} disabled={busy}>{busy ? "Working…" : "Create backup"}</button>
+            </div>
+            <p className="muted items-note">Backups are online SQLite snapshots in <code>data/backups/</code>, mode 0600. Restore stages the chosen snapshot and applies it at the next service start — never mid-flight on a live WAL connection.</p>
+            {backups.length === 0 ? (
+              <p className="muted">No backups yet.</p>
+            ) : (
+              <div className="backups-list">
+                {backups.map((b) => (
+                  <div key={b.file} className="backup-row">
+                    <div>
+                      <div className="backup-file">{b.file}</div>
+                      <div className="muted">{new Date(b.created_at).toLocaleString()} · {Math.round(b.size / 1024)} KB</div>
+                    </div>
+                    <button className="btn btn-secondary" onClick={() => restoreBackup(b.file)} disabled={busy}>Restore</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="card">
+            <div className="card-title">Maintenance</div>
+            <div className="card-actions">
+              <button className="btn btn-secondary" onClick={clearAudit}>Clear audit logs</button>
+              <button className="btn btn-secondary" onClick={clearPrompts}>Clear prompt usage</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === "security" && (
+        <div className="settings-panel">
+          <div className="card">
+            <div className="card-title">Auth gate</div>
+            <p className="muted items-note">
+              Every mutating endpoint requires the owner session cookie backed by <code>ADMIN_TOKEN</code> (mode 0600 <code>.env</code>).
+              Public endpoints are limited to health, login, logout, and session reads — none of them mutate anything.
+            </p>
+            <div className="card-actions">
+              <button className="btn btn-secondary" onClick={async () => { await api.logout(); window.location.href = "/"; }}>Log out</button>
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-title">Owner terminal</div>
+            <p className={`settings-note ${h?.terminal_enabled ? "warn" : "ok"}`}>
+              {h == null
+                ? "Terminal state unknown — the health read failed."
+                : h.terminal_enabled
+                  ? "Enabled. Shell execution is live but confined to the configured terminal root. Disable with JULIE_TERMINAL_ENABLED=false unless required."
+                  : "Disabled by default. Commands are refused at the WebSocket upgrade. Enable with JULIE_TERMINAL_ENABLED=true when you need shell access."}
+            </p>
+          </div>
+          <div className="card">
+            <div className="card-title">Data residency</div>
+            <p className="muted items-note">
+              SQLite database, device identity, avatars, and backups live under <code>{h?.data_dir ?? "data/"}</code> with owner-only permissions.
+              Secrets never leave this machine; nothing is synced to external services except the local OpenClaw Gateway.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {activeTab === "engineering" && (
+        <div className="settings-panel">
+          <div className="card">
+            <div className="card-title">OpenCode model policy</div>
+            {policy == null ? (
+              <PageState kind="loading" title="Reading policy from the server…" />
+            ) : (
+              <>
+                <div className="health-grid">
+                  <HealthItem label="Primary model" value={policy.primary} />
+                  <HealthItem label="Fallback model" value={policy.fallback} />
+                  <HealthItem label="Engineering department" value={policy.department} />
+                </div>
+                <p className="muted items-note">{policy.note}</p>
+                <p className="muted items-note">Source of truth: <code>server/src/engineering-policy.ts</code>. These values are read live from the backend, not hardcoded in the page.</p>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {msg && <div className={`settings-msg ${msg.kind}`}>{msg.text}</div>}
+    </div>
+  );
+}
+
+function HealthItem({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="health-item">
+      <div className="health-label">{label}</div>
+      <div className="health-value">{value}</div>
+    </div>
+  );
+}
+
+// --- Feature Lab Page (real idea store; seeds come from the database) ---
+function FeatureLabPage() {
+  const [ideas, setIdeas] = useState<FeatureIdea[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [filterStatus, setFilterStatus] = useState("all");
+  const [filterCategory, setFilterCategory] = useState("all");
+  const [showAdd, setShowAdd] = useState(false);
+  const [draft, setDraft] = useState({ title: "", description: "", category: "product" });
+  const [busyId, setBusyId] = useState<number | null>(null);
+  const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true); setError(null);
+    try {
+      const res = await api.featureIdeas({
+        status: filterStatus === "all" ? undefined : filterStatus,
+        category: filterCategory === "all" ? undefined : filterCategory,
+      });
+      setIdeas(res.ideas);
+    } catch (e: any) {
+      setError(e?.message ?? "Feature ideas unavailable");
+    } finally {
+      setLoading(false);
+    }
+  }, [filterStatus, filterCategory]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const addIdea = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!draft.title.trim()) return;
+    try {
+      const res = await api.createFeatureIdea({ ...draft, source: "owner" });
+      setIdeas((prev) => [res.idea, ...prev.filter((i) => i.id !== res.idea.id)]);
+      setDraft({ title: "", description: "", category: "product" });
+      setShowAdd(false);
+      setMsg({ kind: "ok", text: `Idea #${res.idea.id} added.` });
+    } catch (err: any) { setMsg({ kind: "err", text: err?.message ?? "Failed to add idea" }); }
+  };
+
+  const handleVote = async (id: number, delta: 1 | -1) => {
+    try {
+      const res = await api.voteFeatureIdea(id, delta);
+      setIdeas((prev) => prev.map((i) => (i.id === id ? res.idea : i)));
+    } catch (e: any) { setMsg({ kind: "err", text: e?.message ?? "Vote failed" }); }
+  };
+
+  const handleStatus = async (id: number, status: FeatureIdea["status"]) => {
+    setBusyId(id);
+    try {
+      const res = await api.updateFeatureIdea(id, { status });
+      setIdeas((prev) => prev.map((i) => (i.id === id ? res.idea : i)));
+    } catch (e: any) { setMsg({ kind: "err", text: e?.message ?? "Update failed" }); }
+    setBusyId(null);
+  };
+
+  const handleRequestTask = async (id: number) => {
+    setBusyId(id);
+    try {
+      const res = await api.requestFeatureIdeaTask(id);
+      setMsg({ kind: "ok", text: `Task #${res.task.id} "${res.task.title}" created on the active workspace board.` });
+      load();
+    } catch (e: any) { setMsg({ kind: "err", text: e?.message ?? "Failed to create task" }); }
+    setBusyId(null);
+  };
+
+  const handleDelete = async (id: number) => {
+    if (!confirm("Delete this idea permanently?")) return;
+    try {
+      await api.deleteFeatureIdea(id);
+      setIdeas((prev) => prev.filter((i) => i.id !== id));
+    } catch (e: any) { setMsg({ kind: "err", text: e?.message ?? "Delete failed" }); }
+  };
+
+  const categories = ["all", ...new Set(ideas.map((i) => i.category))];
+
+  return (
+    <div className="feature-lab-page">
+      <div className="card feature-lab-header">
+        <div className="card-title">Feature Lab<span className="opencode-card-subtitle">Capability gaps proposed by Julie and the owner — vote, triage, dispatch</span></div>
+        <div className="card-actions">
+          <button className="btn btn-secondary" onClick={load}>Refresh</button>
+          <button className="btn" onClick={() => setShowAdd((s) => !s)}>{showAdd ? "Close" : "+ Add idea"}</button>
+        </div>
+      </div>
+
+      <div className="card filter-bar">
+        <label className="filter-label">Status
+          <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)}>
+            <option value="all">All</option>
+            <option value="proposed">Proposed</option>
+            <option value="planned">Planned</option>
+            <option value="in_progress">In progress</option>
+            <option value="shipped">Shipped</option>
+            <option value="declined">Declined</option>
+          </select>
+        </label>
+        <label className="filter-label">Category
+          <select value={filterCategory} onChange={(e) => setFilterCategory(e.target.value)}>
+            {categories.map((c) => <option key={c} value={c}>{c === "all" ? "All" : c}</option>)}
+          </select>
+        </label>
+        <span className="muted items-note">Ideas come from the <code>feature_ideas</code> store. Julie seeded the gaps surfaced in the 2026-10-30 architecture review; agents can post more via the API with source <code>agent</code>.</span>
+      </div>
+
+      {showAdd && (
+        <div className="card">
+          <form onSubmit={addIdea} className="idea-form">
+            <input placeholder="One-line summary of the feature" value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} required />
+            <textarea placeholder="Why it matters and what it should do (optional)" rows={3} value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} />
+            <div className="idea-form-row">
+              <label className="filter-label">Category
+                <input placeholder="product" value={draft.category} onChange={(e) => setDraft({ ...draft, category: e.target.value })} />
+              </label>
+              <div className="card-actions">
+                <button className="btn" type="submit">Save idea</button>
+                <button className="btn btn-secondary" type="button" onClick={() => setShowAdd(false)}>Cancel</button>
+              </div>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {loading ? (
+        <div className="card"><PageState kind="loading" title="Loading ideas…" /></div>
+      ) : error ? (
+        <div className="card"><PageState kind="error" title="Ideas unavailable" detail={error} onRetry={load} /></div>
+      ) : ideas.length === 0 ? (
+        <div className="card"><PageState kind="empty" title="No ideas match" detail="Adjust the filters or add a new feature idea." /></div>
+      ) : (
+        <div className="ideas-grid">
+          {ideas.map((idea) => (
+            <div key={idea.id} className={`idea-card status-${idea.status}`}>
+              <div className="idea-head">
+                <strong>{idea.title}</strong>
+                <span className={`status-pill ${idea.status === "shipped" ? "ok" : idea.status === "declined" ? "err" : idea.status === "in_progress" ? "wait" : ""}`}>{idea.status.replace("_", " ")}</span>
+              </div>
+              <div className="muted idea-meta">
+                <span>#{idea.id}</span>
+                <span>·</span>
+                <span>{idea.category}</span>
+                <span>·</span>
+                <span>from {idea.source}</span>
+                {idea.task_id != null && <span>· task #{idea.task_id}</span>}
+              </div>
+              {idea.description && <p className="idea-desc">{idea.description}</p>}
+              <div className="idea-actions">
+                <span className="idea-votes" title="Owner votes">▲ {idea.votes}</span>
+                <button className="btn btn-secondary" onClick={() => handleVote(idea.id, 1)} disabled={busyId === idea.id}>Vote</button>
+                {idea.status === "proposed" && (
+                  <button className="btn" onClick={() => handleRequestTask(idea.id)} disabled={busyId === idea.id}>Request task</button>
+                )}
+                <select value={idea.status} onChange={(e) => handleStatus(idea.id, e.target.value as FeatureIdea["status"])} disabled={busyId === idea.id} className="idea-status-select">
+                  <option value="proposed">proposed</option>
+                  <option value="planned">planned</option>
+                  <option value="in_progress">in progress</option>
+                  <option value="shipped">shipped</option>
+                  <option value="declined">declined</option>
+                </select>
+                <button className="icon-btn" onClick={() => handleDelete(idea.id)} title="Delete idea">✕</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {msg && <div className={`settings-msg ${msg.kind}`}>{msg.text}</div>}
+    </div>
+  );
+}
+
+// --- Profile Page (owner identity, not a metrics board) ---
+function ProfilePage() {
+  const [session, setSession] = useState<any | null>(null);
+  const [gw, setGw] = useState<GatewayStatus | null>(null);
+  const [workspaces, setWorkspaces] = useState<{ id: number; name: string; description: string }[]>([]);
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState<number | null>(null);
+  const [avatar, setAvatar] = useState<string | null>(null);
+  const [displayName, setDisplayName] = useState("");
+  const [ownerTitle, setOwnerTitle] = useState("");
+  const [prefsBusy, setPrefsBusy] = useState(false);
+  const [prefsMsg, setPrefsMsg] = useState<string | null>(null);
+  const [activity, setActivity] = useState<ProfileActivityResponse["activity"]>([]);
+  const [newWsName, setNewWsName] = useState("");
+  const [newWsDesc, setNewWsDesc] = useState("");
+
+  useEffect(() => {
+    api.session().then(setSession).catch(() => setSession({ authenticated: false }));
+    api.gatewayStatus().then(setGw).catch(() => setGw({ connected: false, error: "status unavailable" }));
+    api.avatar().then((d) => setAvatar(d.avatar)).catch(() => {});
+    api.workspaces().then((d) => { setWorkspaces(d.workspaces); setActiveWorkspaceId(d.activeWorkspaceId); }).catch(() => {});
+    api.settings().then((d) => {
+      setDisplayName(d.settings.owner_display_name ?? "");
+      setOwnerTitle(d.settings.owner_title ?? "");
+    }).catch(() => {});
+    api.profileActivity(8).then((d) => setActivity(d.activity)).catch(() => {});
+  }, []);
+
   const onAvatarFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
-    setAvatarMsg("Processing…");
+    setPrefsMsg("Processing image…");
     try {
       const dataUrl = await downscaleImage(file, 256);
       const d = await api.setAvatar(dataUrl);
       setAvatar(d.avatar);
-      setAvatarMsg("Avatar saved.");
+      setPrefsMsg("Avatar saved.");
     } catch (err: any) {
-      setAvatarMsg(err?.message ?? "Could not save avatar.");
+      setPrefsMsg(err?.message ?? "Could not save avatar.");
     }
   };
 
@@ -2837,18 +3237,28 @@ function ProfilePage() {
     try {
       const d = await api.setAvatar(null);
       setAvatar(d.avatar);
-      setAvatarMsg("Avatar removed.");
+      setPrefsMsg("Avatar removed.");
     } catch (err: any) {
-      setAvatarMsg(err?.message ?? "Could not remove avatar.");
+      setPrefsMsg(err?.message ?? "Could not remove avatar.");
     }
+  };
+
+  const savePrefs = async () => {
+    setPrefsBusy(true); setPrefsMsg(null);
+    try {
+      await api.saveSettings({ owner_display_name: displayName.trim(), owner_title: ownerTitle.trim() });
+      setPrefsMsg("Saved.");
+    } catch (e: any) { setPrefsMsg(e?.message ?? "Failed to save"); }
+    setPrefsBusy(false);
   };
 
   const createWorkspace = async () => {
     if (!newWsName.trim()) return;
-    const d = await api.createWorkspace(newWsName, newWsDesc);
-    setWorkspaces(prev => [...prev, d.workspace]);
-    setNewWsName("");
-    setNewWsDesc("");
+    try {
+      const d = await api.createWorkspace(newWsName, newWsDesc);
+      setWorkspaces((prev) => [...prev, d.workspace]);
+      setNewWsName(""); setNewWsDesc("");
+    } catch (e: any) { setPrefsMsg(e?.message ?? "Could not create workspace"); }
   };
 
   const activateWorkspace = async (id: number) => {
@@ -2857,59 +3267,113 @@ function ProfilePage() {
   };
 
   return (
-    <div>
-      <div className="card" style={{ marginBottom: 20 }}>
-        <div className="card-title">Profile</div>
-        <div className="card-content" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <div><span className="text-dim">Session:</span> {session?.authenticated ? "Authenticated" : "Anonymous"}</div>
-          <div><span className="text-dim">Gateway:</span> {session?.gateway?.connected ? "Connected" : "Disconnected"}</div>
+    <div className="profile-page">
+      <div className="card profile-header">
+        <div className="profile-avatar">
+          {avatar
+            ? <img src={avatar} alt="Owner avatar" className="profile-avatar-img" />
+            : <div className="profile-avatar-empty" aria-hidden="true">{(displayName.trim().charAt(0) || "◆").toUpperCase()}</div>}
         </div>
-      </div>
-
-      <div className="card" style={{ marginBottom: 20 }}>
-        <div className="card-title">Owner Avatar</div>
-        <div className="card-content" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            {avatar
-              ? <img src={avatar} alt="Owner avatar" style={{ width: 56, height: 56, borderRadius: "50%", border: "1px solid var(--accent-border)", objectFit: "cover" }} />
-              : <div style={{ width: 56, height: 56, borderRadius: "50%", border: "1px dashed var(--border-soft)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-dim)", fontSize: "0.7rem" }}>none</div>}
-            <label className="btn" style={{ padding: "8px 14px", fontSize: "0.8rem", cursor: "pointer" }}>
-              Choose photo
-              <input type="file" accept="image/jpeg,image/png,image/webp" style={{ display: "none" }} onChange={onAvatarFile} />
-            </label>
-            {avatar && <button className="icon-btn" onClick={clearAvatar} title="Remove avatar">✕</button>}
+        <div className="profile-identity">
+          <h1>{displayName.trim() || "Owner"}</h1>
+          <p className="muted">{ownerTitle.trim() || "Owner / CEO — single-operator authority"}</p>
+          <div className="profile-status-row">
+            <span className={`status-pill ${session?.authenticated ? "ok" : "err"}`}>{session?.authenticated ? "Session authenticated" : "Session expired"}</span>
+            <span className={`status-pill ${gw?.connected ? "ok" : "err"}`}>{gw?.connected ? `Gateway ${gw.serverVersion ?? "connected"}` : "Gateway offline"}</span>
           </div>
-          {avatarMsg && <div className="text-dim" style={{ fontSize: "0.75rem" }}>{avatarMsg}</div>}
-          <div className="text-dim" style={{ fontSize: "0.7rem" }}>Stored locally on this machine (settings store). Shown beside the AI Assistant panel.</div>
+        </div>
+        <div className="profile-avatar-actions">
+          <label className="btn btn-secondary">
+            Change photo
+            <input type="file" accept="image/jpeg,image/png,image/webp" style={{ display: "none" }} onChange={onAvatarFile} />
+          </label>
+          {avatar && <button className="icon-btn" onClick={clearAvatar} title="Remove avatar">✕</button>}
         </div>
       </div>
 
-      <div className="card" style={{ marginBottom: 20 }}>
-        <div className="card-title">Workspaces</div>
-        <div className="card-content" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          {workspaces.map(ws => (
-            <div key={ws.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: 12, background: "rgba(0,0,0,0.2)", borderRadius: 8 }}>
-              <div>
-                <div style={{ fontWeight: 600 }}>{ws.name}</div>
-                <div className="text-dim" style={{ fontSize: "0.8rem" }}>{ws.description || "No description"}</div>
+      <div className="profile-columns">
+        <div className="profile-col">
+          <div className="card">
+            <div className="card-title">Identity & preferences</div>
+            <div className="pref-form">
+              <label className="filter-label">Display name
+                <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="How Julie and the home greeting address you" />
+              </label>
+              <label className="filter-label">Title / role
+                <input value={ownerTitle} onChange={(e) => setOwnerTitle(e.target.value)} placeholder="e.g. Owner & CEO" />
+              </label>
+              <div className="card-actions">
+                <button className="btn" onClick={savePrefs} disabled={prefsBusy}>{prefsBusy ? "Saving…" : "Save"}</button>
               </div>
-              <button className="btn" style={{ padding: "6px 12px", fontSize: "0.8rem" }} onClick={() => activateWorkspace(ws.id)}>Use</button>
+              {prefsMsg && <p className="muted items-note">{prefsMsg}</p>}
             </div>
-          ))}
-          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-            <input 
-              placeholder="Workspace name" 
-              value={newWsName} 
-              onChange={e => setNewWsName(e.target.value)}
-              style={{ flex: 1 }}
-            />
-            <input 
-              placeholder="Description" 
-              value={newWsDesc} 
-              onChange={e => setNewWsDesc(e.target.value)}
-              style={{ flex: 2 }}
-            />
-            <button className="btn" onClick={createWorkspace}>+</button>
+          </div>
+
+          <div className="card">
+            <div className="card-title">Security</div>
+            <p className="muted items-note">
+              Authentication is a single owner session cookie validated against <code>ADMIN_TOKEN</code> on this machine.
+              There is no second account and no shared credential; the token never leaves the host.
+            </p>
+            <div className="card-actions">
+              <button className="btn btn-secondary" onClick={async () => { await api.logout(); window.location.href = "/"; }}>Log out</button>
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="card-title">Workspaces</div>
+            <div className="profile-ws-list">
+              {workspaces.map((ws) => (
+                <div key={ws.id} className="profile-ws-row">
+                  <div>
+                    <strong>{ws.name}</strong>
+                    <span className="muted"> {ws.description || "No description"}</span>
+                  </div>
+                  {activeWorkspaceId === ws.id
+                    ? <span className="status-pill ok">Active</span>
+                    : <button className="btn btn-secondary" onClick={() => activateWorkspace(ws.id)}>Use</button>}
+                </div>
+              ))}
+            </div>
+            <div className="profile-ws-new">
+              <input placeholder="New workspace name" value={newWsName} onChange={(e) => setNewWsName(e.target.value)} />
+              <input placeholder="Description (optional)" value={newWsDesc} onChange={(e) => setNewWsDesc(e.target.value)} />
+              <button className="btn btn-secondary" onClick={createWorkspace}>Create</button>
+            </div>
+          </div>
+        </div>
+
+        <div className="profile-col">
+          <div className="card">
+            <div className="card-title">Recent task activity</div>
+            {activity.length === 0 ? (
+              <p className="muted">No task events recorded yet.</p>
+            ) : (
+              <div className="profile-activity">
+                {activity.map((a) => (
+                  <div key={a.id} className="profile-activity-row">
+                    <span className={`activity-actor ${a.actor_type}`}>{a.actor_type === "owner" ? "◆" : a.actor_type === "agent" ? "◇" : "·"}</span>
+                    <div className="profile-activity-body">
+                      <strong>{a.task_title ?? `Task #${a.task_id}`}</strong>
+                      <span className="muted">
+                        {a.event_type.replace(/_/g, " ")}
+                        {a.to_status ? ` → ${a.to_status}` : ""}
+                        {a.details ? ` · ${a.details.slice(0, 80)}` : ""}
+                      </span>
+                    </div>
+                    <time className="muted">{relativeTime(Date.parse(a.created_at))}</time>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="card">
+            <div className="card-title">Scope of this profile</div>
+            <p className="muted items-note">
+              This is a single-owner system: the profile page is about you — identity, avatar, workspaces, and session posture.
+              Fleet-wide metrics belong on Analytics and the Task Board, not here.
+            </p>
           </div>
         </div>
       </div>
@@ -2917,73 +3381,277 @@ function ProfilePage() {
   );
 }
 
-// --- Projects Page (dev project registry; real OpenCode service records) ---
-function ProjectsPage({ navigate }: { navigate: (to: string) => void }) {
-  const [data, setData] = useState<OpencodeProjectsResponse | null>(null);
-  const load = useCallback(async () => {
-    setData(null);
+// --- Projects Page (owner project folders under JULIE_PROJECT_DIR) ---
+function ProjectsPage() {
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [dirs, setDirs] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [logsFor, setLogsFor] = useState<string | null>(null);
+  const [logs, setLogs] = useState<string[]>([]);
+  const [configFor, setConfigFor] = useState<string | null>(null);
+  const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [form, setForm] = useState<{ workspaceId: number | null; description: string; port: string; teamMode: "inherit" | "custom"; agentIds: string[] }>({ workspaceId: null, description: "", port: "", teamMode: "inherit", agentIds: [] });
+  const [teamRows, setTeamRows] = useState<AgentAssignmentRow[]>([]);
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(async (quiet = false) => {
+    if (!quiet) { setLoading(true); setError(null); }
     try {
-      setData(await api.opencodeProjects());
+      const [p, d] = await Promise.all([api.projects(), api.projectDirs()]);
+      setProjects(p.projects);
+      setDirs(d.dirs);
     } catch (e: any) {
-      setData({ ok: false, projects: [], coverage: { projects: 0, sessionsScanned: 0 }, error: e.message || "projects unavailable", source: "opencode" });
+      if (!quiet) setError(e?.message ?? "Projects unavailable");
+    } finally {
+      if (!quiet) setLoading(false);
     }
   }, []);
-  useEffect(() => { load(); }, [load]);
 
-  const up = data?.ok ?? false;
+  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    api.workspaces().then((d) => setWorkspaces(d.workspaces)).catch(() => {});
+  }, []);
+  // Keep live statuses honest without clicking: re-read while the page is open.
+  useEffect(() => {
+    const t = setInterval(() => load(true), 12_000);
+    return () => clearInterval(t);
+  }, [load]);
+
+  const upsert = (project: Project) => setProjects((prev) => prev.map((p) => (p.slug === project.slug ? project : p)));
+
+  const runAction = async (slug: string, fn: () => Promise<{ ok: boolean; project: Project }>, failText: string) => {
+    setMsg(null);
+    try {
+      const res = await fn();
+      upsert(res.project);
+    } catch (e: any) {
+      setMsg({ kind: "err", text: e?.message ?? failText });
+      load(true);
+    }
+  };
+
+  const toggleLogs = async (slug: string) => {
+    if (logsFor === slug) { setLogsFor(null); return; }
+    setLogsFor(slug); setLogs([]);
+    try {
+      const res = await api.projectLogs(slug);
+      setLogs(res.lines);
+    } catch (e: any) { setLogs([`Log read failed: ${e?.message ?? "unavailable"}`]); }
+  };
+
+  const openConfig = (project: Project) => {
+    setConfigFor(project.slug);
+    setForm({
+      workspaceId: project.workspace_id,
+      description: project.description,
+      port: project.port ? String(project.port) : "",
+      teamMode: project.team_mode,
+      agentIds: project.agent_ids,
+    });
+    setTeamRows([]);
+    if (project.workspace_id) {
+      api.agentAssignments(project.workspace_id).then((d) => setTeamRows(d.agents)).catch(() => setTeamRows([]));
+    }
+  };
+
+  const saveConfig = async () => {
+    if (!configFor) return;
+    setSaving(true); setMsg(null);
+    try {
+      const portNum = form.port.trim() ? Number(form.port) : null;
+      if (portNum != null && (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535)) {
+        setMsg({ kind: "err", text: "Port must be a whole number between 1 and 65535" });
+        setSaving(false); return;
+      }
+      const res = await api.updateProject(configFor, {
+        workspaceId: form.workspaceId,
+        description: form.description,
+        port: portNum,
+        teamMode: form.teamMode,
+        agentIds: form.teamMode === "custom" ? form.agentIds : undefined,
+      });
+      upsert(res.project);
+      setConfigFor(null);
+      setMsg({ kind: "ok", text: `Saved ${res.project.name}.` });
+    } catch (e: any) {
+      setMsg({ kind: "err", text: e?.message ?? "Update failed" });
+    }
+    setSaving(false);
+  };
+
+  const statusPill = (status: Project["process_status"]) => {
+    const cls = status === "running" ? "ok" : status === "failed" ? "err" : (status === "starting" || status === "stopping") ? "wait" : "";
+    return <span className={`status-pill ${cls}`}>{status}</span>;
+  };
+
+  const busyStatus = (p: Project) => p.process_status === "starting" || p.process_status === "stopping";
+
   return (
     <div className="projects-page">
       <div className="card projects-header">
-        <div className="opencode-header">
-          <div>
-            <div className="card-title">Projects<span className="opencode-card-subtitle">Development registry · live from the OpenCode service</span></div>
-            {data == null ? (
-              <p className="muted" style={{ margin: 0 }}>loading registry…</p>
-            ) : up ? (
-              <p className="muted" style={{ margin: 0 }}>{data.projects.length} project{data.projects.length === 1 ? "" : "s"} · session counts from the latest {data.coverage.sessionsScanned} sessions</p>
-            ) : (
-              <p className="opencode-unavailable" style={{ margin: 0 }}>unavailable — {data.error}</p>
-            )}
-          </div>
-          <div className="projects-actions">
-            <button className="btn" onClick={load}>Refresh</button>
-            <button className="btn" onClick={() => navigate("/opencode")}>Activity ↗</button>
-          </div>
+        <div>
+          <div className="card-title">Projects<span className="opencode-card-subtitle">Folders under the project root · workspace-owned · launchable</span></div>
+          {!loading && !error && (
+            <p className="muted" style={{ margin: 0 }}>
+              {projects.length} registered · {dirs.length} folder{dirs.length === 1 ? "" : "s"} discovered{projects.some((p) => p.process_status === "running") ? ` · ${projects.filter((p) => p.process_status === "running").length} running` : ""}
+            </p>
+          )}
         </div>
+        <button className="btn btn-secondary" onClick={() => load()}>Refresh</button>
       </div>
 
-      {data == null ? (
-        <div className="card"><PageState kind="loading" title="Loading projects…" /></div>
-      ) : !up ? (
-        <div className="card"><PageState kind="error" title="Projects unavailable" detail={`${data.error ?? "unknown error"} — the registry reads the real OpenCode service; nothing is simulated.`} onRetry={load} /></div>
-      ) : data.projects.length === 0 ? (
-        <div className="card"><PageState kind="empty" title="No projects yet" detail="Projects appear here once OpenCode records activity for a directory." /></div>
+      {loading ? (
+        <div className="card"><PageState kind="loading" title="Scanning project folders…" /></div>
+      ) : error ? (
+        <div className="card"><PageState kind="error" title="Projects unavailable" detail={`${error} — this page reads the real project directory and process table; nothing is simulated.`} onRetry={() => load()} /></div>
+      ) : projects.length === 0 ? (
+        <div className="card">
+          <PageState
+            kind="empty"
+            title="No project folders yet"
+            detail="Create a subdirectory under the project root (default: ./project) and it will be registered here with a workspace, team, and launch controls."
+          />
+        </div>
       ) : (
         <div className="projects-grid">
-          {data.projects.map((project) => (
-            <div className="project-card" key={project.id ?? project.name}>
+          {projects.map((project) => (
+            <div key={project.slug} className={`project-card status-${project.process_status}`}>
               <div className="project-card-head">
-                <span className="project-icon" aria-hidden="true">▤</span>
-                <strong>{project.name}</strong>
-                {project.vcs && <span className="status-pill wait opencode-outcome">{project.vcs}</span>}
-                {project.sandboxes > 0 && <span className="muted project-sub-detail">{project.sandboxes} sandbox{project.sandboxes === 1 ? "" : "es"}</span>}
+                <span className="project-icon" aria-hidden="true">{project.kind === "node" ? "⬢" : project.kind === "static" ? "▤" : "▫"}</span>
+                <div className="project-card-title">
+                  <strong>{project.name}</strong>
+                  <span className="muted">{project.framework || project.kind}{project.workspace_name ? ` · ${project.workspace_name}` : " · unowned"}</span>
+                </div>
+                {statusPill(project.process_status)}
               </div>
-              <div className="project-card-stats">
-                <span>{project.sessions} session{project.sessions === 1 ? "" : "s"}</span>
-                <span className="muted">· {project.lastActive ? `active ${relativeTime(project.lastActive)}` : "no recent activity"}</span>
+
+              <p className="project-desc muted">{project.description || "No description yet."}</p>
+
+              {project.agents.length > 0 ? (
+                <div className="project-team">
+                  {project.agents.map((a) => (
+                    <span key={a.id} className="agent-chip" title={`${a.id}${a.role ? ` · ${a.role}` : ""}`}>{a.humanName || a.id}</span>
+                  ))}
+                  <span className="muted team-source">{project.team_source === "workspace" ? "workspace team" : "project team"}</span>
+                </div>
+              ) : (
+                <div className="project-team">
+                  <span className="muted team-source">No agent team — assign one in Configure.</span>
+                </div>
+              )}
+
+              {project.process_status === "running" && project.port && (
+                <div className="project-port muted">port {project.port} · up {project.uptime_seconds != null ? `${Math.floor(project.uptime_seconds / 60)}m` : "since launch"}</div>
+              )}
+              {project.process_status === "failed" && project.last_error && (
+                <p className="project-error">{project.last_error}</p>
+              )}
+
+              <div className="project-card-actions">
+                {(project.process_status === "stopped" || project.process_status === "failed") && (
+                  <button className="btn" onClick={() => runAction(project.slug, () => api.startProject(project.slug), "Launch failed")} disabled={!project.exists || busyStatus(project)}>
+                    {busyStatus(project) ? "Starting…" : "Launch"}
+                  </button>
+                )}
+                {project.process_status === "running" && (
+                  <>
+                    <a className="btn" href={project.subpath_url} target="_blank" rel="noreferrer">Open</a>
+                    {project.local_url && <a className="btn btn-secondary" href={project.local_url} target="_blank" rel="noreferrer">Port ↗</a>}
+                    <button className="btn btn-secondary" onClick={() => runAction(project.slug, () => api.stopProject(project.slug), "Stop failed")} disabled={busyStatus(project)}>
+                      {busyStatus(project) ? "Stopping…" : "Stop"}
+                    </button>
+                  </>
+                )}
+                {project.process_status === "starting" && <button className="btn" disabled>Starting…</button>}
+                {project.process_status === "stopping" && <button className="btn" disabled>Stopping…</button>}
+                {project.kind === "node" && !project.node_modules && project.process_status !== "running" && (
+                  <span className="muted launch-hint">run <code>npm install</code> in the folder first</span>
+                )}
+                <button className="icon-btn" onClick={() => toggleLogs(project.slug)} title="Toggle logs">≡</button>
+                <button className="icon-btn" onClick={() => openConfig(project)} title="Configure">⚙</button>
               </div>
-              <div className="muted project-created">registered {project.created ? relativeTime(project.created) : "unknown"}</div>
+
+              {logsFor === project.slug && (
+                <div className="project-logs">
+                  {logs.length === 0 ? <p className="muted">No output captured since Julie last launched this project (output from before a Julie restart is not recoverable).</p>
+                    : logs.map((line, i) => <div key={i} className="log-line">{line}</div>)}
+                </div>
+              )}
             </div>
           ))}
         </div>
       )}
 
-      <div className="card projects-note-card">
+      {configFor && (
+        <div className="card project-config">
+          <div className="card-title">Configure <code>{configFor}</code>
+            <button className="icon-btn" onClick={() => setConfigFor(null)} title="Close">✕</button>
+          </div>
+          <div className="config-grid">
+            <label className="filter-label">Workspace
+              <select value={form.workspaceId ?? ""} onChange={(e) => {
+                const id = e.target.value === "" ? null : Number(e.target.value);
+                setForm((c) => ({ ...c, workspaceId: id, agentIds: [] }));
+                if (id) api.agentAssignments(id).then((d) => setTeamRows(d.agents)).catch(() => setTeamRows([]));
+                else setTeamRows([]);
+              }}>
+                <option value="">Unowned</option>
+                {workspaces.map((ws) => <option key={ws.id} value={ws.id}>{ws.name}</option>)}
+              </select>
+            </label>
+            <label className="filter-label">Launch port (blank = auto-allocate)
+              <input value={form.port} onChange={(e) => setForm({ ...form, port: e.target.value })} inputMode="numeric" placeholder="auto" />
+            </label>
+            <label className="filter-label" style={{ gridColumn: "1 / -1" }}>Description
+              <textarea rows={2} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
+            </label>
+            <div className="filter-label" style={{ gridColumn: "1 / -1" }}>Agent team
+              <div className="config-team-mode">
+                <button type="button" className={`chip-toggle${form.teamMode === "inherit" ? " on" : ""}`} onClick={() => setForm({ ...form, teamMode: "inherit" })}>Inherit workspace team</button>
+                <button type="button" className={`chip-toggle${form.teamMode === "custom" ? " on" : ""}`} onClick={() => setForm({ ...form, teamMode: "custom" })}>Custom team</button>
+              </div>
+              {form.teamMode === "custom" && (
+                form.workspaceId == null ? <p className="muted items-note">Pick a workspace first to list its agents.</p>
+                : teamRows.length === 0 ? <p className="muted items-note">Loading agent roster… (or the Gateway is unreachable — assign from the Agents page if this persists.)</p>
+                : (
+                  <div className="config-agent-grid">
+                    {teamRows.map((row) => (
+                      <label key={row.id} className="config-agent">
+                        <input
+                          type="checkbox"
+                          checked={form.agentIds.includes(row.id)}
+                          onChange={(e) => setForm((c) => ({
+                            ...c,
+                            agentIds: e.target.checked ? [...c.agentIds, row.id] : c.agentIds.filter((x) => x !== row.id),
+                          }))}
+                        />
+                        {row.displayName}
+                      </label>
+                    ))}
+                  </div>
+                )
+              )}
+              {form.teamMode === "inherit" && form.workspaceId != null && (
+                <p className="muted items-note">Inheriting the team of “{workspaces.find((w) => w.id === form.workspaceId)?.name}”. Agent changes on the Agents page flow into this project automatically.</p>
+              )}
+            </div>
+          </div>
+          <div className="card-actions">
+            <button className="btn" onClick={saveConfig} disabled={saving}>{saving ? "Saving…" : "Save project settings"}</button>
+            <button className="btn btn-secondary" onClick={() => setConfigFor(null)}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {msg && <div className={`settings-msg ${msg.kind}`}>{msg.text}</div>}
+
+      <div className="card">
         <p className="muted items-note">
-          This registry mirrors the real OpenCode service records. Host paths stay
-          server-side; files and ports that are not visible through the bridge
-          remain invisible here. Read-only file browsing is planned as the next
-          registry slice.
+          Launching a Node folder runs its <code>dev</code>/<code>start</code> script on an allocated port; static folders (an <code>index.html</code> with no package.json) are served directly.
+          <strong>Open</strong> routes through the same-origin proxy at <code>/project/&lt;slug&gt;/</code>; if an app assumes it owns the URL root, use the <strong>Port</strong> link instead.
+          Subpath caveat: apps with fixed base paths and HMR websockets may need the port link for full behavior. Process state is real — a project that exited is reported as failed, never as running.
         </p>
       </div>
     </div>
