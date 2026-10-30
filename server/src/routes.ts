@@ -2,7 +2,7 @@
 import crypto from "node:crypto";
 import { createHash } from "node:crypto";
 import { Router, raw as rawBody, type Request, type Response } from "express";
-import { db, getSetting, setSetting, TASK_STATUSES, type TaskStatus } from "./db.js";
+import { db, getSetting, setSetting, schemaVersion, TASK_STATUSES, type TaskStatus } from "./db.js";
 import { gateway, type ChatStreamEvent, type GatewayChatAttachment } from "./gateway.js";
 import { getWeather } from "./weather.js";
 import { getTrending } from "./trending.js";
@@ -225,7 +225,9 @@ api.get("/health", (_req, res) => {
   res.json({
     ok: true,
     service: "julie-ai-os",
-    version: "0.1.0",
+    version: config.appVersion,
+    schemaVersion: schemaVersion(),
+    terminal: { enabled: config.terminalEnabled },
     gateway: { connected: g.connected, serverVersion: g.serverVersion ?? null },
   });
 });

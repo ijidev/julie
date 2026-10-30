@@ -53,17 +53,22 @@ const server = app.listen(config.port, config.host, () => {
 });
 
 // Terminal WS bridge — attached to the main HTTP server (shares the port).
-const wss = new WebSocketServer({ noServer: true });
-server.on("upgrade", (req, socket, head) => {
-  if (req.url === "/terminal-ws") {
-    wss.handleUpgrade(req, socket, head, (ws) => {
-      setupTerminal(wss);
-      wss.emit("connection", ws, req);
-    });
-  } else {
-    socket.destroy();
-  }
-});
+// Owner shell execution is disabled unless explicitly enabled in configuration.
+if (config.terminalEnabled) {
+  const wss = new WebSocketServer({ noServer: true });
+  setupTerminal(wss);
+  server.on("upgrade", (req, socket, head) => {
+    if (req.url === "/terminal-ws") {
+      wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
+    } else {
+      socket.destroy();
+    }
+  });
+  console.log(`[julie] owner terminal enabled (root ${config.terminalRoot})`);
+} else {
+  server.on("upgrade", (_req, socket) => socket.destroy());
+  console.log("[julie] owner terminal disabled (set JULIE_TERMINAL_ENABLED=true to enable)");
+}
 
 // Establish the gateway connection in the background; never block boot.
 gateway.ensureConnected().then(() => {

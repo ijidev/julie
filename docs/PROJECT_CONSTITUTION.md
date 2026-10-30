@@ -11,9 +11,11 @@ as its AI execution backend.
 2. **Owner sovereignty.** One owner. Everything mutating or executing is behind the
    owner session gate. The AI execution path (chat → gateway) can never be reached
    without authentication.
-3. **Containment.** JULIE lives entirely inside `/home/admin/julie`. It never writes
-   to OpenClaw's home (`~/.openclaw`), never modifies gateway/OmniRoute/Caddy
-   configuration, and never runs commands on the host beyond its own process needs.
+3. **Containment.** JULIE lives entirely inside its own repository root (and its
+   data directory). It never writes to OpenClaw's home (`~/.openclaw`), never
+   modifies gateway/OmniRoute/Caddy configuration, and never runs commands on the
+   host beyond its own process needs. Paths are configuration, not source
+   constants, so a different install location does not change this rule.
 4. **Minimalism.** Every dependency must earn its place. Current runtime deps:
    express, better-sqlite3, ws (backend); react, react-dom (web). No more without a
    decision record.

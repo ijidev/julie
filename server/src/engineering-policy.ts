@@ -1,6 +1,7 @@
 import { db } from "./db.js";
 import { gateway } from "./gateway.js";
 import { getAgentProfile } from "./agent-profiles.js";
+import { config } from "./config.js";
 
 export const OPENCODE_PRIMARY_MODEL = "agentrouter/gpt-5.6-sol";
 export const OPENCODE_FALLBACK_MODEL = "nvidia/z-ai/glm-5.3-flash";
@@ -44,7 +45,7 @@ function policyText(agentId: string, toolIds: string[] | null): string {
     relevant.length > 0
       ? `- Current relevant OpenClaw catalog entries visible to you: ${relevant.join(", ")}. Catalog visibility is not proof that one call is authorized or healthy.`
       : `- Current relevant OpenClaw tool catalog could not be read. Report it as unavailable instead of claiming no access.`,
-    `- OpenCode V2 is the default coding runtime. For Julie repository implementation, run from /home/admin/julie with primary model ${OPENCODE_PRIMARY_MODEL}.`,
+    `- OpenCode V2 is the default coding runtime. For Julie repository implementation, run from ${config.root} with primary model ${OPENCODE_PRIMARY_MODEL}.`,
     `- If and only if the primary fails before changes because it is unavailable or out of credit, retry once with ${OPENCODE_FALLBACK_MODEL} and disclose the fallback.`,
     `- Use a named OpenCode session and continue it for follow-up. Do not use sessions_spawn to perform normal coding or to rediscover one configuration fact.`,
     `- Use named durable OpenClaw conversations for lead/specialist communication. A spawn acknowledgment is not a completed response.`,

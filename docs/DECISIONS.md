@@ -341,3 +341,42 @@ deployment identity to configuration, hardening permissions, and deciding the
 Telegram front door are accepted as later phases. The owner explicitly chose to
 finish E6 first and decide channel routing after a Phase 0 installability and
 security pass.
+
+## D-033 — Proprietary license, no open-source grant
+Date: 2026-10-30
+The repository carries `"private": true` and `LICENSE` with an all-rights-reserved
+proprietary notice. Julie is a single-owner system that embeds that owner's
+operating model, agent roster, and deployment assumptions; publishing it under a
+permissive license was not requested and would be a consequential grant. The
+license is a recorded decision, not an accident: changing it requires an explicit
+owner decision and an update to `LICENSE`, `package.json`, and this record.
+
+## D-034 — Configuration over hardcoded host paths
+Date: 2026-10-30
+The repository root is derived from the compiled module location, and the data
+directory, database, bind address, Gateway URL, terminal root, and OpenClaw CLI
+are environment-configurable with safe defaults. Remaining host-specific values
+(systemd user and absolute checkout path) are rendered by
+`deploy/install-service.sh` from a template instead of being committed. This
+removes the previous assumption that Julie lives at `/home/admin/julie` and makes
+the checked-in code installable on another machine without editing sources.
+
+## D-035 — Versioned schema and owner-only data
+Date: 2026-10-30
+Schema changes are numbered migrations tracked by `PRAGMA user_version`, applied
+once per database. Modules no longer create tables as an import side effect
+(`run_actions` moved into the schema), so boot order cannot produce a partial
+schema. The data directory is forced to 0700 and database/WAL files to 0600 at
+boot. `/api/health` reports the applied schema version so an operator can verify
+an upgrade instead of guessing.
+
+## D-036 — Owner terminal is opt-in and confined
+Date: 2026-10-30
+Arbitrary owner shell execution is the highest-risk surface in Julie. It is now
+disabled unless `JULIE_TERMINAL_ENABLED=true`; the WebSocket upgrade is not even
+attached otherwise, and the UI shows an honest disabled state instead of opening a
+socket that cannot work. When enabled, commands are owner-authenticated,
+rate-limited, blocked on secret-exposing patterns, and confined to
+`JULIE_TERMINAL_ROOT` with symlink resolution. The previous per-upgrade handler
+registration was also removed; it could attach duplicate connection handlers and
+re-execute a command more than once.

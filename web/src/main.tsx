@@ -3184,13 +3184,27 @@ function OpencodePage() {
 
 // --- Terminal Page ---
 function TerminalPage() {
-  const [lines, setLines] = useState<string[]>(["$ Julie AiOS Terminal ready."]);
+  const [lines, setLines] = useState<string[]>([]);
   const [input, setInput] = useState("");
   const [running, setRunning] = useState(false);
+  const [enabled, setEnabled] = useState<boolean | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
 
+  // Terminal execution is disabled unless the backend explicitly enables it.
+  // The page never pretends a shell is available.
   useEffect(() => {
+    let cancelled = false;
+    fetch("/api/health")
+      .then((response) => response.json())
+      .then((data) => { if (!cancelled) setEnabled(data?.terminal?.enabled === true); })
+      .catch(() => { if (!cancelled) setEnabled(false); });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (enabled !== true) return;
+    setLines(["$ Julie AiOS Terminal ready."]);
     // Protocol-aware WebSocket: wss:// for HTTPS, ws:// for HTTP
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${wsProtocol}//${window.location.host}/terminal-ws`);
@@ -3202,7 +3216,7 @@ function TerminalPage() {
       else if (d.type === "error") { setLines(prev => [...prev, `ERROR: ${d.message}`]); setRunning(false); }
     };
     return () => ws.close();
-  }, []);
+  }, [enabled]);
 
   useEffect(() => { logRef.current?.scrollTo({ top: logRef.current.scrollHeight }); }, [lines]);
 
@@ -3213,6 +3227,20 @@ function TerminalPage() {
     wsRef.current?.send(JSON.stringify({ type: "exec", command: input }));
     setInput("");
   };
+
+  if (enabled === null) {
+    return <div className="card"><div className="card-title">Secure Terminal</div><p className="muted">Checking whether owner terminal execution is enabled…</p></div>;
+  }
+
+  if (!enabled) {
+    return (
+      <div className="card" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <div className="card-title">Secure Terminal</div>
+        <p><strong>Disabled by default.</strong> Owner shell execution is a high-risk capability, so Julie does not expose a shell unless the operator explicitly opts in.</p>
+        <p className="muted">To enable it locally, set <code>JULIE_TERMINAL_ENABLED=true</code> in the Julie environment (and optionally <code>JULIE_TERMINAL_ROOT</code> to choose the only directory commands may run in), then restart the service. Commands remain owner-authenticated, rate-limited, secret-blocked, and confined to that root.</p>
+      </div>
+    );
+  }
 
   return (
     <div className="card" style={{ display: "flex", flexDirection: "column" }}>

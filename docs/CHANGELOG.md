@@ -1,5 +1,49 @@
 # Changelog
 
+## Phase 0 — installability and security slice (2026-10-30)
+### Added
+- `README.md`: prerequisites, one-process architecture, quick start, full
+  configuration table, doctor, systemd install, security model, and an explicit
+  "what is honest / what is not there yet" section.
+- `.env.example` with the three required secrets and every optional override.
+- `LICENSE` (proprietary, all rights reserved) plus `package.json` `license`,
+  `engines` (Node >= 20.11), and a `doctor` script.
+- `scripts/julie-doctor.mjs`: read-only discovery for Node version, `.env`
+  permissions, required-secret presence (never values), data/database
+  permissions and integrity, schema version, both builds, OpenClaw CLI, Gateway
+  service state/port, Gateway URL consistency, and running Julie health.
+- `deploy/julie.service.template` and `deploy/install-service.sh`: the unit is
+  rendered with the real checkout path, service user, and node binary instead of
+  committing one host's paths.
+
+### Changed
+- Configuration no longer assumes `/home/admin/julie`. The repository root is
+  derived from the module location; `JULIE_DATA_DIR`, `DB_PATH`, `GATEWAY_URL`,
+  `JULIE_TERMINAL_ROOT`, and `OPENCLAW_BIN` are overridable. The engineering
+  prompt now uses the real root, and the terminal confinement uses the configured
+  root instead of `/home/admin`.
+- Schema creation is versioned with `PRAGMA user_version`; the old ad-hoc
+  `migrate*()` functions are now one guarded migration. `run_actions` moved from
+  an import side effect in `agent-actions.ts` into the schema.
+- The data directory is forced to 0700 and the database/WAL/SHM files to 0600 at
+  boot.
+- Owner terminal is disabled by default (`JULIE_TERMINAL_ENABLED=false`). When
+  disabled, the WebSocket upgrade is not attached and the UI shows an honest
+  disabled state. When enabled, symlink-resolved confinement replaces the old
+  `/home/admin` prefix check. Removed duplicate per-upgrade connection-handler
+  registration that could re-execute a command.
+- `/api/health` reports `version` from `package.json`, `schemaVersion`, and
+  `terminal.enabled` instead of a hardcoded version.
+- `docs/DEPLOYMENT.md` uses the installer and template and documents storage,
+  permissions, migration version, and the updated verification checklist.
+
+### Verified
+- Backend build and web typecheck/build.
+- Migration applied to the live database (`user_version` 0 → 1) with tables and
+  data intact; data directory 0700 and database 0600.
+- Health reports version, schema version, and terminal state; terminal disabled
+  by default; unauthenticated reads still 401.
+
 ## Phase E6 — OpenCode-first collaboration and real activity streaming (2026-10-30)
 ### Added
 - OpenCode-first engineering execution: project-native `.opencode` agent/skill

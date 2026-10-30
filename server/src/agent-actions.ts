@@ -29,34 +29,8 @@ export type AgentAction = {
 type ActionSubscriber = (action: AgentAction) => void;
 const subscribers = new Map<string, Set<ActionSubscriber>>();
 
-function ensureTable(): void {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS run_actions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      agent_id TEXT NOT NULL DEFAULT '',
-      session_key TEXT NOT NULL,
-      session_id TEXT NOT NULL DEFAULT '',
-      run_id TEXT NOT NULL,
-      action_key TEXT NOT NULL,
-      kind TEXT NOT NULL CHECK (kind IN ('tool','run','note')),
-      phase TEXT NOT NULL DEFAULT '',
-      name TEXT NOT NULL DEFAULT '',
-      title TEXT NOT NULL DEFAULT '',
-      status TEXT NOT NULL DEFAULT 'unknown',
-      detail TEXT NOT NULL DEFAULT '',
-      output TEXT NOT NULL DEFAULT '',
-      is_error INTEGER NOT NULL DEFAULT 0,
-      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-      updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-    );
-    CREATE UNIQUE INDEX IF NOT EXISTS run_actions_run_key
-      ON run_actions(run_id, action_key);
-    CREATE INDEX IF NOT EXISTS run_actions_session_idx
-      ON run_actions(session_key, id);
-  `);
-}
-
-ensureTable();
+// `run_actions` is part of the versioned schema in db.ts; this module must not
+// create tables at import time.
 
 function text(value: unknown, max = 8000): string {
   if (typeof value === "string") return value.slice(0, max);

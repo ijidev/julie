@@ -1,6 +1,6 @@
 # Project State: Julie AiOS
 
-## Status: Phase E6 — OpenCode-first collaboration, live activity, and architecture audit
+## Status: Phase E6 + Phase 0 installability/security slice
 **Date:** 2026-10-30
 
 ### Outcome
@@ -39,6 +39,13 @@ file edits now stream into a real activity timeline from Gateway frames.
   delegation, channels, and verification receipts.
 - **Architecture audit:** `docs/ARCHITECTURE_AUDIT_2026-10-30.md` documents the
   duplicated-ownership and installability findings and the phased fix plan.
+- **Phase 0 installability/security slice:** `README.md`, `.env.example`,
+  proprietary `LICENSE`, `engines`, a read-only `npm run doctor`, and a systemd
+  template + installer replace one-host assumptions. Configuration is
+  environment-driven (root, data, database, Gateway, terminal root); the schema
+  is versioned with `PRAGMA user_version`; data is 0700 and the database 0600;
+  owner terminal execution is opt-in and confined; `/api/health` reports version,
+  schema version, and terminal state.
 
 ### Verification
 - ✅ Backend `npm run build`; web `npx tsc --noEmit`; `npm run web:build`
@@ -52,6 +59,10 @@ file edits now stream into a real activity timeline from Gateway frames.
   the delegation and the child run's real failure instead of doing the work
 - ✅ Test conversation and delegated session cleaned up through the documented
   archive-then-delete path
+- ✅ Phase 0: migration applied to the live database (`user_version` 0 → 1) with
+  data intact; `data/` 0700 and `julie.db` 0600; health reports version,
+  `schemaVersion`, and `terminal.enabled`; terminal disabled by default;
+  `npm run doctor` reports no failures; unauthenticated reads still 401
 
 ### Honest boundaries / follow-up
 - The delegated `@Victor` child run failed because OpenClaw provider auth for the
@@ -60,9 +71,10 @@ file edits now stream into a real activity timeline from Gateway frames.
   OpenCode/agent run succeeds.
 - External channels (Telegram) still reach OpenClaw directly. The channel front
   door is deferred until after the Phase 0 installability/security pass.
-- The structural changes in the architecture audit (single identity owner,
-  transcript reconciliation, config-root, migrations, permissions, terminal
-  default-off) are documented but not implemented yet.
+- Phase 0 now covers config-root, versioned migrations, data permissions, and
+  terminal default-off. The remaining structural work (single identity owner,
+  transcript reconciliation, removing `agent_profiles.workspace_id`, resolving
+  `main`/department/model policy from config) is still documented-only.
 
 ---
 

@@ -1,0 +1,20 @@
+[Unit]
+Description=JULIE AI OS (single-process Express API + web build)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@JULIE_USER@
+WorkingDirectory=@JULIE_ROOT@
+ExecStart=@NODE_BIN@ @JULIE_ROOT@/server/dist/index.js
+Restart=always
+RestartSec=3
+Environment=NODE_ENV=production
+# Secrets are read from @JULIE_ROOT@/.env (mode 0600) by the application itself
+# and are never logged. The unit contains no secret values.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

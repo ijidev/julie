@@ -2,13 +2,18 @@
   "name": "julie-ai-os",
   "version": "0.1.0",
   "private": true,
+  "license": "UNLICENSED",
   "type": "module",
   "description": "JULIE AI OS — single-process command center (Express API + static web build)",
+  "engines": {
+    "node": ">=20.11.0"
+  },
   "scripts": {
     "build": "tsc -p server/tsconfig.json",
     "web:build": "npm --prefix web run build",
     "dev": "tsx server/src/index.ts",
-    "start": "node server/dist/index.js"
+    "start": "node server/dist/index.js",
+    "doctor": "node scripts/julie-doctor.mjs"
   },
   "dependencies": {
     "better-sqlite3": "^12.4.1",

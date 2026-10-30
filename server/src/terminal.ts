@@ -3,6 +3,8 @@
 //   -> responses: { type: "data", stream, text } | { type: "exit", code, durationMs } | { type: "error", message }
 import { WebSocketServer, type WebSocket } from "ws";
 import { spawn } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 import { db } from "./db.js";
 import { config } from "./config.js";
 import { parseCookies, SESSION_COOKIE, safeEqual } from "./auth.js";
@@ -95,9 +97,18 @@ export function setupTerminal(wss: WebSocketServer): void {
           return;
         }
 
-        // cwd validation: restrict to a safe set.
-        let cwd = typeof msg.cwd === "string" ? msg.cwd : "/home/admin";
-        if (cwd.includes("..") || !cwd.startsWith("/home/admin")) cwd = "/home/admin";
+        // cwd validation: confine execution to the configured terminal root and
+        // resolve symlinks so a link cannot escape it.
+        let cwd = config.terminalRoot;
+        if (typeof msg.cwd === "string" && msg.cwd.trim()) {
+          try {
+            const rootReal = fs.realpathSync(config.terminalRoot);
+            const candidate = fs.realpathSync(path.resolve(config.terminalRoot, msg.cwd.trim()));
+            if (candidate === rootReal || candidate.startsWith(rootReal + path.sep)) cwd = candidate;
+          } catch {
+            cwd = config.terminalRoot;
+          }
+        }
 
         const timeoutMs = typeof msg.timeoutMs === "number" && msg.timeoutMs > 0 && msg.timeoutMs <= 600000
           ? msg.timeoutMs : 30000;

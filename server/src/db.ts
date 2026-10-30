@@ -1,13 +1,28 @@
 // SQLite persistence: workspaces, tasks, conversations, messages, settings.
+//
+// Schema changes are versioned with `PRAGMA user_version`. A migration runs once
+// per database and every step is written to be safe on a database that already
+// has the column (older installs upgraded before versioning existed).
 import Database from "better-sqlite3";
 import fs from "node:fs";
 import path from "node:path";
 import { config } from "./config.js";
 
-fs.mkdirSync(path.dirname(config.dbPath), { recursive: true });
+// The data directory holds the database, device identity, backups, and generated
+// assets. It is owner-only: 0700 for the directory, 0600 for the database files.
+fs.mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
+try { fs.chmodSync(config.dataDir, 0o700); } catch { /* best effort on exotic filesystems */ }
+
 export const db = new Database(config.dbPath);
 db.pragma("journal_mode = WAL");
 db.pragma("foreign_keys = ON");
+
+function restrictDatabaseFileModes(): void {
+  for (const suffix of ["", "-wal", "-shm"]) {
+    try { fs.chmodSync(`${config.dbPath}${suffix}`, 0o600); } catch { /* file may not exist yet */ }
+  }
+}
+restrictDatabaseFileModes();
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS workspaces (
@@ -202,6 +217,29 @@ CREATE TABLE IF NOT EXISTS agent_avatar_models (
 );
 CREATE INDEX IF NOT EXISTS agent_avatar_models_agent_idx
   ON agent_avatar_models(agent_id, id DESC);
+CREATE TABLE IF NOT EXISTS run_actions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_id TEXT NOT NULL DEFAULT '',
+  session_key TEXT NOT NULL,
+  session_id TEXT NOT NULL DEFAULT '',
+  run_id TEXT NOT NULL,
+  action_key TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('tool','run','note')),
+  phase TEXT NOT NULL DEFAULT '',
+  name TEXT NOT NULL DEFAULT '',
+  title TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'unknown'
+    CHECK (status IN ('running','completed','failed','blocked','stopped','unknown')),
+  detail TEXT NOT NULL DEFAULT '',
+  output TEXT NOT NULL DEFAULT '',
+  is_error INTEGER NOT NULL DEFAULT 0 CHECK (is_error IN (0,1)),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS run_actions_run_key
+  ON run_actions(run_id, action_key);
+CREATE INDEX IF NOT EXISTS run_actions_session_idx
+  ON run_actions(session_key, id);
 `);
 
 export const TASK_STATUSES = [
@@ -209,58 +247,80 @@ export const TASK_STATUSES = [
 ] as const;
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 
-// Migrations for existing databases (ALTER only adds columns; idempotent).
-function migrateTasks(): void {
-  const cols = (db.prepare("PRAGMA table_info(tasks)").all() as Array<{ name: string }>).map((c) => c.name);
-  const has = (n: string) => cols.includes(n);
-  if (!has("gateway_session_key")) db.exec("ALTER TABLE tasks ADD COLUMN gateway_session_key TEXT NOT NULL DEFAULT ''");
-  if (!has("last_run_output")) db.exec("ALTER TABLE tasks ADD COLUMN last_run_output TEXT NOT NULL DEFAULT ''");
-  if (!has("run_started_at")) db.exec("ALTER TABLE tasks ADD COLUMN run_started_at TEXT");
-  if (!has("assigned_agent_id")) db.exec("ALTER TABLE tasks ADD COLUMN assigned_agent_id TEXT NOT NULL DEFAULT ''");
+// ---- versioned migrations -------------------------------------------------
+// Every schema change is a numbered step. `PRAGMA user_version` records the
+// last applied step, so a fresh install and an upgraded install converge on the
+// same schema without re-running work. Steps are written defensively because
+// databases created before versioning already contain some of these columns.
+
+function tableColumns(table: string): Set<string> {
+  return new Set((db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((column) => column.name));
 }
-migrateTasks();
 
-function migrateMessages(): void {
-  const cols = (db.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>).map((column) => column.name);
-  if (!cols.includes("delivery_state")) db.exec("ALTER TABLE messages ADD COLUMN delivery_state TEXT NOT NULL DEFAULT 'complete'");
+function migrateToV1(): void {
+  const tasks = tableColumns("tasks");
+  if (!tasks.has("gateway_session_key")) db.exec("ALTER TABLE tasks ADD COLUMN gateway_session_key TEXT NOT NULL DEFAULT ''");
+  if (!tasks.has("last_run_output")) db.exec("ALTER TABLE tasks ADD COLUMN last_run_output TEXT NOT NULL DEFAULT ''");
+  if (!tasks.has("run_started_at")) db.exec("ALTER TABLE tasks ADD COLUMN run_started_at TEXT");
+  if (!tasks.has("assigned_agent_id")) db.exec("ALTER TABLE tasks ADD COLUMN assigned_agent_id TEXT NOT NULL DEFAULT ''");
+
+  if (!tableColumns("messages").has("delivery_state")) {
+    db.exec("ALTER TABLE messages ADD COLUMN delivery_state TEXT NOT NULL DEFAULT 'complete'");
+  }
+
+  const rooms = tableColumns("agent_rooms");
+  if (!rooms.has("kind")) db.exec("ALTER TABLE agent_rooms ADD COLUMN kind TEXT NOT NULL DEFAULT 'task'");
+  if (!rooms.has("department")) db.exec("ALTER TABLE agent_rooms ADD COLUMN department TEXT NOT NULL DEFAULT ''");
+  if (!tableColumns("agent_room_members").has("gateway_session_id")) {
+    db.exec("ALTER TABLE agent_room_members ADD COLUMN gateway_session_id TEXT NOT NULL DEFAULT ''");
+  }
+
+  const profiles = tableColumns("agent_profiles");
+  if (!profiles.has("human_name")) db.exec("ALTER TABLE agent_profiles ADD COLUMN human_name TEXT NOT NULL DEFAULT ''");
+  if (!profiles.has("department")) db.exec("ALTER TABLE agent_profiles ADD COLUMN department TEXT NOT NULL DEFAULT ''");
+  if (!profiles.has("reports_to")) db.exec("ALTER TABLE agent_profiles ADD COLUMN reports_to TEXT NOT NULL DEFAULT ''");
+  if (!profiles.has("org_level")) db.exec("ALTER TABLE agent_profiles ADD COLUMN org_level TEXT NOT NULL DEFAULT ''");
+
+  // Existing rows predate the append-only task timeline. Record that boundary as
+  // a baseline event rather than inventing historical edits or assignees.
+  db.exec(`
+    INSERT INTO task_activity (task_id, actor_type, event_type, details, created_at)
+    SELECT t.id, 'system', 'baseline', 'Task existed before activity tracking', t.created_at
+    FROM tasks t
+    WHERE NOT EXISTS (SELECT 1 FROM task_activity a WHERE a.task_id = t.id);
+  `);
+
+  // One-time-compatible projection of the original single workspace_id field into
+  // explicit many-to-many memberships. Existing rows remain as a legacy primary
+  // assignment hint; workspace_agents is authoritative for scoped agent views.
+  db.exec(`
+    INSERT OR IGNORE INTO workspace_agents (workspace_id, agent_id)
+    SELECT workspace_id, agent_id FROM agent_profiles WHERE workspace_id IS NOT NULL;
+  `);
 }
-migrateMessages();
 
-function migrateAgentRooms(): void {
-  const roomCols = (db.prepare("PRAGMA table_info(agent_rooms)").all() as Array<{ name: string }>).map((column) => column.name);
-  if (!roomCols.includes("kind")) db.exec("ALTER TABLE agent_rooms ADD COLUMN kind TEXT NOT NULL DEFAULT 'task'");
-  if (!roomCols.includes("department")) db.exec("ALTER TABLE agent_rooms ADD COLUMN department TEXT NOT NULL DEFAULT ''");
-  const memberCols = (db.prepare("PRAGMA table_info(agent_room_members)").all() as Array<{ name: string }>).map((column) => column.name);
-  if (!memberCols.includes("gateway_session_id")) db.exec("ALTER TABLE agent_room_members ADD COLUMN gateway_session_id TEXT NOT NULL DEFAULT ''");
+const MIGRATIONS: Array<{ version: number; up: () => void }> = [
+  { version: 1, up: migrateToV1 },
+];
+
+export const SCHEMA_VERSION = MIGRATIONS.reduce((max, migration) => Math.max(max, migration.version), 0);
+
+export function schemaVersion(): number {
+  return Number(db.pragma("user_version", { simple: true })) || 0;
 }
-migrateAgentRooms();
 
-function migrateAgentProfiles(): void {
-  const cols = (db.prepare("PRAGMA table_info(agent_profiles)").all() as Array<{ name: string }>).map((column) => column.name);
-  const has = (name: string) => cols.includes(name);
-  if (!has("human_name")) db.exec("ALTER TABLE agent_profiles ADD COLUMN human_name TEXT NOT NULL DEFAULT ''");
-  if (!has("department")) db.exec("ALTER TABLE agent_profiles ADD COLUMN department TEXT NOT NULL DEFAULT ''");
-  if (!has("reports_to")) db.exec("ALTER TABLE agent_profiles ADD COLUMN reports_to TEXT NOT NULL DEFAULT ''");
-  if (!has("org_level")) db.exec("ALTER TABLE agent_profiles ADD COLUMN org_level TEXT NOT NULL DEFAULT ''");
+function migrate(): void {
+  const current = schemaVersion();
+  for (const migration of MIGRATIONS.filter((step) => step.version > current).sort((a, b) => a.version - b.version)) {
+    db.transaction(() => {
+      migration.up();
+      db.pragma(`user_version = ${migration.version}`);
+    })();
+  }
+  if (schemaVersion() < SCHEMA_VERSION) db.pragma(`user_version = ${SCHEMA_VERSION}`);
 }
-migrateAgentProfiles();
-
-// Existing rows predate the append-only task timeline. Record that boundary as
-// a baseline event rather than inventing historical edits or assignees.
-db.exec(`
-  INSERT INTO task_activity (task_id, actor_type, event_type, details, created_at)
-  SELECT t.id, 'system', 'baseline', 'Task existed before activity tracking', t.created_at
-  FROM tasks t
-  WHERE NOT EXISTS (SELECT 1 FROM task_activity a WHERE a.task_id = t.id);
-`);
-
-// One-time-compatible projection of the original single workspace_id field into
-// explicit many-to-many memberships. Existing rows remain as a legacy primary
-// assignment hint; workspace_agents is authoritative for scoped agent views.
-db.exec(`
-  INSERT OR IGNORE INTO workspace_agents (workspace_id, agent_id)
-  SELECT workspace_id, agent_id FROM agent_profiles WHERE workspace_id IS NOT NULL;
-`);
+migrate();
+restrictDatabaseFileModes();
 
 export function getSetting(key: string): string | null {
   const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value: string } | undefined;
