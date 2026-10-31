@@ -12,12 +12,20 @@ $initials = mb_strtoupper(mb_substr((string) ($user['first_name'] ?? 'A'), 0, 1)
 $links = [
     ['path' => '/admin', 'label' => 'Dashboard', 'icon' => 'overview'],
     ['path' => '/admin/users', 'label' => 'Customers', 'icon' => 'customers'],
+    ['path' => '/admin/transactions', 'label' => 'Transactions', 'icon' => 'activity'],
     ['path' => '/admin/deposits', 'label' => 'Deposits', 'icon' => 'deposit'],
     ['path' => '/admin/withdrawals', 'label' => 'Withdrawals', 'icon' => 'withdraw'],
     ['path' => '/admin/assets', 'label' => 'Currencies', 'icon' => 'layers'],
     ['path' => '/admin/settings', 'label' => 'Site information', 'icon' => 'settings'],
     ['path' => '/admin/audit', 'label' => 'Audit log', 'icon' => 'audit'],
 ];
+$currentLabel = 'Dashboard';
+foreach ($links as $link) {
+    if (wayfairs_nav_active($link['path'])) {
+        $currentLabel = $link['label'];
+        break;
+    }
+}
 $footerMode = 'compact';
 ?>
 <!doctype html>
@@ -56,6 +64,16 @@ $footerMode = 'compact';
     </div>
   </aside>
   <div class="column app-frame">
+    <header class="app-topbar admin-topbar">
+      <div class="topbar-context">
+        <span class="topbar-status" aria-hidden="true"></span>
+        <span><small>Operations console</small><strong><?= e($currentLabel) ?></strong></span>
+      </div>
+      <div class="topbar-actions">
+        <span class="topbar-audit-note"><?= wayfairs_icon('verification') ?> Actions are audited</span>
+        <div class="topbar-profile"><span class="avatar"><?= e($initials ?: 'A') ?></span><span><strong><?= e($fullName ?: 'Administrator') ?></strong><small>Administrator</small></span></div>
+      </div>
+    </header>
     <header class="mobile-appbar admin-mobilebar">
       <a class="brand" href="<?= e(wayfairs_url('/admin')) ?>"><span class="mark"><?= e(mb_substr($name, 0, 1)) ?></span><span><strong><?= e($name) ?></strong><small>Admin</small></span></a>
       <details class="mobile-app-menu">

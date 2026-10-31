@@ -130,6 +130,14 @@ return function (Router $router, Database $database): void {
         ]);
     }, 'auth');
 
+    $router->get('/transactions', static function () use ($page, $banking, $ledger, $database, $accountRows, $me): void {
+        $user = $me();
+        $page('user/transactions', [
+            'accounts' => $accountRows($banking, $ledger, $database, (string) $user['id']),
+            'history' => $banking->history((string) $user['id'], null, 200),
+        ]);
+    }, 'auth');
+
     $router->get('/receipts/{id}', static function (Request $request) use ($page, $banking, $me): void {
         $page('user/receipt', ['receipt' => $banking->receipt((string) $request->route('id'), (string) $me()['id'])]);
     }, 'auth');
@@ -148,11 +156,12 @@ return function (Router $router, Database $database): void {
         $attempt(static fn () => $banking->submitDeposit((string) $user['id'], (string) $request->post('asset_code', ''), (string) $request->post('amount', ''), (string) $request->post('sender_reference', ''), (string) $request->post('idem', '')), 'Deposit submitted for verification.', '/deposit');
     }, 'auth', true);
 
-    $router->get('/withdraw', static function () use ($page, $banking, $ledger, $accountRows, $me, $database): void {
+    $router->get('/withdraw', static function () use ($page, $banking, $ledger, $accountRows, $me, $database, $kyc): void {
         $user = $me();
         $page('user/withdraw', [
             'accounts' => $accountRows($banking, $ledger, $database, (string) $user['id']),
             'withdrawals' => $database->fetchAll('SELECT w.*, a.account_number, s.code AS asset_code, s.scale AS asset_scale, s.symbol AS asset_symbol FROM withdrawal_requests w JOIN accounts a ON a.id = w.account_id JOIN assets s ON s.id = a.asset_id WHERE w.user_id = ? ORDER BY w.created_at DESC LIMIT 50', [(string) $user['id']]),
+            'kyc' => $kyc->profile((string) $user['id']),
         ]);
     }, 'auth');
 
@@ -166,12 +175,13 @@ return function (Router $router, Database $database): void {
         $attempt(static fn () => $banking->submitWithdrawal((string) $user['id'], (string) $request->post('asset_code', ''), (string) $request->post('amount', ''), $destination, (string) $request->post('idem', '')), 'Withdrawal submitted. The amount is reserved until it is processed.', '/withdraw');
     }, 'auth', true);
 
-    $router->get('/transfer', static function () use ($page, $banking, $ledger, $accountRows, $me, $database): void {
+    $router->get('/transfer', static function () use ($page, $banking, $ledger, $accountRows, $me, $database, $kyc): void {
         $user = $me();
         $page('user/transfer', [
             'accounts' => $accountRows($banking, $ledger, $database, (string) $user['id']),
             'transfers' => $database->fetchAll('SELECT t.*, s.code AS asset_code, s.scale AS asset_scale, s.symbol AS asset_symbol, su.email AS sender_email, ru.email AS recipient_email FROM transfers t JOIN assets s ON s.id = t.asset_id JOIN users su ON su.id = t.sender_user_id JOIN users ru ON ru.id = t.recipient_user_id WHERE t.sender_user_id = ? OR t.recipient_user_id = ? ORDER BY t.created_at DESC LIMIT 50', [(string) $user['id'], (string) $user['id']]),
             'me' => (string) $user['id'],
+            'kyc' => $kyc->profile((string) $user['id']),
         ]);
     }, 'auth');
 
@@ -180,12 +190,13 @@ return function (Router $router, Database $database): void {
         $attempt(static fn () => $banking->internalTransfer((string) $user['id'], (string) $request->post('recipient_email', ''), (string) $request->post('asset_code', ''), (string) $request->post('amount', ''), (string) $request->post('note', ''), (string) $request->post('idem', '')), 'Transfer completed.', '/transfer');
     }, 'auth', true);
 
-    $router->get('/invoices', static function () use ($page, $banking, $ledger, $accountRows, $me, $database): void {
+    $router->get('/invoices', static function () use ($page, $banking, $ledger, $accountRows, $me, $database, $kyc): void {
         $user = $me();
         $page('user/invoices', [
             'accounts' => $accountRows($banking, $ledger, $database, (string) $user['id']),
             'issued' => $database->fetchAll('SELECT i.*, s.code AS asset_code, s.scale AS asset_scale, s.symbol AS asset_symbol FROM invoices i JOIN assets s ON s.id = i.asset_id WHERE i.issuer_user_id = ? ORDER BY i.created_at DESC LIMIT 50', [(string) $user['id']]),
             'paid' => $database->fetchAll('SELECT i.*, s.code AS asset_code, s.scale AS asset_scale, s.symbol AS asset_symbol FROM invoices i JOIN assets s ON s.id = i.asset_id WHERE i.paid_by_user_id = ? ORDER BY i.paid_at DESC LIMIT 50', [(string) $user['id']]),
+            'kyc' => $kyc->profile((string) $user['id']),
         ]);
     }, 'auth');
 
@@ -207,8 +218,13 @@ return function (Router $router, Database $database): void {
         $attempt(static fn () => $kyc->submit((string) $me()['id'], $request->allPost()), 'Verification details submitted for review.', '/kyc');
     }, 'auth', true);
 
-    $router->get('/security', static function () use ($page, $restrictions, $me): void {
-        $page('user/security', ['restrictions' => $restrictions->active((string) $me()['id'])]);
+    $router->get('/security', static function () use ($page, $restrictions, $database, $me): void {
+        $user = $me();
+        $page('user/security', [
+            'restrictions' => $restrictions->active((string) $user['id']),
+            'profile' => $database->fetchOne('SELECT status, email, email_verified_at, last_login_at, created_at FROM users WHERE id = ?', [(string) $user['id']]) ?? [],
+            'activeSessions' => (int) ($database->fetchOne('SELECT COUNT(*) AS total FROM sessions WHERE user_id = ? AND revoked_at IS NULL AND expires_at > ?', [(string) $user['id'], gmdate('Y-m-d H:i:s.u')])['total'] ?? 0),
+        ]);
     }, 'auth');
 
     // ---- administrator ----
@@ -250,7 +266,11 @@ return function (Router $router, Database $database): void {
 
     $router->get('/admin/users', static function () use ($admin, $database): void {
         $admin('admin/users', [
-            'users' => $database->fetchAll("SELECT u.id, u.email, u.first_name, u.last_name, u.status, u.role, u.created_at, kp.status AS kyc_status FROM users u LEFT JOIN kyc_profiles kp ON kp.user_id = u.id WHERE u.role = 'user' ORDER BY u.created_at DESC LIMIT 300"),
+            'users' => $database->fetchAll("SELECT u.id, u.email, u.first_name, u.last_name, u.status, u.role, u.created_at, u.last_login_at, kp.status AS kyc_status,
+                (SELECT COUNT(*) FROM accounts a WHERE a.user_id = u.id) AS account_count,
+                (SELECT COUNT(*) FROM capability_restrictions cr WHERE cr.user_id = u.id AND cr.released_at IS NULL) AS restriction_count,
+                (SELECT MAX(t.created_at) FROM transactions t WHERE t.user_id = u.id) AS last_transaction_at
+                FROM users u LEFT JOIN kyc_profiles kp ON kp.user_id = u.id WHERE u.role = 'user' ORDER BY u.created_at DESC LIMIT 300"),
         ]);
     }, 'admin');
 
@@ -263,6 +283,8 @@ return function (Router $router, Database $database): void {
         $accounts = $database->fetchAll('SELECT a.*, s.code, s.symbol, s.scale FROM accounts a JOIN assets s ON s.id = a.asset_id WHERE a.user_id = ? ORDER BY s.code', [$userId]);
         foreach ($accounts as &$account) {
             $account['available_minor'] = $ledger->accountBalance((string) $account['id']);
+            $held = $database->fetchOne("SELECT COALESCE(SUM(amount_minor),0) AS held FROM holds WHERE account_id = ? AND status = 'active' AND (expires_at IS NULL OR expires_at > ?)", [(string) $account['id'], gmdate('Y-m-d H:i:s.u')]);
+            $account['held_minor'] = (int) ($held['held'] ?? 0);
         }
         unset($account);
         $admin('admin/user-detail', [
@@ -361,6 +383,17 @@ return function (Router $router, Database $database): void {
     $router->get('/admin/withdrawals', static function () use ($admin, $database): void {
         $admin('admin/withdrawals', [
             'withdrawals' => $database->fetchAll("SELECT w.*, u.email, u.first_name, u.last_name, a.account_number, s.code AS asset_code, s.symbol AS asset_symbol, s.scale AS asset_scale FROM withdrawal_requests w JOIN users u ON u.id = w.user_id JOIN accounts a ON a.id = w.account_id JOIN assets s ON s.id = a.asset_id ORDER BY CASE w.status WHEN 'pending' THEN 0 ELSE 1 END, w.created_at DESC LIMIT 300"),
+        ]);
+    }, 'admin');
+
+    $router->get('/admin/transactions', static function () use ($admin, $database): void {
+        $admin('admin/transactions', [
+            'transactions' => $database->fetchAll("SELECT t.*, u.email, u.first_name, u.last_name, a.account_number, s.code AS asset_code, s.symbol AS asset_symbol, s.scale AS asset_scale
+                FROM transactions t
+                JOIN users u ON u.id = t.user_id
+                JOIN accounts a ON a.id = t.account_id
+                JOIN assets s ON s.id = a.asset_id
+                ORDER BY t.created_at DESC LIMIT 300"),
         ]);
     }, 'admin');
 

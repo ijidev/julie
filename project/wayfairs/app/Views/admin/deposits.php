@@ -2,85 +2,55 @@
 
 declare(strict_types=1);
 
-$pendingDeposits = array_values(array_filter($deposits, static fn (array $d): bool => in_array((string) $d['status'], ['pending', 'reviewing'], true)));
-$decidedDeposits = array_values(array_filter($deposits, static fn (array $d): bool => !in_array((string) $d['status'], ['pending', 'reviewing'], true)));
+$pendingDeposits = array_values(array_filter($deposits, static fn (array $deposit): bool => (string) $deposit['status'] === 'pending'));
+$decidedDeposits = array_values(array_filter($deposits, static fn (array $deposit): bool => (string) $deposit['status'] !== 'pending'));
+$completedCount = count(array_filter($deposits, static fn (array $deposit): bool => (string) $deposit['status'] === 'completed'));
+$rejectedCount = count(array_filter($deposits, static fn (array $deposit): bool => (string) $deposit['status'] === 'rejected'));
 ?>
-<div class="section-head">
-  <div>
-    <p class="eyebrow">Money in</p>
-    <h1>Deposits</h1>
-    <p>Confirm the funds actually arrived before crediting. Each decision requires a reason and is written to the audit log.</p>
-  </div>
-  <div class="section-actions">
-    <span class="pill <?= $pendingDeposits !== [] ? 'warn' : 'good' ?>"><?= count($pendingDeposits) ?> awaiting verification</span>
-  </div>
-</div>
+<header class="page-header">
+  <div class="page-heading"><span class="page-icon"><?= wayfairs_icon('deposit') ?></span><div class="page-heading-copy"><span class="page-kicker">Settlement queue</span><h1>Deposit operations</h1><p>Confirm incoming funds outside Wayfairs before crediting the customer's ledger account.</p></div></div>
+  <div class="page-actions"><a class="btn ghost" href="<?= e(wayfairs_url('/admin/transactions')) ?>">Transactions</a></div>
+</header>
+
+<section class="metric-grid">
+  <div class="metric-card"><span class="metric-icon"><?= wayfairs_icon('receipt') ?></span><span class="metric-copy"><strong class="metric-value"><?= count($deposits) ?></strong><span class="metric-label">Loaded requests</span></span></div>
+  <div class="metric-card <?= $pendingDeposits !== [] ? 'warn' : '' ?>"><span class="metric-icon"><?= wayfairs_icon('clock') ?></span><span class="metric-copy"><strong class="metric-value"><?= count($pendingDeposits) ?></strong><span class="metric-label">Awaiting verification</span></span></div>
+  <div class="metric-card"><span class="metric-icon"><?= wayfairs_icon('check') ?></span><span class="metric-copy"><strong class="metric-value"><?= $completedCount ?></strong><span class="metric-label">Completed</span></span></div>
+  <div class="metric-card <?= $rejectedCount > 0 ? 'bad' : '' ?>"><span class="metric-icon"><?= wayfairs_icon('info') ?></span><span class="metric-copy"><strong class="metric-value"><?= $rejectedCount ?></strong><span class="metric-label">Rejected</span></span></div>
+</section>
 
 <?php if ($pendingDeposits === []): ?>
-  <div class="notice good">
-    <?= wayfairs_icon('check') ?>
-    <div><strong>No deposits are waiting</strong><p>New deposit requests appear here as soon as a customer submits one.</p></div>
-  </div>
+  <div class="notice good"><?= wayfairs_icon('check') ?><div><strong>Deposit queue is clear</strong><p>New customer requests will appear here as soon as they are persisted.</p></div></div>
 <?php else: ?>
-  <section class="decision-list">
-    <?php foreach ($pendingDeposits as $d): ?>
-      <article class="card decision-card">
-        <div class="decision-head">
-          <div>
-            <p class="eyebrow">Pending deposit</p>
-            <h2><?= e(wayfairs_amount((int) $d['amount_minor'], (int) $d['asset_scale'], (string) $d['asset_symbol'], (string) $d['asset_code'])) ?></h2>
-            <p class="hint"><?= e(trim((string) $d['first_name'] . ' ' . (string) $d['last_name'])) ?> · <?= e((string) $d['email']) ?></p>
+  <section>
+    <div class="panel-head"><div><h2>Awaiting decision</h2><p>Each credit or rejection requires a reason.</p></div><span class="pill warn"><?= count($pendingDeposits) ?> pending</span></div>
+    <div class="decision-list">
+      <?php foreach ($pendingDeposits as $deposit): $initials = mb_strtoupper(mb_substr((string) $deposit['first_name'], 0, 1) . mb_substr((string) $deposit['last_name'], 0, 1)); ?>
+        <article class="card decision-card">
+          <div class="decision-head">
+            <div><span class="page-kicker">Pending deposit</span><h2><?= e(wayfairs_amount((int) $deposit['amount_minor'], (int) $deposit['asset_scale'], (string) $deposit['asset_symbol'], (string) $deposit['asset_code'])) ?></h2><a class="hint" href="<?= e(wayfairs_url('/admin/users/' . $deposit['user_id'])) ?>"><?= e(trim((string) $deposit['first_name'] . ' ' . (string) $deposit['last_name'])) ?> · <?= e((string) $deposit['email']) ?></a></div>
+            <div class="decision-side"><?= wayfairs_pill((string) $deposit['status']) ?><span class="hint"><?= e(wayfairs_datetime((string) $deposit['created_at'])) ?></span></div>
           </div>
-          <div class="decision-side">
-            <?= wayfairs_pill((string) $d['status']) ?>
-            <span class="hint"><?= e(wayfairs_datetime((string) $d['created_at'])) ?></span>
-          </div>
-        </div>
-
-        <dl class="decision-facts">
-          <div><dt>Credited account</dt><dd class="mono"><?= e((string) $d['account_number']) ?></dd></div>
-          <div><dt>Sender reference</dt><dd><?= e(trim((string) ($d['sender_reference'] ?? '')) !== '' ? (string) $d['sender_reference'] : '—') ?></dd></div>
-          <div><dt>Type</dt><dd><?= e((string) $d['deposit_type']) ?></dd></div>
-        </dl>
-
-        <form class="decision-form" method="post" action="<?= e(wayfairs_url('/admin/deposits/' . $d['id'] . '/decision')) ?>">
-          <input type="hidden" name="_token" value="<?= e(wayfairs_csrf()) ?>" />
-          <label>External reference
-            <input name="external_reference" maxlength="200" placeholder="Recorded when you credit (bank or chain reference)" />
-          </label>
-          <label>Reason for decision
-            <input name="reason" minlength="5" maxlength="300" required placeholder="What you verified before deciding" />
-          </label>
-          <div class="decision-actions">
-            <button class="btn" name="decision" value="approve" type="submit"><?= wayfairs_icon('check', 'btn-icon') ?> Credit deposit</button>
-            <button class="btn danger" name="decision" value="reject" type="submit">Reject</button>
-          </div>
-        </form>
-      </article>
-    <?php endforeach; ?>
+          <dl class="decision-facts"><div><dt>Customer</dt><dd><span class="record-primary"><span class="record-avatar"><?= e($initials ?: 'U') ?></span><span><strong><?= e(trim((string) $deposit['first_name'] . ' ' . (string) $deposit['last_name'])) ?></strong><small><?= e((string) $deposit['email']) ?></small></span></span></dd></div><div><dt>Credited account</dt><dd class="mono"><?= e((string) $deposit['account_number']) ?></dd></div><div><dt>Sender reference</dt><dd class="wrap-anywhere"><?= e(trim((string) ($deposit['sender_reference'] ?? '')) !== '' ? (string) $deposit['sender_reference'] : 'Not supplied') ?></dd></div></dl>
+          <form class="decision-form" method="post" action="<?= e(wayfairs_url('/admin/deposits/' . $deposit['id'] . '/decision')) ?>">
+            <input type="hidden" name="_token" value="<?= e(wayfairs_csrf()) ?>" />
+            <label>External receipt reference<input name="external_reference" maxlength="200" placeholder="Bank or chain reference used for an approval" /></label>
+            <label>Decision reason<input name="reason" minlength="5" maxlength="300" required placeholder="What you observed before deciding" /></label>
+            <div class="decision-actions"><button class="btn" name="decision" value="approve" type="submit"><?= wayfairs_icon('check') ?> Credit deposit</button><button class="btn danger" name="decision" value="reject" type="submit">Reject request</button></div>
+          </form>
+        </article>
+      <?php endforeach; ?>
+    </div>
   </section>
 <?php endif; ?>
 
-<section class="card">
-  <div class="section-head" style="margin-bottom:.75rem">
-    <div><h2>Decision history</h2><p>Completed and rejected deposits, newest first.</p></div>
-  </div>
+<section class="card table-card static">
+  <div class="panel-head"><div><h2>Decision history</h2><p>Non-pending deposit requests, newest first.</p></div><span class="pill"><?= count($decidedDeposits) ?> loaded</span></div>
   <?php if ($decidedDeposits === []): ?>
-    <p class="muted">No deposits have been decided yet.</p>
+    <div class="empty-state"><div class="empty-icon"><?= wayfairs_icon('receipt') ?></div><h3>No deposit decisions</h3><p>Completed and rejected requests will appear here.</p></div>
   <?php else: ?>
-    <div class="table-wrap"><table>
-      <thead><tr><th>Submitted</th><th>Customer</th><th>Asset</th><th>Amount</th><th>Reference</th><th>Status</th><th>Reason</th></tr></thead>
-      <tbody><?php foreach ($decidedDeposits as $d): ?>
-        <tr>
-          <td><?= e(wayfairs_datetime((string) $d['created_at'])) ?></td>
-          <td><?= e(trim((string) $d['first_name'] . ' ' . (string) $d['last_name'])) ?><div class="hint"><?= e((string) $d['email']) ?></div></td>
-          <td><?= e((string) $d['asset_code']) ?></td>
-          <td><?= e(wayfairs_amount((int) $d['amount_minor'], (int) $d['asset_scale'], (string) $d['asset_symbol'])) ?></td>
-          <td class="wrap-anywhere"><?= e(trim((string) ($d['external_reference'] ?? '')) !== '' ? (string) $d['external_reference'] : '—') ?></td>
-          <td><?= wayfairs_pill((string) $d['status']) ?></td>
-          <td class="wrap-anywhere"><?= e(trim((string) ($d['review_reason'] ?? '')) !== '' ? (string) $d['review_reason'] : '—') ?></td>
-        </tr>
-      <?php endforeach; ?></tbody>
-    </table></div>
+    <div class="table-wrap"><table><thead><tr><th>Submitted</th><th>Customer</th><th>Amount</th><th>Sender / external reference</th><th>Status</th><th>Reason</th></tr></thead><tbody>
+    <?php foreach ($decidedDeposits as $deposit): ?><tr><td><?= e(wayfairs_datetime((string) $deposit['created_at'])) ?></td><td><a class="cell-title" href="<?= e(wayfairs_url('/admin/users/' . $deposit['user_id'])) ?>"><?= e(trim((string) $deposit['first_name'] . ' ' . (string) $deposit['last_name'])) ?></a><span class="cell-subtitle"><?= e((string) $deposit['email']) ?></span></td><td class="cell-amount"><?= e(wayfairs_amount((int) $deposit['amount_minor'], (int) $deposit['asset_scale'], (string) $deposit['asset_symbol'], (string) $deposit['asset_code'])) ?></td><td class="wrap-anywhere"><span class="cell-title"><?= e(trim((string) ($deposit['sender_reference'] ?? '')) !== '' ? (string) $deposit['sender_reference'] : '—') ?></span><span class="cell-subtitle"><?= e(trim((string) ($deposit['external_reference'] ?? '')) !== '' ? (string) $deposit['external_reference'] : 'No external reference') ?></span></td><td><?= wayfairs_pill((string) $deposit['status']) ?></td><td class="wrap-anywhere"><?= e(trim((string) ($deposit['review_reason'] ?? '')) !== '' ? (string) $deposit['review_reason'] : '—') ?></td></tr><?php endforeach; ?>
+    </tbody></table></div>
   <?php endif; ?>
 </section>

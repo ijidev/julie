@@ -15,6 +15,18 @@ transfers, invoices/receipts, and audited admin impersonation.
 
 No Composer or JavaScript build is required.
 
+## Authenticated workspaces
+
+- **Customer:** selected-currency overview, consolidated transactions,
+  currency statements, printable receipts, deposits, withdrawals, transfers,
+  invoices, verification, and security/account-status pages.
+- **Administrator:** live operations dashboard, customer directory and detail,
+  global transactions, deposit/withdrawal decision queues, expandable currency
+  configuration, site information, and immutable audit history.
+
+The responsive interface uses plain CSS and dependency-free JavaScript. Search
+and filter controls operate only on the persisted rows returned by the server.
+
 ## Install
 
 1. Upload the project outside the public web root when possible and point the

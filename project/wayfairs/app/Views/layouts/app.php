@@ -14,6 +14,7 @@ $fullName = trim(($user['first_name'] ?? '') . ' ' . ($user['last_name'] ?? ''))
 $initials = mb_strtoupper(mb_substr((string) ($user['first_name'] ?? 'U'), 0, 1) . mb_substr((string) ($user['last_name'] ?? ''), 0, 1));
 $links = [
     ['path' => '/dashboard', 'label' => 'Overview', 'icon' => 'overview'],
+    ['path' => '/transactions', 'label' => 'Transactions', 'icon' => 'activity'],
     ['path' => '/deposit', 'label' => 'Deposit', 'icon' => 'deposit'],
     ['path' => '/withdraw', 'label' => 'Withdraw', 'icon' => 'withdraw'],
     ['path' => '/transfer', 'label' => 'Transfer', 'icon' => 'transfer'],
@@ -21,6 +22,13 @@ $links = [
     ['path' => '/kyc', 'label' => 'Verification', 'icon' => 'verification'],
     ['path' => '/security', 'label' => 'Security', 'icon' => 'security'],
 ];
+$currentLabel = 'Overview';
+foreach ($links as $link) {
+    if (wayfairs_nav_active($link['path'])) {
+        $currentLabel = $link['label'];
+        break;
+    }
+}
 $footerMode = 'compact';
 ?>
 <!doctype html>
@@ -67,6 +75,16 @@ $footerMode = 'compact';
     </div>
   </aside>
   <div class="column app-frame">
+    <header class="app-topbar">
+      <div class="topbar-context">
+        <span class="topbar-status" aria-hidden="true"></span>
+        <span><small>Personal banking</small><strong><?= e($currentLabel) ?></strong></span>
+      </div>
+      <div class="topbar-actions">
+        <span class="topbar-date"><?= e(gmdate('D, M j')) ?> · UTC</span>
+        <div class="topbar-profile"><span class="avatar"><?= e($initials ?: 'U') ?></span><span><strong><?= e($fullName ?: 'Account owner') ?></strong><small><?= e((string) ($user['email'] ?? '')) ?></small></span></div>
+      </div>
+    </header>
     <header class="mobile-appbar">
       <a class="brand" href="<?= e(wayfairs_url('/dashboard')) ?>"><span class="mark"><?= e(mb_substr($name, 0, 1)) ?></span><strong><?= e($name) ?></strong></a>
       <details class="mobile-app-menu">

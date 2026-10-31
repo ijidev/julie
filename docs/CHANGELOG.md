@@ -1,5 +1,61 @@
 # Changelog
 
+## Wayfairs — complete customer and admin workspace redesign (2026-10-31)
+### Added
+- Consolidated customer `/transactions` and administrator
+  `/admin/transactions` pages with persisted-record metrics, search, currency /
+  status filters, amount direction, and links to the relevant receipt or
+  customer profile.
+- A shared authenticated-app design system in `public/assets/app.css`: desktop
+  context bar, responsive page framing, metrics, action tiles, form panels,
+  record lists, transaction rows, destination cards, verification states,
+  collapsible currency editors, decision queues, and print treatment.
+- Real customer directory metadata (account and active-restriction counts),
+  customer account hold details, and observed account/session facts for the
+  security page.
+
+### Changed
+- Rebuilt every customer surface: overview, currency statement, transactions,
+  receipt, deposit, withdrawal, transfer, invoices, verification, and security.
+  The overview still presents exactly one selected-currency balance; no
+  cross-currency balance is invented.
+- Rebuilt every administrator surface: operations dashboard, customers,
+  customer detail, transactions, deposit and withdrawal decisions, currencies,
+  site information, and audit log.
+- Receipt page now renders as a print-ready transaction document with persisted
+  status, amount direction, account, fee, counterparty, timestamps, and copyable
+  public reference instead of a generic definition list.
+- Deposit and withdrawal forms now expose selected-currency minimum, fee, and
+  available facts in structured summaries, publish destination details in
+  responsive cards, and disable mutation controls when KYC is not verified.
+- Currency management no longer renders every large form at once. Each asset
+  has a compact live-state summary and an independently expandable editor;
+  creation and destructive removal remain explicit.
+- Shared navigation now includes Transactions, highlights receipts as part of
+  transaction history, and provides consistent desktop/mobile account context.
+
+### Verified
+- `php -l` clean across all PHP sources; CSS brace check 746/746; `git diff
+  --check` clean; integration suite 28/28.
+- Fresh authenticated crawl of 20 customer/admin routes, including both new
+  transaction pages, customer detail, currency statements, and receipt: all
+  HTTP 200 with zero PHP warnings under `display_errors=1`.
+- Live redesigned withdrawal flow: BTC 0.001 changed available/held from
+  `100000/0` to `0/100000`; admin rejection restored `100000/0` and persisted
+  `rejected`.
+- Live redesigned deposit flow: BTC 0.001 entered the operations queue and an
+  administrator rejection persisted `rejected` with its decision reason.
+- Customer pages continue to omit disabled NGN, and the overview renders one
+  selected balance card with its real account selector.
+
+### Honest limits
+- Visual responsiveness is implemented and route-rendered, but this host has no
+  browser binary for screenshot comparison; final aesthetic approval on the
+  owner's physical target devices remains an owner review.
+- Settlement remains manual and SQLite remains preview-only. No provider,
+  blockchain confirmation, reconciliation, or MySQL concurrency result is
+  inferred by the redesign.
+
 ## Wayfairs — banking UI and workflow repair (2026-10-31)
 ### Added
 - `project/wayfairs`: admin deposit and withdrawal queues now use dedicated

@@ -1,51 +1,57 @@
 # Project State: Julie AiOS
 
-## Wayfairs PHP banking app — production UI, live queues, verified money movement
+## Wayfairs PHP banking app — complete authenticated workspace redesign
 **Date:** 2026-10-31
 
 ### Outcome
 `project/wayfairs/` is a dependency-free PHP 8.2+ banking application served at
-`/project/wayfairs/`. The landing page, customer dashboard, deposit and withdraw
-flows, admin operations dashboard, customer detail, currency management, and
-receipts now render from persisted rows and real runtime state only. Pending
-deposit and withdrawal queues support full administrator decisions with reasons
-and settlement references.
+`/project/wayfairs/`. Every customer and administration surface now uses one
+responsive dashboard system, and all displayed balances, statuses, queue counts,
+session facts, transactions, destinations, and audit events still come from
+persisted rows. The redesign adds consolidated customer and operations
+transaction pages without inventing a cross-currency total or provider state.
 
 ### Delivered
-- Public landing page with real enabled assets and an honest manual-settlement
-  walkthrough; no sample balances or unsupported currencies.
-- Customer dashboard with one active-currency card (available, reserved, total),
-  account switching, verification/restriction notices, and recent activity.
-- Deposit page with per-asset published bank or wallet destinations, copy
-  actions, minimums, instructions, KYC gating, and real request history.
-- Withdraw page with type-aware bank/wallet forms, asset-specific minimum/fee/
-  availability hints, server-side destination validation, and reservation
-  history.
-- Admin dashboard with live counts and deposit, withdrawal, customer, and
-  restriction queues; dedicated decision cards on both money queues.
-- Currency management with add/update/delete, major-unit limits and fees,
-  enable/deposit/withdraw toggles, and per-asset deposit destination fields.
+- **Shared shell:** dark role-specific sidebar, sticky desktop context bar,
+  mobile menu, responsive page headers, metrics, forms, records, tables, empty
+  states, status treatments, and print rules—all plain CSS with no dependency.
+- **Customer workspace:** selected-currency overview, currency statement,
+  consolidated transaction history, print-ready receipts, destination-aware
+  deposit and withdrawal flows, internal transfers, invoices, verification,
+  and observed account/session security facts.
+- **Administration workspace:** live operations queues, searchable customer
+  directory, detailed customer controls, global transactions, settlement
+  decisions, independently collapsible asset configuration, structured site
+  settings, and searchable audit history.
+- **Truthful controls:** non-verified customers can inspect instructions but
+  money-movement forms remain disabled; backend KYC, account, restriction,
+  impersonation, limit, and destination checks remain authoritative.
+- **Currency management:** add/update/delete, major-unit limits and fees,
+  enable/deposit/withdraw toggles, per-asset bank/wallet destinations, missing
+  destination warnings, and compact expandable editors.
 - Administrative impersonation with a visible banner, blocked financial/security
   mutations, and restoration of the administrator session on exit.
-- Shared mobile navigation that closes on link selection, outside click, and
-  Escape.
 
 ### Verification
 - ✅ `php -l` clean across `app/`, `public/`, and `tests/`; `php tests/run.php`
   passes 28/28.
-- ✅ Authenticated crawl of 19 guest, customer, and admin routes returns 200 with
-  zero PHP warnings under `display_errors=1`, including a receipt and customer
-  detail page.
-- ✅ Live BTC withdrawal: submit 0.001 → reserve → admin reject → hold released
-  and balance restored.
-- ✅ Live BTC deposit: submit 0.001 → admin reject with reason → queue count and
-  history updated.
+- ✅ CSS braces balanced 746/746; `git diff --check` clean; no remaining inline
+  styles in customer or administrator view files.
+- ✅ Fresh authenticated crawl of 20 customer/admin routes returns 200 with zero
+  PHP warnings under `display_errors=1`, including `/transactions`,
+  `/admin/transactions`, customer detail, currency statements, and a receipt.
+- ✅ Live BTC withdrawal through the redesigned forms: available/held
+  `100000/0` → `0/100000` after submit → `100000/0` after administrator
+  rejection; final request state `rejected`.
+- ✅ Live BTC deposit through the redesigned forms entered the operations queue
+  and persisted `rejected` after a reasoned administrator decision.
 - ✅ Live impersonation: banner displayed, blocked withdrawal created no request,
   stop-impersonation returned to the admin session.
 - ✅ Live asset update round-trip with major-unit fields preserved exact stored
   minor values and destination details.
-- ✅ NGN is disabled and absent from customer deposit, withdraw, transfer, and
-  dashboard lists.
+- ✅ NGN remains disabled and absent from overview, transactions, deposit,
+  withdrawal, transfer, and invoice pages; overview still renders one active
+  balance card.
 
 ### Honest boundaries / next decision
 - Settlement is manual by design. No payment provider, blockchain node, or
@@ -54,6 +60,9 @@ and settlement references.
   on SQLite only; MySQL isolation and concurrency still require a real MySQL host.
 - Production use needs regulated-operating review, provider selection, real
   secret management, HTTPS termination, and backup/restore drills.
+- This environment has no browser binary for screenshot comparison. Responsive
+  layouts are route-rendered and CSS-checked, but final aesthetic approval on
+  the owner's physical desktop and phone remains an owner review.
 
 ---
 

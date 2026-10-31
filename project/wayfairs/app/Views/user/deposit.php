@@ -4,171 +4,135 @@ declare(strict_types=1);
 
 $site = wayfairs_public_settings();
 $kycStatus = (string) ($kyc['status'] ?? 'not_started');
-$depositAccounts = array_values(array_filter(
-    $accounts,
-    static fn (array $account): bool => (int) ($account['asset']['deposit_enabled'] ?? 0) === 1
-));
-$firstAsset = $depositAccounts[0]['asset'] ?? null;
+$verified = $kycStatus === 'verified';
+$depositAccounts = array_values(array_filter($accounts, static fn (array $account): bool => (int) ($account['asset']['deposit_enabled'] ?? 0) === 1));
+$firstAccount = $depositAccounts[0] ?? null;
+$firstAsset = $firstAccount['asset'] ?? null;
 ?>
-<div class="section-head">
-  <div>
-    <p class="eyebrow">Money in</p>
-    <h1>Deposit</h1>
-    <p>Choose a currency, send using the published destination, then submit the reference so an administrator can verify receipt.</p>
+<header class="page-header">
+  <div class="page-heading">
+    <span class="page-icon"><?= wayfairs_icon('deposit') ?></span>
+    <div class="page-heading-copy"><span class="page-kicker">Fund your account</span><h1>Deposit</h1><p>Use the published destination for your selected currency, then submit the exact amount and sender reference for verification.</p></div>
   </div>
-  <?= wayfairs_pill('kyc ' . $kycStatus) ?>
-</div>
+  <div class="page-actions"><?= wayfairs_pill('kyc ' . $kycStatus) ?><a class="btn ghost" href="<?= e(wayfairs_url('/transactions')) ?>">Transactions</a></div>
+</header>
 
-<?php if ($kycStatus !== 'verified'): ?>
+<?php if (!$verified): ?>
   <div class="notice warn">
     <?= wayfairs_icon('verification') ?>
-    <div>
-      <strong>Verification must be approved before deposits can be credited</strong>
-      <p>You can review the deposit destinations below, but a request cannot be accepted until an administrator approves your identity verification.</p>
-      <p style="margin-top:.55rem"><a class="btn small" href="<?= e(wayfairs_url('/kyc')) ?>">Go to verification</a></p>
-    </div>
+    <div><strong>Verification approval is required</strong><p>You can inspect the published destinations, but the request form remains unavailable until your identity status is verified.</p><p><a class="btn small" href="<?= e(wayfairs_url('/kyc')) ?>">Go to verification</a></p></div>
   </div>
 <?php endif; ?>
 
 <?php if ($depositAccounts === []): ?>
-  <div class="notice warn">
-    <?= wayfairs_icon('deposit') ?>
-    <div>
-      <strong>Deposits are not open right now</strong>
-      <p>No enabled currency currently accepts deposits. Contact support if you were expecting to deposit.</p>
-    </div>
-  </div>
+  <div class="notice warn"><?= wayfairs_icon('deposit') ?><div><strong>Deposits are currently closed</strong><p>No enabled customer currency currently accepts deposits. No destination is being substituted.</p></div></div>
 <?php else: ?>
-  <section class="grid two">
-    <article class="card">
-      <h2>Request a deposit</h2>
-      <p class="hint">Your balance changes only after an administrator verifies the incoming funds.</p>
-      <form class="stack" method="post" action="<?= e(wayfairs_url('/deposit')) ?>" id="deposit-form" style="margin-top:.9rem">
+  <section class="content-grid">
+    <article class="card form-card">
+      <div class="form-intro"><h2>Submit deposit details</h2><p>Your balance changes only after an administrator verifies that the funds were actually received.</p></div>
+      <form class="stack" method="post" action="<?= e(wayfairs_url('/deposit')) ?>" id="deposit-form">
         <input type="hidden" name="_token" value="<?= e(wayfairs_csrf()) ?>" />
         <input type="hidden" name="idem" value="<?= e(wayfairs_idem()) ?>" />
         <label>Currency or asset
-          <select name="asset_code" id="deposit-asset" required>
+          <select name="asset_code" id="deposit-asset" required <?= $verified ? '' : 'disabled' ?>>
             <?php foreach ($depositAccounts as $account): $optionAsset = $account['asset']; ?>
-              <option value="<?= e((string) $optionAsset['code']) ?>" data-type="<?= e((string) $optionAsset['asset_type']) ?>">
+              <option value="<?= e((string) $optionAsset['code']) ?>" data-type="<?= e((string) $optionAsset['asset_type']) ?>" data-min="<?= e(wayfairs_amount((int) $optionAsset['min_deposit_minor'], (int) $optionAsset['scale'], (string) $optionAsset['symbol'], (string) $optionAsset['code'])) ?>" data-available="<?= e(wayfairs_amount((int) $account['available_minor'], (int) $optionAsset['scale'], (string) $optionAsset['symbol'], (string) $optionAsset['code'])) ?>">
                 <?= e((string) $optionAsset['name']) ?> (<?= e((string) $optionAsset['code']) ?>)
               </option>
             <?php endforeach; ?>
           </select>
         </label>
-        <label>Amount
-          <input name="amount" inputmode="decimal" placeholder="<?= e($firstAsset ? 'Minimum ' . wayfairs_amount((int) $firstAsset['min_deposit_minor'], (int) $firstAsset['scale'], (string) $firstAsset['symbol']) : '0.00') ?>" required />
-          <span class="field-hint">Enter the exact amount you sent. Anything below the published minimum is rejected.</span>
+        <div class="selection-summary" aria-live="polite">
+          <div class="summary-line"><small>Selected currency</small><strong id="deposit-selection-name"><?= e($firstAsset ? (string) $firstAsset['name'] . ' (' . (string) $firstAsset['code'] . ')' : '—') ?></strong></div>
+          <div class="summary-line"><small>Minimum request</small><strong id="deposit-selection-min"><?= e($firstAsset ? wayfairs_amount((int) $firstAsset['min_deposit_minor'], (int) $firstAsset['scale'], (string) $firstAsset['symbol'], (string) $firstAsset['code']) : '—') ?></strong></div>
+        </div>
+        <label>Exact amount sent
+          <input name="amount" inputmode="decimal" placeholder="0.00" required <?= $verified ? '' : 'disabled' ?> />
+          <span class="field-hint">Enter the amount in the selected currency. Values below its configured minimum are rejected.</span>
         </label>
-        <label>Your transfer reference or transaction hash
-          <input name="sender_reference" maxlength="200" placeholder="Bank reference or blockchain transaction hash" />
-          <span class="field-hint">This is the reference the administrator will match against the received funds.</span>
+        <label>Sender reference or transaction hash <span class="field-hint">Optional</span>
+          <input name="sender_reference" maxlength="200" placeholder="Bank reference or blockchain transaction hash" <?= $verified ? '' : 'disabled' ?> />
+          <span class="field-hint">Give operations a reference they can match to the received funds.</span>
         </label>
-        <button class="btn full" type="submit">Submit deposit request <?= wayfairs_icon('arrow-right', 'btn-icon') ?></button>
+        <div class="form-actions"><button class="btn full" type="submit" <?= $verified ? '' : 'disabled' ?>><?= $verified ? 'Submit deposit for verification' : 'Verification required' ?> <?= wayfairs_icon('arrow-right', 'btn-icon') ?></button></div>
       </form>
     </article>
 
-    <article class="card" id="deposit-destination">
-      <div class="section-head" style="margin-bottom:0">
-        <div><h2>Where to send funds</h2><p>These details update when you choose a different currency.</p></div>
-      </div>
-
-      <?php foreach ($depositAccounts as $index => $account): $destinationAsset = $account['asset']; ?>
-        <div class="deposit-dest" data-asset="<?= e((string) $destinationAsset['code']) ?>"<?= $index === 0 ? '' : ' hidden' ?>>
-          <div style="display:flex;justify-content:space-between;align-items:center;gap:.5rem;flex-wrap:wrap">
-            <h3><?= e((string) $destinationAsset['name']) ?> <span class="muted">(<?= e((string) $destinationAsset['code']) ?>)</span></h3>
-            <?= wayfairs_pill($destinationAsset['asset_type'] === 'crypto' ? 'crypto' : 'fiat') ?>
+    <aside class="stack-list sticky-panel">
+      <article class="card destination-card static" id="deposit-destination">
+        <div class="panel-head"><div><h2>Deposit destination</h2><p>Send only to the details shown for the selected currency.</p></div></div>
+        <?php foreach ($depositAccounts as $index => $account): $destinationAsset = $account['asset']; ?>
+          <div class="deposit-dest" data-asset="<?= e((string) $destinationAsset['code']) ?>"<?= $index === 0 ? '' : ' hidden' ?>>
+            <div class="destination-title"><div><strong><?= e((string) $destinationAsset['name']) ?></strong><div class="hint"><?= e((string) $destinationAsset['code']) ?> · <?= e(ucfirst((string) $destinationAsset['asset_type'])) ?></div></div><?= wayfairs_pill((string) $destinationAsset['asset_type']) ?></div>
+            <?php if ($destinationAsset['asset_type'] === 'fiat'): ?>
+              <?php if (!empty($destinationAsset['deposit_bank_name']) && !empty($destinationAsset['deposit_account_number'])): ?>
+                <div class="destination-details">
+                  <div class="destination-field"><span>Bank</span><strong><?= e((string) $destinationAsset['deposit_bank_name']) ?></strong></div>
+                  <div class="destination-field"><span>Account name</span><strong><?= e((string) ($destinationAsset['deposit_account_name'] ?? '—')) ?></strong></div>
+                  <div class="destination-field wide"><span>Account number</span><div class="copy-line"><code><?= e((string) $destinationAsset['deposit_account_number']) ?></code><button class="btn small ghost copy-button" type="button" data-copy="<?= e((string) $destinationAsset['deposit_account_number']) ?>" aria-label="Copy account number"><?= wayfairs_icon('copy') ?></button></div></div>
+                  <?php if (!empty($destinationAsset['deposit_routing'])): ?><div class="destination-field"><span>Routing / sort code</span><strong><?= e((string) $destinationAsset['deposit_routing']) ?></strong></div><?php endif; ?>
+                  <?php if (!empty($destinationAsset['deposit_swift'])): ?><div class="destination-field"><span>SWIFT / BIC</span><strong><?= e((string) $destinationAsset['deposit_swift']) ?></strong></div><?php endif; ?>
+                </div>
+              <?php else: ?>
+                <div class="notice warn"><?= wayfairs_icon('support') ?><div><strong>Destination incomplete</strong><p>No complete bank destination is published. Contact support before sending funds.</p></div></div>
+              <?php endif; ?>
+            <?php else: ?>
+              <?php if (!empty($destinationAsset['deposit_wallet_address']) && !empty($destinationAsset['deposit_network'])): ?>
+                <div class="destination-details">
+                  <div class="destination-field"><span>Network</span><strong><?= e((string) $destinationAsset['deposit_network']) ?></strong></div>
+                  <?php if (!empty($destinationAsset['deposit_memo'])): ?><div class="destination-field"><span>Memo / tag</span><strong><?= e((string) $destinationAsset['deposit_memo']) ?></strong></div><?php endif; ?>
+                  <div class="destination-field wide"><span>Wallet address</span><div class="copy-line"><code><?= e((string) $destinationAsset['deposit_wallet_address']) ?></code><button class="btn small ghost copy-button" type="button" data-copy="<?= e((string) $destinationAsset['deposit_wallet_address']) ?>" aria-label="Copy wallet address"><?= wayfairs_icon('copy') ?></button></div></div>
+                </div>
+              <?php else: ?>
+                <div class="notice warn"><?= wayfairs_icon('support') ?><div><strong>Destination incomplete</strong><p>No complete wallet destination is published. Contact support before sending funds.</p></div></div>
+              <?php endif; ?>
+            <?php endif; ?>
+            <?php
+            $fallback = $destinationAsset['asset_type'] === 'crypto' ? (string) ($site['site.deposit_instructions_crypto'] ?? '') : (string) ($site['site.deposit_instructions_fiat'] ?? '');
+            $instructions = trim((string) ($destinationAsset['deposit_instructions'] ?? '')) ?: $fallback;
+            ?>
+            <div class="receipt-footnote"><?= wayfairs_icon('info') ?><span><strong>Minimum:</strong> <?= e(wayfairs_amount((int) $destinationAsset['min_deposit_minor'], (int) $destinationAsset['scale'], (string) $destinationAsset['symbol'], (string) $destinationAsset['code'])) ?><?= $instructions !== '' ? ' · ' . e($instructions) : '' ?></span></div>
           </div>
-
-          <?php if ($destinationAsset['asset_type'] === 'fiat'): ?>
-            <?php if (!empty($destinationAsset['deposit_bank_name']) || !empty($destinationAsset['deposit_account_number'])): ?>
-              <dl class="kv">
-                <?php if (!empty($destinationAsset['deposit_bank_name'])): ?><dt>Bank</dt><dd><?= e((string) $destinationAsset['deposit_bank_name']) ?></dd><?php endif; ?>
-                <?php if (!empty($destinationAsset['deposit_account_name'])): ?><dt>Account name</dt><dd><?= e((string) $destinationAsset['deposit_account_name']) ?></dd><?php endif; ?>
-                <?php if (!empty($destinationAsset['deposit_account_number'])): ?>
-                  <dt>Account number</dt>
-                  <dd><code class="mono"><?= e((string) $destinationAsset['deposit_account_number']) ?></code> <button class="btn small ghost" type="button" data-copy="<?= e((string) $destinationAsset['deposit_account_number']) ?>">Copy</button></dd>
-                <?php endif; ?>
-                <?php if (!empty($destinationAsset['deposit_routing'])): ?><dt>Routing / sort code</dt><dd><?= e((string) $destinationAsset['deposit_routing']) ?></dd><?php endif; ?>
-                <?php if (!empty($destinationAsset['deposit_swift'])): ?><dt>SWIFT / BIC</dt><dd><?= e((string) $destinationAsset['deposit_swift']) ?></dd><?php endif; ?>
-              </dl>
-            <?php else: ?>
-              <div class="deposit-empty"><?= wayfairs_icon('support') ?><span>No bank details have been published for <?= e((string) $destinationAsset['code']) ?> yet. Contact support before sending funds.</span></div>
-            <?php endif; ?>
-          <?php else: ?>
-            <?php if (!empty($destinationAsset['deposit_wallet_address'])): ?>
-              <dl class="kv">
-                <?php if (!empty($destinationAsset['deposit_network'])): ?><dt>Network</dt><dd><?= e((string) $destinationAsset['deposit_network']) ?></dd><?php endif; ?>
-                <dt>Wallet address</dt>
-                <dd>
-                  <code class="mono wrap-anywhere"><?= e((string) $destinationAsset['deposit_wallet_address']) ?></code>
-                  <button class="btn small ghost" type="button" data-copy="<?= e((string) $destinationAsset['deposit_wallet_address']) ?>">Copy</button>
-                </dd>
-                <?php if (!empty($destinationAsset['deposit_memo'])): ?><dt>Memo / tag</dt><dd><code class="mono"><?= e((string) $destinationAsset['deposit_memo']) ?></code></dd><?php endif; ?>
-              </dl>
-            <?php else: ?>
-              <div class="deposit-empty"><?= wayfairs_icon('support') ?><span>No wallet address has been published for <?= e((string) $destinationAsset['code']) ?> yet. Contact support before sending funds.</span></div>
-            <?php endif; ?>
-          <?php endif; ?>
-
-          <p class="field-hint"><strong>Minimum deposit:</strong> <?= e(wayfairs_amount((int) $destinationAsset['min_deposit_minor'], (int) $destinationAsset['scale'], (string) $destinationAsset['symbol'], (string) $destinationAsset['code'])) ?></p>
-          <?php
-          $fallback = $destinationAsset['asset_type'] === 'crypto'
-              ? (string) ($site['site.deposit_instructions_crypto'] ?? '')
-              : (string) ($site['site.deposit_instructions_fiat'] ?? '');
-          $instructions = trim((string) ($destinationAsset['deposit_instructions'] ?? '')) ?: $fallback;
-          ?>
-          <?php if ($instructions !== ''): ?><p class="field-hint"><?= e($instructions) ?></p><?php endif; ?>
-          <p class="field-hint">Send only the selected asset on the stated network. Deposits sent elsewhere cannot be recovered.</p>
+        <?php endforeach; ?>
+      </article>
+      <article class="card static">
+        <div class="panel-head"><div><h2>How deposits settle</h2><p>No balance is credited before verification.</p></div></div>
+        <div class="process-steps">
+          <div class="process-step"><div><strong>Send to the published destination</strong><p>Use only the bank account, wallet, and network shown above.</p></div></div>
+          <div class="process-step"><div><strong>Submit your exact details</strong><p>Record the amount and any sender reference or transaction hash.</p></div></div>
+          <div class="process-step"><div><strong>Operations verifies receipt</strong><p>Your account is credited only after an administrator confirms the incoming funds.</p></div></div>
         </div>
-      <?php endforeach; ?>
-    </article>
+      </article>
+    </aside>
   </section>
 
   <script>
   (function () {
     var select = document.getElementById('deposit-asset');
     var blocks = document.querySelectorAll('.deposit-dest');
+    var name = document.getElementById('deposit-selection-name');
+    var minimum = document.getElementById('deposit-selection-min');
     if (!select) return;
-    function showSelected() {
+    function sync() {
       var code = select.value;
-      blocks.forEach(function (block) {
-        block.hidden = block.getAttribute('data-asset') !== code;
-      });
       var option = select.options[select.selectedIndex];
-      var amount = document.querySelector('#deposit-form input[name="amount"]');
-      if (amount && option) {
-        var assetName = option.textContent.trim();
-        amount.placeholder = 'Amount in ' + assetName;
-      }
+      blocks.forEach(function (block) { block.hidden = block.getAttribute('data-asset') !== code; });
+      if (name && option) name.textContent = option.textContent.trim();
+      if (minimum && option) minimum.textContent = option.getAttribute('data-min') || '—';
     }
-    select.addEventListener('change', showSelected);
-    showSelected();
+    select.addEventListener('change', sync);
+    sync();
   })();
   </script>
 <?php endif; ?>
 
-<section class="card">
-  <div class="section-head">
-    <div><h2>Your deposit requests</h2><p>Pending requests are reviewed against the received funds.</p></div>
-  </div>
+<section class="card table-card static">
+  <div class="panel-head"><div><h2>Deposit requests</h2><p>Submitted requests and their current review status.</p></div><span class="pill"><?= count($deposits) ?> loaded</span></div>
   <?php if ($deposits === []): ?>
-    <div class="empty-state">
-      <div class="empty-icon"><?= wayfairs_icon('deposit') ?></div>
-      <h3>No deposit requests yet</h3>
-      <p>Submitted deposits will appear here with their verification status and reference.</p>
-    </div>
+    <div class="empty-state"><div class="empty-icon"><?= wayfairs_icon('deposit') ?></div><h3>No deposit requests</h3><p>Your submitted requests will appear here without invented provider statuses.</p></div>
   <?php else: ?>
-    <div class="table-wrap"><table>
-      <thead><tr><th>Submitted</th><th>Asset</th><th>Amount</th><th>Reference</th><th>Status</th></tr></thead>
-      <tbody><?php foreach ($deposits as $deposit): ?>
-        <tr>
-          <td><?= e(wayfairs_datetime((string) $deposit['created_at'])) ?></td>
-          <td><strong><?= e((string) $deposit['asset_code']) ?></strong></td>
-          <td><?= e(wayfairs_amount((int) $deposit['amount_minor'], (int) $deposit['asset_scale'], (string) $deposit['asset_symbol'])) ?></td>
-          <td><?= e((string) ($deposit['sender_reference'] ?? '—')) ?></td>
-          <td><?= wayfairs_pill((string) $deposit['status']) ?></td>
-        </tr>
-      <?php endforeach; ?></tbody>
-    </table></div>
+    <div class="table-wrap"><table><thead><tr><th>Submitted</th><th>Currency</th><th>Amount</th><th>Your reference</th><th>Status</th></tr></thead><tbody>
+    <?php foreach ($deposits as $deposit): ?><tr><td><span class="cell-title"><?= e(wayfairs_datetime((string) $deposit['created_at'])) ?></span></td><td><span class="cell-title"><?= e((string) $deposit['asset_code']) ?></span><span class="cell-subtitle"><?= e((string) $deposit['account_number']) ?></span></td><td class="cell-amount"><?= e(wayfairs_amount((int) $deposit['amount_minor'], (int) $deposit['asset_scale'], (string) $deposit['asset_symbol'], (string) $deposit['asset_code'])) ?></td><td class="wrap-anywhere"><?= e(trim((string) ($deposit['sender_reference'] ?? '')) !== '' ? (string) $deposit['sender_reference'] : '—') ?></td><td><?= wayfairs_pill((string) $deposit['status']) ?></td></tr><?php endforeach; ?>
+    </tbody></table></div>
   <?php endif; ?>
 </section>

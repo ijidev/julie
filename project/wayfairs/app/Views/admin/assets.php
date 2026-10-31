@@ -1,128 +1,103 @@
 <?php
 
 declare(strict_types=1);
-?>
-<div class="section-head">
-  <div>
-    <p class="eyebrow">Currencies &amp; settlement</p>
-    <h1>Currencies</h1>
-    <p>Enable or disable currencies, set fees and limits, and publish the deposit destination details customers see.</p>
-  </div>
-</div>
 
-<section class="card">
-  <h2>Add a currency</h2>
-  <form class="stack" method="post" action="<?= e(wayfairs_url('/admin/assets')) ?>">
-    <input type="hidden" name="_token" value="<?= e(wayfairs_csrf()) ?>" />
-    <div class="row">
-      <label>Code<input name="code" required maxlength="16" placeholder="EUR" style="text-transform:uppercase" /></label>
-      <label>Name<input name="name" required maxlength="100" placeholder="Euro" /></label>
-    </div>
-    <div class="row">
-      <label>Type
-        <select name="asset_type" required>
-          <option value="fiat">Fiat</option>
-          <option value="crypto">Crypto</option>
-        </select>
-      </label>
-      <label>Symbol<input name="symbol" required maxlength="16" placeholder="€" /></label>
-      <label>Scale (decimals)<input type="number" name="scale" min="0" max="18" value="2" required /></label>
-    </div>
-    <button class="btn small" type="submit">Add currency</button>
-  </form>
+$enabledCount = count(array_filter($assets, static fn (array $asset): bool => (int) $asset['enabled'] === 1));
+$depositCount = count(array_filter($assets, static fn (array $asset): bool => (int) $asset['deposit_enabled'] === 1));
+$withdrawalCount = count(array_filter($assets, static fn (array $asset): bool => (int) $asset['withdrawal_enabled'] === 1));
+$configuredCount = count(array_filter($assets, static function (array $asset): bool {
+    return (string) $asset['asset_type'] === 'fiat'
+        ? !empty($asset['deposit_bank_name']) && !empty($asset['deposit_account_number'])
+        : !empty($asset['deposit_network']) && !empty($asset['deposit_wallet_address']);
+}));
+?>
+<header class="page-header">
+  <div class="page-heading"><span class="page-icon"><?= wayfairs_icon('layers') ?></span><div class="page-heading-copy"><span class="page-kicker">Currency operations</span><h1>Currencies</h1><p>Control customer availability, limits, fees, and the exact deposit destinations published for each asset.</p></div></div>
+  <div class="page-actions"><a class="btn ghost" href="<?= e(wayfairs_url('/admin/transactions')) ?>">Transactions</a></div>
+</header>
+
+<section class="metric-grid">
+  <div class="metric-card"><span class="metric-icon"><?= wayfairs_icon('layers') ?></span><span class="metric-copy"><strong class="metric-value"><?= count($assets) ?></strong><span class="metric-label">Configured currencies</span></span></div>
+  <div class="metric-card"><span class="metric-icon"><?= wayfairs_icon('check') ?></span><span class="metric-copy"><strong class="metric-value"><?= $enabledCount ?></strong><span class="metric-label">Customer enabled</span></span></div>
+  <div class="metric-card"><span class="metric-icon"><?= wayfairs_icon('deposit') ?></span><span class="metric-copy"><strong class="metric-value"><?= $depositCount ?></strong><span class="metric-label">Deposits open</span></span></div>
+  <div class="metric-card"><span class="metric-icon"><?= wayfairs_icon('building') ?></span><span class="metric-copy"><strong class="metric-value"><?= $configuredCount ?></strong><span class="metric-label">Destinations complete</span></span></div>
 </section>
 
-<?php foreach ($assets as $asset): ?>
-  <section class="card" style="display:grid;gap:1rem">
-    <div class="section-head" style="margin-bottom:0">
-      <div style="display:flex;align-items:center;gap:.75rem;flex-wrap:wrap">
-        <span class="mark" style="width:40px;height:40px;border-radius:12px;font-size:.95rem"><?= e(mb_substr($asset['code'], 0, 2)) ?></span>
-        <div>
-          <h2 style="margin:0"><?= e($asset['name']) ?> <span class="muted" style="font-weight:500">(<?= e($asset['code']) ?>)</span></h2>
-          <p class="hint" style="margin:0"><?= e(ucfirst((string) $asset['asset_type'])) ?> · scale <?= (int) $asset['scale'] ?> · <?= wayfairs_pill($asset['enabled'] ? 'active' : 'closed') ?></p>
-        </div>
-      </div>
-      <form method="post" action="<?= e(wayfairs_url('/admin/assets/' . $asset['code'] . '/delete')) ?>" style="margin:0">
-        <input type="hidden" name="_token" value="<?= e(wayfairs_csrf()) ?>" />
-        <button class="btn small danger" type="submit" onclick="return confirm('Remove this currency? Only possible if no customer accounts exist.')">Remove</button>
-      </form>
+<details class="card asset-create static">
+  <summary><span><span class="page-kicker">New configuration</span><strong>Add a currency or asset</strong></span><span class="btn small"><?= wayfairs_icon('plus') ?> Add currency</span></summary>
+  <form class="stack" method="post" action="<?= e(wayfairs_url('/admin/assets')) ?>">
+    <input type="hidden" name="_token" value="<?= e(wayfairs_csrf()) ?>" />
+    <div class="form-grid">
+      <label>Currency code<input class="uppercase-input" name="code" required maxlength="16" placeholder="EUR" /><span class="field-hint">Permanent uppercase identifier.</span></label>
+      <label>Display name<input name="name" required maxlength="100" placeholder="Euro" /></label>
     </div>
-    <form class="stack" method="post" action="<?= e(wayfairs_url('/admin/assets/' . $asset['code'] . '/update')) ?>">
-      <input type="hidden" name="_token" value="<?= e(wayfairs_csrf()) ?>" />
-      <div class="row">
-        <label>Name<input name="name" value="<?= e((string) $asset['name']) ?>" required /></label>
-        <label>Enabled
-          <select name="enabled">
-            <option value="1" <?= $asset['enabled'] ? 'selected' : '' ?>>Enabled</option>
-            <option value="0" <?= !$asset['enabled'] ? 'selected' : '' ?>>Disabled</option>
-          </select>
-        </label>
-        <label>Deposits
-          <select name="deposit_enabled">
-            <option value="1" <?= $asset['deposit_enabled'] ? 'selected' : '' ?>>Open</option>
-            <option value="0" <?= !$asset['deposit_enabled'] ? 'selected' : '' ?>>Closed</option>
-          </select>
-        </label>
-        <label>Withdrawals
-          <select name="withdrawal_enabled">
-            <option value="1" <?= $asset['withdrawal_enabled'] ? 'selected' : '' ?>>Open</option>
-            <option value="0" <?= !$asset['withdrawal_enabled'] ? 'selected' : '' ?>>Closed</option>
-          </select>
-        </label>
+    <div class="form-grid three">
+      <label>Type<select name="asset_type" required><option value="fiat">Fiat currency</option><option value="crypto">Crypto asset</option></select></label>
+      <label>Symbol<input name="symbol" required maxlength="16" placeholder="€" /></label>
+      <label>Decimal scale<input type="number" name="scale" min="0" max="18" value="2" required /><span class="field-hint">Cannot be changed after creation.</span></label>
+    </div>
+    <div class="receipt-footnote"><?= wayfairs_icon('info') ?><span>Creating an asset also creates its system control and revenue ledger accounts. Customer availability stays closed until you save its settings.</span></div>
+    <div class="form-actions"><button class="btn" type="submit">Create currency</button></div>
+  </form>
+</details>
+
+<section class="stack-list">
+  <div class="panel-head"><div><h2>Currency configuration</h2><p>Open one editor at a time to change its customer and settlement settings.</p></div><span class="pill"><?= $withdrawalCount ?> withdrawals open</span></div>
+  <?php if ($assets === []): ?>
+    <div class="card empty-state"><div class="empty-icon"><?= wayfairs_icon('layers') ?></div><h3>No currencies configured</h3><p>Add the first asset using the form above.</p></div>
+  <?php endif; ?>
+  <?php foreach ($assets as $asset):
+      $isFiat = (string) $asset['asset_type'] === 'fiat';
+      $missingDestination = (int) $asset['deposit_enabled'] === 1 && ($isFiat
+          ? empty($asset['deposit_bank_name']) || empty($asset['deposit_account_number'])
+          : empty($asset['deposit_wallet_address']) || empty($asset['deposit_network']));
+  ?>
+    <details class="asset-editor">
+      <summary>
+        <span class="asset-summary-main"><span class="mark"><?= e(mb_substr((string) $asset['code'], 0, 2)) ?></span><span class="asset-summary-copy"><strong><?= e((string) $asset['name']) ?> · <?= e((string) $asset['code']) ?></strong><span><?= e(ucfirst((string) $asset['asset_type'])) ?> · <?= (int) $asset['scale'] ?> decimals · symbol <?= e((string) $asset['symbol']) ?></span></span></span>
+        <span class="asset-summary-state"><?= wayfairs_pill((int) $asset['enabled'] === 1 ? 'active' : 'closed') ?><?= $missingDestination ? wayfairs_pill('blocked') : '' ?><span class="btn small ghost">Edit</span></span>
+      </summary>
+      <div class="asset-editor-body">
+        <?php if ($missingDestination): ?><div class="notice warn"><?= wayfairs_icon('info') ?><div><strong>Deposits are open without a complete destination</strong><p>Customers see a warning until the required <?= $isFiat ? 'bank name and account number' : 'network and wallet address' ?> are saved.</p></div></div><?php endif; ?>
+        <form class="stack" method="post" action="<?= e(wayfairs_url('/admin/assets/' . $asset['code'] . '/update')) ?>">
+          <input type="hidden" name="_token" value="<?= e(wayfairs_csrf()) ?>" />
+          <div class="form-grid">
+            <label>Display name<input name="name" value="<?= e((string) $asset['name']) ?>" required /></label>
+            <label>Customer availability<select name="enabled"><option value="1" <?= $asset['enabled'] ? 'selected' : '' ?>>Enabled</option><option value="0" <?= !$asset['enabled'] ? 'selected' : '' ?>>Disabled</option></select></label>
+          </div>
+          <div class="form-grid">
+            <label>Deposit availability<select name="deposit_enabled"><option value="1" <?= $asset['deposit_enabled'] ? 'selected' : '' ?>>Open</option><option value="0" <?= !$asset['deposit_enabled'] ? 'selected' : '' ?>>Closed</option></select></label>
+            <label>Withdrawal availability<select name="withdrawal_enabled"><option value="1" <?= $asset['withdrawal_enabled'] ? 'selected' : '' ?>>Open</option><option value="0" <?= !$asset['withdrawal_enabled'] ? 'selected' : '' ?>>Closed</option></select></label>
+          </div>
+          <div class="form-divider"></div>
+          <div class="form-grid">
+            <label>Minimum deposit (<?= e((string) $asset['code']) ?>)<input name="min_deposit" inputmode="decimal" value="<?= e(wayfairs_major((int) $asset['min_deposit_minor'], (int) $asset['scale'])) ?>" /></label>
+            <label>Minimum withdrawal (<?= e((string) $asset['code']) ?>)<input name="min_withdrawal" inputmode="decimal" value="<?= e(wayfairs_major((int) $asset['min_withdrawal_minor'], (int) $asset['scale'])) ?>" /></label>
+            <label>Withdrawal fee (<?= e((string) $asset['code']) ?>)<input name="withdrawal_fee" inputmode="decimal" value="<?= e(wayfairs_major((int) $asset['withdrawal_fee_minor'], (int) $asset['scale'])) ?>" /></label>
+            <label>Transfer fee (<?= e((string) $asset['code']) ?>)<input name="transfer_fee" inputmode="decimal" value="<?= e(wayfairs_major((int) $asset['transfer_fee_minor'], (int) $asset['scale'])) ?>" /></label>
+          </div>
+          <p class="field-hint">Enter major <?= e((string) $asset['code']) ?> units with no thousands separators and no more than <?= (int) $asset['scale'] ?> decimal places.</p>
+          <div class="form-divider"></div>
+          <?php if ($isFiat): ?>
+            <fieldset class="stack destination-group">
+              <legend>Customer fiat deposit destination</legend>
+              <div class="form-grid"><label>Bank name<input name="deposit_bank_name" value="<?= e((string) ($asset['deposit_bank_name'] ?? '')) ?>" /></label><label>Account name<input name="deposit_account_name" value="<?= e((string) ($asset['deposit_account_name'] ?? '')) ?>" /></label></div>
+              <div class="form-grid three"><label>Account number<input name="deposit_account_number" value="<?= e((string) ($asset['deposit_account_number'] ?? '')) ?>" /></label><label>Routing / sort code<input name="deposit_routing" value="<?= e((string) ($asset['deposit_routing'] ?? '')) ?>" /></label><label>SWIFT / BIC<input name="deposit_swift" value="<?= e((string) ($asset['deposit_swift'] ?? '')) ?>" /></label></div>
+              <label>Customer instructions<textarea name="deposit_instructions" rows="3" placeholder="Explain the required sender reference or settlement timing."><?= e((string) ($asset['deposit_instructions'] ?? '')) ?></textarea></label>
+            </fieldset>
+          <?php else: ?>
+            <fieldset class="stack destination-group">
+              <legend>Customer crypto deposit destination</legend>
+              <div class="form-grid"><label>Network<input name="deposit_network" value="<?= e((string) ($asset['deposit_network'] ?? '')) ?>" placeholder="e.g. Bitcoin mainnet" /></label><label>Wallet address<input name="deposit_wallet_address" value="<?= e((string) ($asset['deposit_wallet_address'] ?? '')) ?>" placeholder="bc1... or 0x..." /></label></div>
+              <label>Memo / tag <span class="field-hint">Only if required</span><input name="deposit_memo" value="<?= e((string) ($asset['deposit_memo'] ?? '')) ?>" /></label>
+              <label>Customer instructions<textarea name="deposit_instructions" rows="3" placeholder="Explain the required network and confirmation workflow."><?= e((string) ($asset['deposit_instructions'] ?? '')) ?></textarea></label>
+            </fieldset>
+          <?php endif; ?>
+          <div class="form-actions"><button class="btn" type="submit">Save <?= e((string) $asset['code']) ?> configuration</button></div>
+        </form>
+        <div class="form-divider"></div>
+        <div class="panel-head"><div><h3>Remove currency</h3><p>Deletion is refused when any customer account references this asset. Disable it instead when historical records exist.</p></div><form method="post" action="<?= e(wayfairs_url('/admin/assets/' . $asset['code'] . '/delete')) ?>"><input type="hidden" name="_token" value="<?= e(wayfairs_csrf()) ?>" /><button class="btn small danger" type="submit" onclick="return confirm('Remove <?= e((string) $asset['code']) ?>? This succeeds only when no customer accounts exist.')">Remove <?= e((string) $asset['code']) ?></button></form></div>
       </div>
-      <div class="row">
-        <label>Min deposit (<?= e((string) $asset['code']) ?>)<input name="min_deposit" inputmode="decimal" value="<?= e(wayfairs_major((int) $asset['min_deposit_minor'], (int) $asset['scale'])) ?>" /></label>
-        <label>Min withdrawal (<?= e((string) $asset['code']) ?>)<input name="min_withdrawal" inputmode="decimal" value="<?= e(wayfairs_major((int) $asset['min_withdrawal_minor'], (int) $asset['scale'])) ?>" /></label>
-        <label>Withdrawal fee (<?= e((string) $asset['code']) ?>)<input name="withdrawal_fee" inputmode="decimal" value="<?= e(wayfairs_major((int) $asset['withdrawal_fee_minor'], (int) $asset['scale'])) ?>" /></label>
-        <label>Transfer fee (<?= e((string) $asset['code']) ?>)<input name="transfer_fee" inputmode="decimal" value="<?= e(wayfairs_major((int) $asset['transfer_fee_minor'], (int) $asset['scale'])) ?>" /></label>
-      </div>
-      <p class="field-hint">Amounts are entered in <?= e((string) $asset['code']) ?> units with up to <?= (int) $asset['scale'] ?> decimal places — not minor units.</p>
-
-      <?php
-      $missingDestination = false;
-      if ((int) $asset['deposit_enabled'] === 1) {
-          $missingDestination = $asset['asset_type'] === 'fiat'
-              ? empty($asset['deposit_bank_name']) || empty($asset['deposit_account_number'])
-              : empty($asset['deposit_wallet_address']) || empty($asset['deposit_network']);
-      }
-      ?>
-      <?php if ($missingDestination): ?>
-        <div class="notice warn" style="margin:0">
-          <?= wayfairs_icon('support') ?>
-          <div>
-            <strong>Deposits are open but no destination is published</strong>
-            <p>Customers will see an empty-destination warning instead of payment details. Add the required <?= $asset['asset_type'] === 'fiat' ? 'bank account' : 'wallet address and network' ?> below.</p>
-          </div>
-        </div>
-      <?php endif; ?>
-
-      <?php if ($asset['asset_type'] === 'fiat'): ?>
-        <fieldset class="stack" style="border:1.5px solid var(--line);border-radius:14px;padding:1.1rem">
-          <legend class="hint" style="padding:0 .5rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;font-size:.72rem">Fiat deposit destination</legend>
-          <div class="row">
-            <label>Bank name<input name="deposit_bank_name" value="<?= e((string) ($asset['deposit_bank_name'] ?? '')) ?>" /></label>
-            <label>Account name<input name="deposit_account_name" value="<?= e((string) ($asset['deposit_account_name'] ?? '')) ?>" /></label>
-          </div>
-          <div class="row">
-            <label>Account number<input name="deposit_account_number" value="<?= e((string) ($asset['deposit_account_number'] ?? '')) ?>" /></label>
-            <label>Routing / sort code<input name="deposit_routing" value="<?= e((string) ($asset['deposit_routing'] ?? '')) ?>" /></label>
-            <label>SWIFT / BIC<input name="deposit_swift" value="<?= e((string) ($asset['deposit_swift'] ?? '')) ?>" /></label>
-          </div>
-          <label>Customer instructions<textarea name="deposit_instructions" rows="2" placeholder="e.g. Use your registered email as the transfer reference."><?= e((string) ($asset['deposit_instructions'] ?? '')) ?></textarea></label>
-        </fieldset>
-      <?php else: ?>
-        <fieldset class="stack" style="border:1.5px solid var(--line);border-radius:14px;padding:1.1rem">
-          <legend class="hint" style="padding:0 .5rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;font-size:.72rem">Crypto deposit destination</legend>
-          <div class="row">
-            <label>Network<input name="deposit_network" value="<?= e((string) ($asset['deposit_network'] ?? '')) ?>" placeholder="e.g. Bitcoin, Ethereum (ERC-20)" /></label>
-            <label>Wallet address<input name="deposit_wallet_address" value="<?= e((string) ($asset['deposit_wallet_address'] ?? '')) ?>" placeholder="bc1... or 0x..." /></label>
-          </div>
-          <label>Memo / tag (if required)<input name="deposit_memo" value="<?= e((string) ($asset['deposit_memo'] ?? '')) ?>" /></label>
-          <label>Customer instructions<textarea name="deposit_instructions" rows="2" placeholder="e.g. Send only on the network shown. Deposits are reviewed after the required confirmations."><?= e((string) ($asset['deposit_instructions'] ?? '')) ?></textarea></label>
-        </fieldset>
-      <?php endif; ?>
-
-      <button class="btn small" type="submit">Save <?= e($asset['code']) ?> settings</button>
-    </form>
-  </section>
-<?php endforeach; ?>
+    </details>
+  <?php endforeach; ?>
+</section>

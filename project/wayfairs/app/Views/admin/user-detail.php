@@ -3,139 +3,122 @@
 declare(strict_types=1);
 
 $kycStatus = (string) ($kyc['status'] ?? 'not_started');
-$customerName = trim($profile['first_name'] . ' ' . $profile['last_name']);
+$customerName = trim((string) $profile['first_name'] . ' ' . (string) $profile['last_name']);
+$initials = mb_strtoupper(mb_substr((string) $profile['first_name'], 0, 1) . mb_substr((string) $profile['last_name'], 0, 1));
 ?>
-<div class="section-head">
-  <div><p class="eyebrow">Customer</p><h1><?= e($customerName) ?></h1><p class="muted"><?= e((string) $profile['email']) ?> · joined <?= e(wayfairs_datetime((string) $profile['created_at'])) ?></p></div>
-  <div class="row" style="flex:0 0 auto">
-    <?= wayfairs_pill((string) $profile['status']) ?>
-    <?= wayfairs_pill('kyc ' . $kycStatus) ?>
-  </div>
-</div>
+<header class="page-header">
+  <div class="page-heading"><span class="page-icon"><?= wayfairs_icon('user') ?></span><div class="page-heading-copy"><span class="page-kicker">Customer account</span><h1><?= e($customerName) ?></h1><p><?= e((string) $profile['email']) ?> · registered <?= e(wayfairs_datetime((string) $profile['created_at'])) ?></p></div></div>
+  <div class="page-actions"><a class="btn ghost" href="<?= e(wayfairs_url('/admin/users')) ?>">Customer directory</a></div>
+</header>
 
-<section class="grid two">
-  <article class="card">
-    <h2>Support access</h2>
-    <p class="hint">Opens this customer's account view for 30 minutes. Your own administrator password and a reason are required. Every action is recorded against both identities. Money movement and security changes are disabled while you are viewing.</p>
+<section class="profile-hero">
+  <span class="profile-avatar"><?= e($initials ?: 'U') ?></span>
+  <span class="profile-hero-copy"><span class="page-kicker">Customer profile</span><h2><?= e($customerName) ?></h2><p><?= e((string) $profile['email']) ?><?= !empty($profile['phone']) ? ' · ' . e((string) $profile['phone']) : '' ?></p></span>
+  <span class="profile-badges"><?= wayfairs_pill((string) $profile['status']) ?><?= wayfairs_pill('kyc ' . $kycStatus) ?></span>
+</section>
+
+<section class="metric-grid">
+  <div class="metric-card"><span class="metric-icon"><?= wayfairs_icon('wallet') ?></span><span class="metric-copy"><strong class="metric-value"><?= count($accounts) ?></strong><span class="metric-label">Currency accounts</span></span></div>
+  <div class="metric-card"><span class="metric-icon"><?= wayfairs_icon('activity') ?></span><span class="metric-copy"><strong class="metric-value"><?= count($history) ?></strong><span class="metric-label">Loaded transactions</span></span></div>
+  <div class="metric-card <?= $restrictions !== [] ? 'bad' : '' ?>"><span class="metric-icon"><?= wayfairs_icon('security') ?></span><span class="metric-copy"><strong class="metric-value"><?= count($restrictions) ?></strong><span class="metric-label">Active restrictions</span></span></div>
+  <div class="metric-card <?= in_array($kycStatus, ['pending', 'in_review', 'needs_resubmission'], true) ? 'warn' : '' ?>"><span class="metric-icon"><?= wayfairs_icon('verification') ?></span><span class="metric-copy"><strong class="metric-value long"><?= e(ucwords(str_replace('_', ' ', $kycStatus))) ?></strong><span class="metric-label">Verification status</span></span></div>
+</section>
+
+<section class="content-grid equal">
+  <article class="card form-card">
+    <div class="form-intro"><h2>Verification review</h2><p>Inspect the stored customer submission and record a reasoned decision.</p></div>
+    <?php if (!empty($kyc['id_last4'])): ?>
+      <div class="destination-details">
+        <div class="destination-field"><span>Date of birth</span><strong><?= e((string) ($kyc['date_of_birth'] ?? '—')) ?></strong></div>
+        <div class="destination-field"><span>Country</span><strong><?= e((string) ($kyc['country_code'] ?? '—')) ?></strong></div>
+        <div class="destination-field wide"><span>Address</span><strong><?= e(trim(implode(', ', array_filter([(string) ($kyc['address_line1'] ?? ''), (string) ($kyc['address_line2'] ?? ''), (string) ($kyc['city'] ?? ''), (string) ($kyc['region'] ?? ''), (string) ($kyc['postal_code'] ?? '')])))) ?></strong></div>
+        <div class="destination-field"><span>ID type</span><strong><?= e(ucwords(str_replace('_', ' ', (string) ($kyc['id_type'] ?? '—')))) ?></strong></div>
+        <div class="destination-field"><span>ID ending</span><strong>•••• <?= e((string) $kyc['id_last4']) ?></strong></div>
+        <div class="destination-field wide"><span>Submitted</span><strong><?= e(wayfairs_datetime($kyc['submitted_at'] ?? null)) ?></strong></div>
+      </div>
+    <?php else: ?>
+      <div class="notice warn"><?= wayfairs_icon('info') ?><div><strong>No verification submission</strong><p>The customer has not stored identity details for review.</p></div></div>
+    <?php endif; ?>
+    <form class="stack" method="post" action="<?= e(wayfairs_url('/admin/users/' . $profile['id'] . '/kyc')) ?>">
+      <input type="hidden" name="_token" value="<?= e(wayfairs_csrf()) ?>" />
+      <label>Decision<select name="status" required><option value="verified">Approve</option><option value="needs_resubmission">Request resubmission</option><option value="rejected">Reject</option><option value="expired">Mark expired</option></select></label>
+      <label>Reason shown to customer<input name="reason" minlength="10" maxlength="300" placeholder="Explain the evidence behind this decision" required /></label>
+      <div class="form-actions"><button class="btn" type="submit">Record verification decision</button></div>
+    </form>
+  </article>
+
+  <article class="card form-card">
+    <div class="form-intro"><h2>Protected support view</h2><p>Open the customer dashboard for support without allowing financial or security mutations.</p></div>
+    <div class="status-checklist">
+      <div class="status-check"><span class="status-check-icon"><?= wayfairs_icon('clock') ?></span><span class="status-check-copy"><strong>30-minute session</strong><span>The support view expires automatically.</span></span></div>
+      <div class="status-check"><span class="status-check-icon"><?= wayfairs_icon('security') ?></span><span class="status-check-copy"><strong>Sensitive actions blocked</strong><span>Money movement and security changes cannot execute.</span></span></div>
+      <div class="status-check"><span class="status-check-icon"><?= wayfairs_icon('audit') ?></span><span class="status-check-copy"><strong>Dual-identity audit</strong><span>The administrator and effective customer are both recorded.</span></span></div>
+    </div>
     <form class="stack" method="post" action="<?= e(wayfairs_url('/admin/impersonate/' . $profile['id'])) ?>">
       <input type="hidden" name="_token" value="<?= e(wayfairs_csrf()) ?>" />
-      <label>Reason<input name="reason" minlength="10" maxlength="300" required /></label>
+      <label>Support reason<input name="reason" minlength="10" maxlength="300" placeholder="Why support access is necessary" required /></label>
       <label>Your administrator password<input type="password" name="password" autocomplete="current-password" required /></label>
-      <button class="btn danger" type="submit">Log in as this customer</button>
+      <div class="form-actions"><button class="btn danger" type="submit">Open protected customer view</button></div>
     </form>
   </article>
+</section>
 
-  <article class="card">
-    <h2>Verification decision</h2>
-    <p class="muted">Status: <?= e(str_replace('_', ' ', $kycStatus)) ?></p>
-    <?php if (!empty($kyc['id_last4'])): ?>
-      <dl class="kv">
-        <dt>Name</dt><dd><?= e($customerName) ?></dd>
-        <dt>Date of birth</dt><dd><?= e((string) ($kyc['date_of_birth'] ?? '—')) ?></dd>
-        <dt>Country</dt><dd><?= e((string) ($kyc['country_code'] ?? '—')) ?></dd>
-        <dt>Address</dt><dd><?= e(trim(($kyc['address_line1'] ?? '') . ', ' . ($kyc['city'] ?? '') . ' ' . ($kyc['region'] ?? '') . ' ' . ($kyc['postal_code'] ?? ''), ', ')) ?></dd>
-        <dt>ID</dt><dd><?= e((string) ($kyc['id_type'] ?? '')) ?> · ending <?= e((string) $kyc['id_last4']) ?></dd>
-      </dl>
+<section class="content-grid">
+  <article class="card form-card">
+    <div class="panel-head"><div><h2>Capability restrictions</h2><p>Active backend-enforced blocks for this customer.</p></div><span class="pill <?= $restrictions === [] ? 'good' : 'bad' ?>"><?= count($restrictions) ?> active</span></div>
+    <?php if ($restrictions === []): ?>
+      <div class="status-check"><span class="status-check-icon"><?= wayfairs_icon('check') ?></span><span class="status-check-copy"><strong>No active restrictions</strong><span>All capability checks defer to the customer's other account gates.</span></span></div>
     <?php else: ?>
-      <p class="muted">No verification details submitted.</p>
+      <div class="stack-list">
+        <?php foreach ($restrictions as $restriction): ?>
+          <div class="restriction-card">
+            <div><strong><?= e(ucwords(str_replace('_', ' ', (string) $restriction['capability']))) ?></strong><p><?= e((string) $restriction['reason']) ?> · since <?= e(wayfairs_datetime((string) $restriction['starts_at'])) ?></p></div>
+            <form class="stack" method="post" action="<?= e(wayfairs_url('/admin/restrictions/' . $restriction['id'] . '/release')) ?>">
+              <input type="hidden" name="_token" value="<?= e(wayfairs_csrf()) ?>" /><input type="hidden" name="user_id" value="<?= e((string) $profile['id']) ?>" />
+              <input name="reason" minlength="10" maxlength="300" placeholder="Release reason" aria-label="Restriction release reason" required />
+              <button class="btn small ghost" type="submit">Release</button>
+            </form>
+          </div>
+        <?php endforeach; ?>
+      </div>
     <?php endif; ?>
-    <form class="stack" method="post" action="<?= e(wayfairs_url('/admin/users/' . $profile['id'] . '/kyc')) ?>" style="margin-top:.8rem">
-      <input type="hidden" name="_token" value="<?= e(wayfairs_csrf()) ?>" />
-      <label>Decision
-        <select name="status" required>
-          <option value="verified">Approve</option>
-          <option value="needs_resubmission">Request resubmission</option>
-          <option value="rejected">Reject</option>
-          <option value="expired">Mark expired</option>
-        </select>
-      </label>
-      <label>Reason (shown to the customer)<input name="reason" minlength="10" maxlength="300" required /></label>
-      <button class="btn small" type="submit">Record decision</button>
-    </form>
   </article>
+
+  <aside class="card form-card sticky-panel">
+    <div class="form-intro"><h2>Apply a restriction</h2><p>A reason of at least 10 characters is required and audited.</p></div>
+    <form class="stack" method="post" action="<?= e(wayfairs_url('/admin/users/' . $profile['id'] . '/restrict')) ?>">
+      <input type="hidden" name="_token" value="<?= e(wayfairs_csrf()) ?>" />
+      <div class="form-grid">
+        <label>Capability<select name="capability" required><option value="fiat_deposit">Fiat deposits</option><option value="fiat_withdrawal">Fiat withdrawals</option><option value="crypto_deposit">Crypto deposits</option><option value="crypto_withdrawal">Crypto withdrawals</option><option value="internal_transfer">Transfers</option><option value="invoice">Invoices</option><option value="login">Sign-in</option></select></label>
+        <label>Reason code<select name="reason_code"><option value="manual_review">Manual review</option><option value="fraud_risk">Fraud risk</option><option value="sanctions_hold">Sanctions hold</option><option value="customer_request">Customer request</option></select></label>
+      </div>
+      <label>Detailed reason<input name="reason" minlength="10" maxlength="300" placeholder="Evidence or customer instruction" required /></label>
+      <label>Expires at <span class="field-hint">Optional</span><input type="datetime-local" name="expires_at" /></label>
+      <div class="form-actions"><button class="btn danger" type="submit">Apply restriction</button></div>
+    </form>
+  </aside>
 </section>
 
-<section class="card">
-  <h2>Restrictions</h2>
-  <?php if ($restrictions === []): ?><p class="muted">No active restrictions.</p><?php else: ?>
-  <div class="table-wrap"><table>
-    <thead><tr><th>Capability</th><th>Reason</th><th>Since</th><th></th></tr></thead>
-    <tbody><?php foreach ($restrictions as $r): ?>
-      <tr>
-        <td><?= e(str_replace('_', ' ', (string) $r['capability'])) ?></td>
-        <td><?= e((string) $r['reason']) ?></td>
-        <td><?= e(wayfairs_datetime((string) $r['starts_at'])) ?></td>
-        <td>
-          <form class="row" method="post" action="<?= e(wayfairs_url('/admin/restrictions/' . $r['id'] . '/release')) ?>">
-            <input type="hidden" name="_token" value="<?= e(wayfairs_csrf()) ?>" />
-            <input type="hidden" name="user_id" value="<?= e((string) $profile['id']) ?>" />
-            <input name="reason" minlength="10" placeholder="Release reason" required />
-            <button class="btn small ghost" type="submit">Release</button>
-          </form>
-        </td>
-      </tr>
-    <?php endforeach; ?></tbody>
-  </table></div>
-  <?php endif; ?>
-  <form class="stack" method="post" action="<?= e(wayfairs_url('/admin/users/' . $profile['id'] . '/restrict')) ?>" style="margin-top:1rem">
-    <input type="hidden" name="_token" value="<?= e(wayfairs_csrf()) ?>" />
-    <div class="row">
-      <label>Capability
-        <select name="capability" required>
-          <option value="fiat_deposit">Fiat deposits</option>
-          <option value="fiat_withdrawal">Fiat withdrawals</option>
-          <option value="crypto_deposit">Crypto deposits</option>
-          <option value="crypto_withdrawal">Crypto withdrawals</option>
-          <option value="internal_transfer">Transfers</option>
-          <option value="invoice">Invoices</option>
-          <option value="login">Sign-in</option>
-        </select>
-      </label>
-      <label>Reason code
-        <select name="reason_code">
-          <option value="manual_review">Manual review</option>
-          <option value="fraud_risk">Fraud risk</option>
-          <option value="sanctions_hold">Sanctions hold</option>
-          <option value="customer_request">Customer request</option>
-        </select>
-      </label>
+<section class="card static">
+  <div class="panel-head"><div><h2>Currency accounts</h2><p>Available, reserved, and total balances remain separate by currency.</p></div><span class="pill"><?= count($accounts) ?> account<?= count($accounts) === 1 ? '' : 's' ?></span></div>
+  <?php if ($accounts === []): ?>
+    <div class="empty-state"><div class="empty-icon"><?= wayfairs_icon('wallet') ?></div><h3>No currency accounts</h3><p>No customer accounts have been opened.</p></div>
+  <?php else: ?>
+    <div class="asset-summary-grid">
+      <?php foreach ($accounts as $account): $held = (int) ($account['held_minor'] ?? 0); $available = (int) $account['available_minor']; ?>
+        <article class="asset-summary"><div class="asset-summary-top"><span class="asset-summary-code"><?= e((string) $account['code']) ?></span><?= wayfairs_pill((string) $account['status']) ?></div><strong><?= e(wayfairs_amount($available, (int) $account['scale'], (string) $account['symbol'], (string) $account['code'])) ?></strong><small>Available · <?= e(wayfairs_amount($held, (int) $account['scale'], (string) $account['symbol'])) ?> reserved</small><small class="mono"><?= e((string) $account['account_number']) ?></small></article>
+      <?php endforeach; ?>
     </div>
-    <label>Detail (required)<input name="reason" minlength="10" maxlength="300" required /></label>
-    <button class="btn small danger" type="submit">Apply restriction</button>
-  </form>
-</section>
-
-<section class="card">
-  <h2>Accounts</h2>
-  <?php if ($accounts === []): ?><p class="muted">No accounts opened yet.</p><?php else: ?>
-  <div class="table-wrap"><table>
-    <thead><tr><th>Asset</th><th>Account</th><th>Available</th><th>Status</th></tr></thead>
-    <tbody><?php foreach ($accounts as $a): ?>
-      <tr>
-        <td><?= e((string) $a['code']) ?></td>
-        <td><?= e((string) $a['account_number']) ?></td>
-        <td><?= e(wayfairs_amount((int) $a['available_minor'], (int) $a['scale'], (string) $a['symbol'])) ?></td>
-        <td><?= wayfairs_pill((string) $a['status']) ?></td>
-      </tr>
-    <?php endforeach; ?></tbody>
-  </table></div>
   <?php endif; ?>
 </section>
 
-<section class="card">
-  <h2>Transactions</h2>
-  <?php if ($history === []): ?><p class="muted">No transactions.</p><?php else: ?>
-  <div class="table-wrap"><table>
-    <thead><tr><th>Date</th><th>Reference</th><th>Type</th><th>Amount</th><th>Status</th></tr></thead>
-    <tbody><?php foreach ($history as $t): ?>
-      <tr>
-        <td><?= e(wayfairs_datetime((string) $t['created_at'])) ?></td>
-        <td><?= e((string) $t['public_reference']) ?></td>
-        <td><?= e(str_replace('_', ' ', (string) $t['transaction_type'])) ?></td>
-        <td><?= e(wayfairs_amount((int) $t['amount_minor'], (int) $t['asset_scale'], (string) $t['asset_symbol'], (string) $t['asset_code'])) ?></td>
-        <td><?= wayfairs_pill((string) $t['status']) ?></td>
-      </tr>
-    <?php endforeach; ?></tbody>
-  </table></div>
+<section class="card table-card static">
+  <div class="panel-head"><div><h2>Customer transactions</h2><p>Latest 100 persisted records across this customer's accounts.</p></div><span class="pill"><?= count($history) ?> loaded</span></div>
+  <?php if ($history === []): ?>
+    <div class="empty-state"><div class="empty-icon"><?= wayfairs_icon('activity') ?></div><h3>No transactions</h3><p>No money movement is recorded for this customer.</p></div>
+  <?php else: ?>
+    <div class="table-wrap"><table><thead><tr><th>Date</th><th>Reference</th><th>Description</th><th>Currency</th><th>Amount</th><th>Status</th></tr></thead><tbody>
+    <?php foreach ($history as $transaction): $credit = (string) $transaction['direction'] === 'credit'; ?><tr><td><?= e(wayfairs_datetime((string) $transaction['created_at'])) ?></td><td><code><?= e((string) $transaction['public_reference']) ?></code></td><td><span class="cell-title"><?= e((string) $transaction['description']) ?></span><span class="cell-subtitle"><?= e(str_replace('_', ' ', (string) $transaction['transaction_type'])) ?></span></td><td><?= e((string) $transaction['asset_code']) ?></td><td class="cell-amount <?= $credit ? 'amount-positive' : 'amount-negative' ?>"><?= e(($credit ? '+' : '−') . wayfairs_amount((int) $transaction['amount_minor'], (int) $transaction['asset_scale'], (string) $transaction['asset_symbol'])) ?></td><td><?= wayfairs_pill((string) $transaction['status']) ?></td></tr><?php endforeach; ?>
+    </tbody></table></div>
   <?php endif; ?>
 </section>
