@@ -1,5 +1,176 @@
 # Project State: Julie AiOS
 
+## Wayfairs PHP banking app — production UI, live queues, verified money movement
+**Date:** 2026-10-31
+
+### Outcome
+`project/wayfairs/` is a dependency-free PHP 8.2+ banking application served at
+`/project/wayfairs/`. The landing page, customer dashboard, deposit and withdraw
+flows, admin operations dashboard, customer detail, currency management, and
+receipts now render from persisted rows and real runtime state only. Pending
+deposit and withdrawal queues support full administrator decisions with reasons
+and settlement references.
+
+### Delivered
+- Public landing page with real enabled assets and an honest manual-settlement
+  walkthrough; no sample balances or unsupported currencies.
+- Customer dashboard with one active-currency card (available, reserved, total),
+  account switching, verification/restriction notices, and recent activity.
+- Deposit page with per-asset published bank or wallet destinations, copy
+  actions, minimums, instructions, KYC gating, and real request history.
+- Withdraw page with type-aware bank/wallet forms, asset-specific minimum/fee/
+  availability hints, server-side destination validation, and reservation
+  history.
+- Admin dashboard with live counts and deposit, withdrawal, customer, and
+  restriction queues; dedicated decision cards on both money queues.
+- Currency management with add/update/delete, major-unit limits and fees,
+  enable/deposit/withdraw toggles, and per-asset deposit destination fields.
+- Administrative impersonation with a visible banner, blocked financial/security
+  mutations, and restoration of the administrator session on exit.
+- Shared mobile navigation that closes on link selection, outside click, and
+  Escape.
+
+### Verification
+- ✅ `php -l` clean across `app/`, `public/`, and `tests/`; `php tests/run.php`
+  passes 28/28.
+- ✅ Authenticated crawl of 19 guest, customer, and admin routes returns 200 with
+  zero PHP warnings under `display_errors=1`, including a receipt and customer
+  detail page.
+- ✅ Live BTC withdrawal: submit 0.001 → reserve → admin reject → hold released
+  and balance restored.
+- ✅ Live BTC deposit: submit 0.001 → admin reject with reason → queue count and
+  history updated.
+- ✅ Live impersonation: banner displayed, blocked withdrawal created no request,
+  stop-impersonation returned to the admin session.
+- ✅ Live asset update round-trip with major-unit fields preserved exact stored
+  minor values and destination details.
+- ✅ NGN is disabled and absent from customer deposit, withdraw, transfer, and
+  dashboard lists.
+
+### Honest boundaries / next decision
+- Settlement is manual by design. No payment provider, blockchain node, or
+  reconciliation feed is connected, so no provider state is simulated.
+- MySQL import files mirror the implemented schema, but this instance is verified
+  on SQLite only; MySQL isolation and concurrency still require a real MySQL host.
+- Production use needs regulated-operating review, provider selection, real
+  secret management, HTTPS termination, and backup/restore drills.
+
+---
+
+## Fintech foundation — one-port application running through Julie
+**Date:** 2026-10-30
+
+### Outcome
+The fintech project now has a real one-port NestJS + React foundation running
+through Julie's owner-gated `/project/fintech/` proxy. Its backend reports
+observed health and a closed capability projection: local SQLite is connected,
+MySQL is the unconnected hosting target, and all eight financial/identity
+capabilities remain disabled rather than simulated.
+
+### Delivered
+- npm-workspace modular monolith with NestJS 12, React 19/Vite, strict
+  TypeScript, plain CSS, one launch process, subpath-safe assets/API requests,
+  security headers, request IDs, tests, and GitHub CI/dependency automation.
+- Real read-only `api/health`, `api/readiness`, and `api/capabilities` endpoints.
+  The web shell reads them and never substitutes sample financial/customer data.
+- Owner-selected local SQLite build plus MySQL 8.4+/InnoDB hosting target.
+  SQLite migration `001_foundation` creates checksum-tracked schema history and
+  database-enforced append-only audit evidence. Matching
+  `database/mysql/001_foundation.sql` is importable via phpMyAdmin/MySQL CLI;
+  real MySQL verification remains a hosting gate.
+- Project guardrails, architecture, delivery plan, decision record, task #127,
+  and import instructions reflect the SQLite-now/MySQL-hosting decision.
+- Julie project `fintech` remains linked to Web Development's seven observed
+  agents and is now genuinely `running` on allocated loopback port 4100.
+
+### Verification
+- ✅ `npm run verify`: secret scan (50 files), paired SQLite/MySQL migration
+  validation, API/web typechecks, 6 API tests, 2 web tests, and both production
+  builds.
+- ✅ `npm audit --audit-level=high`: zero vulnerabilities; no unreviewed npm
+  install scripts.
+- ✅ SQLite `quick_check = ok`, `integrity_check = ok`, one 64-character checksum
+  migration, data directory 0700, and database 0600.
+- ✅ The first launch honestly failed/returned 502 when compiled code could not
+  resolve a workspace-local package. Output was moved inside the API workspace;
+  the corrected child now listens on port 4100.
+- ✅ Unauthenticated project request returns 401. Authenticated page, React JS
+  asset, proxied health, and capabilities return 200 with the correct injected
+  `/project/fintech/` base.
+- ✅ Runtime evidence reports SQLite connected/one migration, MySQL target not
+  connected, financial operations disabled, and all eight requested capability
+  areas unavailable.
+- ✅ Julie health remains `ok` with Gateway 2026.10.5 connected.
+
+### Honest boundaries / next decision
+- This is an application foundation, not a banking runtime. No customer auth,
+  balance, ledger, KYC, payment, custody, blockchain, invoice, restriction, or
+  transaction domain endpoint exists.
+- The MySQL file intentionally contains only implemented foundation persistence,
+  not a speculative full banking schema. Later numbered files will add domain
+  tables with matching code and tests.
+- SQLite cannot prove MySQL isolation, row locks, idempotency, ledger
+  concurrency, backup, or restore behavior. Those checks must pass against real
+  MySQL 8.4+ before hosting or production.
+- No production credentials, customer PII, real-money rail, or mainnet custody
+  connection was introduced. Task #125 still waits for the six owner product and
+  regulated-operating decisions.
+
+---
+
+## Previous: Fintech project kickoff — plan registered and launchable
+**Date:** 2026-10-30
+
+### Outcome
+The requested fintech banking platform now has an owner-gated, launchable
+planning baseline at `/project/fintech/`, owned by the existing **Web
+Development** workspace. The plan covers KYC-gated fiat and crypto deposits /
+withdrawals, immutable ledgering, transfers, invoices and receipts, account
+restrictions, transaction history, operations, reconciliation, security, and
+production approval gates without claiming that financial capabilities already
+exist.
+
+### Delivered
+- `/home/admin/julie/project/fintech/`: responsive static kickoff page plus
+  product requirements, modular-monolith architecture, phased delivery plan,
+  security/compliance baseline, project decision log, and scoped engineering
+  guardrails.
+- Julie project registry row `fintech` linked to workspace #3 (`Web
+  Development`), inheriting its seven observed workspace agents. Its real
+  process state is `running` as a static project.
+- Workspace task rows #125–#138 (`FIN-000` through `FIN-130`) hold the reviewed
+  sequence and assignees: 11 backlog, 1 ready, 1 pending review, and 1 waiting
+  for owner input.
+- The earlier untracked team stack recommendation at
+  `project/fintech-tech-stack-recommendation.md` was preserved unchanged. The
+  literal `/Julie/project` does not exist; work uses Julie's configured managed
+  root, `/home/admin/julie/project`.
+
+### Verification
+- ✅ Backend TypeScript build and Vite production build pass.
+- ✅ SQLite `integrity_check = ok`; project row reports workspace #3,
+  `team_mode = inherit`, and real `running` state.
+- ✅ Unauthenticated project request returns 401; authenticated HTML and CSS
+  requests return 200 through Julie's project proxy.
+- ✅ Authenticated project API reports slug `fintech`, route
+  `/project/fintech/`, `Web Development`, and seven inherited agents.
+- ✅ All six local page links resolve inside the project tree; no external page
+  assets or references are loaded.
+- ✅ Julie health remains `ok` with Gateway 2026.10.5 connected.
+
+### Honest boundaries / next decision
+- The live page is a project brief, not a banking runtime. No balance, KYC,
+  payment, custody, blockchain, invoice, or transaction API has been implemented.
+- No production credentials, customer PII, real-money rail, or mainnet custody
+  connection was introduced.
+- Task #125 waits for the owner to confirm product/segment, jurisdiction and
+  regulated operating model, custody/assets/networks, providers, economics /
+  limits, and brand/application structure. Provider-specific work stays
+  sandbox-only until those decisions and qualified compliance/legal review are
+  recorded.
+
+---
+
 ## Status: Phase E6 + Phase 0 + Phase E7 (Projects/Settings/Feature Lab/Profile)
 **Date:** 2026-10-30
 

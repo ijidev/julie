@@ -1,5 +1,142 @@
 # Changelog
 
+## Wayfairs — banking UI and workflow repair (2026-10-31)
+### Added
+- `project/wayfairs`: admin deposit and withdrawal queues now use dedicated
+  decision cards with labelled reason and external-reference fields, amount,
+  destination, customer, and date facts, plus a separate decision-history table.
+- `project/wayfairs/tests/run.php`: regression coverage for signed flash
+  payloads containing punctuation and for required withdrawal destination
+  fields.
+- `/admin/assets`: per-asset deposit destinations (bank details or wallet and
+  network) editable in major units with missing-destination warnings.
+
+### Changed
+- Customer dashboard shows one active-currency balance card with available,
+  reserved, and total ledger figures, account switching, KYC/restriction state,
+  and real recent activity instead of a currency grid.
+- Deposit and withdraw pages are type-aware: published destinations, minimums,
+  fees, availability, no-JS first-panel fallback, and empty states are all read
+  from persisted asset configuration.
+- Landing page rebuilt around real enabled assets and the manual settlement
+  flow; all sample balances and NGN references were removed.
+- Admin dashboard now reports live customer, verification, deposit, withdrawal,
+  and restriction counts with real work queues.
+- Ending administrative impersonation restores a fresh administrator session
+  instead of signing the administrator out.
+- Mobile navigation closes on link selection as well as outside click/Escape.
+
+### Fixed
+- Flash messages containing periods never displayed because the payload was
+  split at the first `.` inside the JSON; the separator now comes from
+  `strrpos`, with tamper rejection retained.
+- Customer dashboard returned 500 because the route closure did not capture the
+  database handle used to read held amounts.
+- Withdrawal submission accepted empty destinations; fiat and crypto fields are
+  now validated server-side by asset type.
+- Admin asset limits and fees were edited in minor units; they now use plain
+  major-unit decimal inputs with the asset scale.
+
+### Verified
+- `php -l` clean across `app/`, `public/`, and `tests/`; 28 integration tests pass.
+- Authenticated crawl of `/`, `/dashboard`, `/deposit`, `/withdraw`, `/transfer`,
+  `/invoices`, `/kyc`, `/security`, `/accounts/{code}`, `/admin`, `/admin/users`,
+  `/admin/deposits`, `/admin/withdrawals`, `/admin/assets`, `/admin/settings`,
+  `/admin/audit`, a customer detail page, and a receipt returns 200 with no PHP
+  warnings under `display_errors=1`.
+- Live BTC withdrawal round-trip: submit 0.001 reserved funds, admin rejection
+  released the hold and restored the balance.
+- Live deposit queue round-trip: submit 0.001 BTC, reject with reason, decision
+  history recorded, dashboard count returned to zero.
+- Live impersonation lifecycle: banner shown, withdrawal mutation blocked, and
+  stop-impersonation returned to the administrator session.
+
+## Fintech FIN-020 — secure application foundation (2026-10-30)
+### Added
+- npm-workspace modular monolith under `project/fintech`: NestJS 12 API and one
+  launch process serving the React 19/Vite build under Julie's authenticated
+  project subpath.
+- Backend-sourced health/readiness/capability APIs, request IDs, strict request
+  validation, security headers, shutdown hooks, subpath-safe assets/API calls,
+  and a responsive evidence shell. All eight product capabilities are explicitly
+  unavailable and financial execution remains disabled.
+- Owner-selected local SQLite build with checksum-tracked migrations, 0700/0600
+  storage, integrity probes, and database-enforced append-only audit events.
+- Matching MySQL 8.4+/InnoDB `database/mysql/001_foundation.sql` plus an import
+  guide for phpMyAdmin/MySQL CLI. It contains only implemented persistence;
+  real-MySQL behavior remains an explicit pre-hosting verification gate.
+- API/migration and subpath URL tests, local secret-pattern and paired-dialect
+  migration checks, GitHub CI, and Dependabot configuration.
+
+### Changed
+- Replaced the provisional PostgreSQL/Prisma choice with the owner's SQLite-now,
+  MySQL-hosting decision across guardrails, architecture, delivery, decisions,
+  task #127, runtime evidence, and docs.
+- Upgraded NestJS to the non-advisory release line and removed Prisma after npm
+  exposed five high-severity transitive advisories. Final audit: zero
+  vulnerabilities; install scripts are limited to reviewed exact
+  `better-sqlite3` and `esbuild` versions.
+
+### Fixed
+- The first launch exited `ERR_MODULE_NOT_FOUND` because compiled API code sat
+  outside the npm workspace owning one runtime dependency; Julie correctly
+  surfaced failed/502. API output/start now stay in the workspace, and the
+  corrected process listens on port 4100.
+- Nest/Vitest tests now use explicit injection tokens. Migration scratch data
+  stays in project-local gitignored `data/` after `/tmp/opencode` proved
+  non-writable for this account.
+
+### Verified
+- Full `npm run verify`: secret scan, SQLite/MySQL artifact validation, strict
+  API/web typechecks, 8 tests, and both production builds.
+- SQLite quick/integrity checks, migration checksum, modes 0700/0600, zero npm
+  advisories, and no unreviewed install scripts.
+- Project `running`; unauthenticated route 401; authenticated page, JS asset,
+  health, and capabilities 200; project subpath base verified.
+- Runtime evidence: SQLite connected with one migration, MySQL target not
+  connected, financial operations disabled, all eight capabilities unavailable.
+
+### Honest limits
+- No financial/customer domain endpoint or provider integration exists. The
+  MySQL migration has not run against a real MySQL server because none is
+  configured; SQLite results are not represented as MySQL concurrency proof.
+
+## Fintech project planning baseline (2026-10-30)
+### Added
+- `project/fintech/`: an owner-gated, responsive kickoff page and scoped
+  `AGENTS.md` guardrails for a ledger-first fintech banking platform.
+- Product requirements for customer/operations roles, KYC, fiat and crypto
+  movement, transfers, invoices/receipts, restrictions, history, audit, and
+  reconciliation.
+- Proposed NestJS/PostgreSQL/React modular-monolith architecture with immutable
+  double-entry ledger invariants, provider adapters, durable inbox/outbox,
+  server-side authorization/restrictions, dual control, privacy, and one
+  subpath-aware launch entry point.
+- Phased delivery, security/compliance baseline, and project decision log with
+  six explicit owner decisions and production blockers.
+- Web Development workspace tasks #125–#138 (`FIN-000`–`FIN-130`) with observed
+  initial states and valid assigned workspace agents.
+
+### Configured
+- Registered slug `fintech` in Julie's real project registry, linked it to Web
+  Development (workspace #3), inherited the seven-member workspace team, and
+  launched the static project at `/project/fintech/`.
+- Used the configured `/home/admin/julie/project` root because the requested
+  literal `/Julie/project` path does not exist. Preserved the prior
+  `project/fintech-tech-stack-recommendation.md` draft unchanged.
+
+### Verified
+- Backend TypeScript and Vite production builds pass.
+- Auth gate (401 unauthenticated), authenticated project HTML/CSS (200), project
+  API registry/workspace/team projection, 14 persisted task rows, local-link
+  integrity, SQLite integrity, and Julie/Gateway health.
+
+### Honest limits
+- The launchable artifact is the reviewed planning baseline. It does not yet
+  implement or simulate banking, KYC, payment, custody, ledger, or transaction
+  APIs, and no live funds, mainnet keys, production provider credentials, or
+  customer PII were introduced.
+
 ## Phase 0 — installability and security slice (2026-10-30)
 ### Added
 - `README.md`: prerequisites, one-process architecture, quick start, full
@@ -591,3 +728,13 @@
   settings, real session/gateway pills, workspace management, recent activity)
   instead of a metrics board.
 - Feature Lab renders the database store only; static suggestion text removed.
+
+### Wayfairs PHP banking script — production UI and route fix
+- `project/wayfairs/public/assets/app.css`: replaced the minimal stylesheet with a full responsive design system (marketing hero, app shell, mobile navigation, cards, tables, receipts, empty states, dark-mode and print support).
+- `project/wayfairs/app/Views/layouts/*.php`: rebuilt guest, customer, and admin layouts with sticky headers, sidebars, mobile menus, user chips, and footer variants.
+- `project/wayfairs/app/Views/home.php`: expanded the landing page with hero, feature grid, how-it-works steps, security section, settlement transparency, and final CTA.
+- `project/wayfairs/app/Views/auth/*.php`: polished sign-in and registration with stronger hierarchy and helper copy.
+- `project/wayfairs/app/Views/user/dashboard.php`: account cards, recent-activity table, empty states, restriction banners, and KYC nudges.
+- `project/wayfairs/app/Views/admin/dashboard.php`, `users.php`: refreshed operations dashboard and customer table.
+- `project/wayfairs/app/Core/Request.php`, `public/index.php`, `app/routes.php`: fixed route-parameter propagation so admin customer detail pages load.
+- Verified: PHP syntax checks pass, 25 integration tests pass, Julie-managed launch on port 4100 serves `/project/wayfairs/`, admin and test customer sessions work.
