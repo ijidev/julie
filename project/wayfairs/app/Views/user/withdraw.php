@@ -67,6 +67,7 @@ $firstType = (string) ($firstAsset['asset_type'] ?? 'fiat');
           <label>Wallet address<input name="address" maxlength="200" placeholder="bc1... or 0x..."<?= $firstType === 'crypto' && $verified ? ' required' : '' ?><?= $verified ? '' : ' disabled' ?> /></label>
           <label>Memo / tag <span class="field-hint">Only if required</span><input name="memo" maxlength="120"<?= $verified ? '' : ' disabled' ?> /></label>
         </fieldset>
+        <label>Remark <span class="field-hint">Optional</span><input name="remark" maxlength="500" placeholder="Add a note for the operations team"<?= $verified ? '' : ' disabled' ?> /></label>
         <div class="form-actions"><button class="btn full" type="submit" <?= $verified ? '' : 'disabled' ?>><?= $verified ? 'Submit withdrawal request' : 'Verification required' ?> <?= wayfairs_icon('arrow-right', 'btn-icon') ?></button></div>
       </form>
     </article>
@@ -133,8 +134,8 @@ $firstType = (string) ($firstAsset['asset_type'] ?? 'fiat');
   <?php if ($withdrawals === []): ?>
     <div class="empty-state"><div class="empty-icon"><?= wayfairs_icon('withdraw') ?></div><h3>No withdrawal requests</h3><p>Your submitted payout requests will appear here.</p></div>
   <?php else: ?>
-    <div class="table-wrap"><table><thead><tr><th>Submitted</th><th>Currency</th><th>Amount</th><th>Fee</th><th>Destination</th><th>Status</th></tr></thead><tbody>
-    <?php foreach ($withdrawals as $w): ?><tr><td><span class="cell-title"><?= e(wayfairs_datetime((string) $w['created_at'])) ?></span></td><td><span class="cell-title"><?= e((string) $w['asset_code']) ?></span><span class="cell-subtitle"><?= e((string) $w['account_number']) ?></span></td><td class="cell-amount"><?= e(wayfairs_amount((int) $w['amount_minor'], (int) $w['asset_scale'], (string) $w['asset_symbol'], (string) $w['asset_code'])) ?></td><td><?= (int) $w['fee_minor'] > 0 ? e(wayfairs_amount((int) $w['fee_minor'], (int) $w['asset_scale'], (string) $w['asset_symbol'])) : '—' ?></td><td class="wrap-anywhere"><?= e((string) ($w['destination_summary'] ?? '—')) ?></td><td><?= wayfairs_pill((string) $w['status']) ?></td></tr><?php endforeach; ?>
+    <div class="table-wrap"><table><thead><tr><th>Submitted</th><th>Currency</th><th>Amount</th><th>USD equivalent</th><th>Destination</th><th>Remark</th><th>Status</th></tr></thead><tbody>
+    <?php foreach ($withdrawals as $w): $rate = $usdRates[$w['asset_code']] ?? null; ?><tr><td><span class="cell-title"><?= e(wayfairs_datetime((string) $w['created_at'])) ?></span></td><td><span class="cell-title"><?= e((string) $w['asset_code']) ?></span><span class="cell-subtitle"><?= e((string) $w['account_number']) ?></span></td><td class="cell-amount"><?= e(wayfairs_amount((int) $w['amount_minor'], (int) $w['asset_scale'], (string) $w['asset_symbol'], (string) $w['asset_code'])) ?></td><td><span class="cell-title"><?= e(wayfairs_usd_equivalent((int) $w['amount_minor'], (int) $w['asset_scale'], $rate)) ?></span><span class="cell-subtitle"><?= e(wayfairs_rate_disclosure($rate)) ?></span></td><td class="wrap-anywhere"><?= e((string) ($w['destination_summary'] ?? '—')) ?></td><td><?= e(trim((string) ($w['user_remark'] ?? '')) !== '' ? (string) $w['user_remark'] : '—') ?></td><td><?= wayfairs_pill((string) $w['status']) ?></td></tr><?php endforeach; ?>
     </tbody></table></div>
   <?php endif; ?>
 </section>

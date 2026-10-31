@@ -9,7 +9,7 @@ transfers, invoices/receipts, and audited admin impersonation.
 
 - PHP 8.2+
 - PDO SQLite for local preview or PDO MySQL for hosting
-- Sodium, OpenSSL, mbstring, intl, fileinfo
+- Sodium, OpenSSL, cURL, mbstring, intl, fileinfo
 - MySQL 8.4+ with InnoDB for hosted/production use
 - Web root pointed to `public/`
 
@@ -26,6 +26,32 @@ No Composer or JavaScript build is required.
 
 The responsive interface uses plain CSS and dependency-free JavaScript. Search
 and filter controls operate only on the persisted rows returned by the server.
+
+### USD equivalents and live rates
+
+- USD is the default customer account/card currency when it is enabled.
+- Fiat rates are observed from [Frankfurter](https://frankfurter.dev/); crypto
+  prices are observed from [CoinGecko](https://www.coingecko.com/).
+- Successful observations are cached in `usd_rates`. Stale and unavailable
+  states remain visible; the application never substitutes a sample price.
+- CoinGecko keyless access is suitable only for this preview. Production should
+  set `WAYFAIRS_COINGECKO_API_KEY` to a reviewed plan/key without exposing it to
+  the browser.
+- All conversions use decimal-string/integer arithmetic. The original ledger
+  currency remains authoritative.
+
+### External bank transfers
+
+The customer transfer page defaults to USD and accepts beneficiary country,
+legal name, bank, IBAN or local account number, routing code, and SWIFT/BIC.
+Requests reserve funds and enter the administrator Bank Transfers queue. Full
+destination details remain encrypted; browser pages expose safe summaries only.
+
+### Browser translation
+
+The language control uses the browser's on-device Translator API where
+available. If unsupported, it directs the user to the browser's own translation
+menu. No server-side or third-party translation widget receives page content.
 
 ## Install
 
@@ -65,3 +91,8 @@ Admin **Login as user** is support impersonation, not silent takeover: current
 admin password and reason are required; the session is short-lived and visibly
 bannered; all actions retain both identities; financial/security/configuration
 mutations are denied until the administrator exits impersonation.
+
+Customer administration supports creation, profile editing, global
+active/restricted/blocked/closed status, and per-currency account controls.
+Closing preserves immutable financial and audit history; transaction deletion
+is intentionally unavailable.

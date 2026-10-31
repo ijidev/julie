@@ -34,6 +34,7 @@ $footerMode = 'guest';
         <a href="<?= e(wayfairs_url('/#how-it-works')) ?>">How it works</a>
         <a href="<?= e(wayfairs_url('/#security')) ?>">Security</a>
         <a href="<?= e(wayfairs_url('/login')) ?>">Sign in</a>
+        <?php require WAYFAIRS_ROOT . '/app/Views/partials/translator.php'; ?>
         <a class="btn btn-compact" href="<?= e(wayfairs_url('/register')) ?>">Open an account <?= wayfairs_icon('arrow-right', 'btn-icon') ?></a>
       </nav>
       <details class="guest-mobile-menu">
@@ -43,6 +44,7 @@ $footerMode = 'guest';
           <a href="<?= e(wayfairs_url('/#how-it-works')) ?>">How it works</a>
           <a href="<?= e(wayfairs_url('/#security')) ?>">Security</a>
           <a href="<?= e(wayfairs_url('/login')) ?>">Sign in</a>
+          <?php require WAYFAIRS_ROOT . '/app/Views/partials/translator.php'; ?>
           <a class="btn" href="<?= e(wayfairs_url('/register')) ?>">Open an account</a>
         </nav>
       </details>

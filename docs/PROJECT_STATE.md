@@ -1,5 +1,57 @@
 # Project State: Julie AiOS
 
+## Wayfairs — traditional banking transfers, live USD valuation, customer administration
+**Date:** 2026-10-31
+
+### Outcome
+Wayfairs now presents a high-contrast traditional banking workspace: a
+horizontal USD-default account card, provider-backed USD portfolio estimates,
+bank-first beneficiary transfers, dedicated operations settlement, browser-
+native translation, and safe customer/account administration. Original currency
+ledgers remain authoritative and no rate, bank settlement, or translation
+capability is fabricated when unavailable.
+
+### Delivered
+- Live/cached Frankfurter fiat and CoinGecko crypto USD observations with source,
+  freshness, stale/unavailable projection, CoinGecko attribution, and
+  integer-only conversion.
+- External bank transfers with 257 ICU country/territory choices, beneficiary and
+  bank fields, encrypted destination details, optional remark, holds,
+  idempotency, completion/rejection, and safe operations summaries.
+- Admin Bank Transfers queue plus customer create/edit, block/restrict/close,
+  session revocation, and currency-account access controls.
+- Horizontal credit-card balance, total priced USD portfolio, readable white
+  sidebar navigation with clear selected state, and on-device browser translator
+  with fallback guidance.
+- Optional deposit/withdraw/transfer remarks and optional transaction-settlement
+  remarks. Mandatory reasons remain only for KYC, restrictions, and protected
+  impersonation/security actions.
+
+### Verification
+- ✅ SQLite backup before schema change; migration `003` applied; database mode
+  0600; `integrity_check = ok`; `quick_check = ok`.
+- ✅ PHP lint clean; CSS braces 842/842; diff whitespace check clean; 54/54 tests.
+- ✅ 26-page authenticated/guest crawl at `display_errors=1`: all expected pages
+  HTTP 200, no PHP warnings.
+- ✅ Real CoinGecko BTC/ETH and Frankfurter fiat round-trips; persisted current
+  rates; administrator refresh 3/3 enabled rates available.
+- ✅ Bank-transfer positive/replay/reject/complete paths pass in isolated
+  integration data; live insufficient-USD denial persisted no request.
+- ✅ Julie health `ok`, Gateway 2026.10.5 connected, Wayfairs HTTP 200.
+
+### Boundaries
+- Manual bank settlement is not represented as provider-connected. Browser
+  queues intentionally cannot reveal full encrypted IBAN/account details.
+- Customer closure preserves immutable financial history. Hard user/transaction
+  deletion is intentionally unavailable.
+- Support impersonation retains reauthentication, reason, expiry, dual identity,
+  and mutation blocks despite the request to remove them; these are mandatory
+  repository controls.
+- CoinGecko keyless mode is preview-grade, MySQL has not been exercised on a
+  real server, and browser Translator API support varies by client.
+
+---
+
 ## Wayfairs PHP banking app — complete authenticated workspace redesign
 **Date:** 2026-10-31
 

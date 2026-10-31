@@ -38,13 +38,13 @@ final class BankingService
     public function allAccounts(string $userId): array
     {
         $accounts = [];
-        foreach ($this->database->fetchAll('SELECT code FROM assets WHERE enabled = 1 ORDER BY asset_type, code') as $asset) {
+        foreach ($this->database->fetchAll("SELECT code FROM assets WHERE enabled = 1 ORDER BY CASE WHEN code = 'USD' THEN 0 ELSE 1 END, asset_type, code") as $asset) {
             $accounts[] = $this->accountFor($userId, (string) $asset['code']);
         }
         return $accounts;
     }
 
-    public function submitDeposit(string $userId, string $assetCode, string $amount, string $senderReference, string $idempotencyToken): array
+    public function submitDeposit(string $userId, string $assetCode, string $amount, string $remark, string $idempotencyToken): array
     {
         $account = $this->accountFor($userId, $assetCode);
         $asset = $account['asset'];
@@ -63,20 +63,21 @@ final class BankingService
         }
         $depositId = Security::uuid();
         $transactionId = Security::uuid();
-        $this->database->transaction(function (Database $db) use ($userId, $account, $asset, $minor, $senderReference, $entryId, $depositId, $transactionId): void {
+        $remark = mb_substr(trim($remark), 0, 500);
+        $this->database->transaction(function (Database $db) use ($userId, $account, $asset, $minor, $remark, $entryId, $depositId, $transactionId): void {
             $db->execute(
                 'INSERT INTO transactions (id, user_id, account_id, journal_entry_id, public_reference, transaction_type, direction, amount_minor, fee_minor, status, description, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                [$transactionId, $userId, $account['id'], $entryId, Security::reference('DEP'), 'deposit', 'credit', $minor, 0, 'pending', 'Deposit awaiting verification', json_encode(['sender_reference' => trim($senderReference)], JSON_THROW_ON_ERROR)]
+                [$transactionId, $userId, $account['id'], $entryId, Security::reference('DEP'), 'deposit', 'credit', $minor, 0, 'pending', 'Deposit awaiting verification', json_encode(['user_remark' => $remark ?: null], JSON_THROW_ON_ERROR)]
             );
             $db->execute(
-                'INSERT INTO deposit_requests (id, user_id, account_id, transaction_id, deposit_type, amount_minor, sender_reference, status, journal_entry_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                [$depositId, $userId, $account['id'], $transactionId, (string) $asset['asset_type'] === 'crypto' ? 'crypto' : 'fiat', $minor, trim($senderReference) ?: null, 'pending', $entryId]
+                'INSERT INTO deposit_requests (id, user_id, account_id, transaction_id, deposit_type, amount_minor, user_remark, status, journal_entry_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                [$depositId, $userId, $account['id'], $transactionId, (string) $asset['asset_type'] === 'crypto' ? 'crypto' : 'fiat', $minor, $remark ?: null, 'pending', $entryId]
             );
         });
         return $this->database->fetchOne('SELECT * FROM deposit_requests WHERE id = ?', [$depositId]);
     }
 
-    public function verifyDeposit(string $depositId, string $adminId, bool $approve, string $reason, ?string $externalReference): void
+    public function verifyDeposit(string $depositId, string $adminId, bool $approve, string $remark, ?string $externalReference): void
     {
         $this->assertNotImpersonating('Deposit decisions');
         $deposit = $this->database->fetchOne('SELECT * FROM deposit_requests WHERE id = ?', [$depositId]);
@@ -84,22 +85,23 @@ final class BankingService
             throw new \RuntimeException('This deposit is no longer pending.');
         }
         $account = $this->database->fetchOne('SELECT * FROM accounts WHERE id = ?', [(string) $deposit['account_id']]);
-        $this->database->transaction(function (Database $db) use ($deposit, $account, $adminId, $approve, $reason, $externalReference): void {
+        $remark = mb_substr(trim($remark), 0, 500);
+        $this->database->transaction(function (Database $db) use ($deposit, $account, $adminId, $approve, $remark, $externalReference): void {
             if ($approve) {
                 $this->ledger->post([
                     ['ledger_account_id' => $this->systemAccountId((string) $account['asset_id'], 'asset'), 'side' => 'debit', 'amount_minor' => (int) $deposit['amount_minor']],
                     ['ledger_account_id' => (string) $account['ledger_account_id'], 'side' => 'credit', 'amount_minor' => (int) $deposit['amount_minor']],
                 ], $adminId, (string) $deposit['journal_entry_id']);
                 $db->execute("UPDATE transactions SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?", [$this->now(), $this->now(), (string) $deposit['transaction_id']]);
-                $db->execute("UPDATE deposit_requests SET status = 'completed', reviewed_by = ?, reviewed_at = ?, review_reason = ?, external_reference = ?, updated_at = ? WHERE id = ?", [$adminId, $this->now(), $reason, $externalReference ?: null, $this->now(), (string) $deposit['id']]);
+                $db->execute("UPDATE deposit_requests SET status = 'completed', reviewed_by = ?, reviewed_at = ?, review_reason = ?, external_reference = ?, updated_at = ? WHERE id = ?", [$adminId, $this->now(), $remark ?: null, $externalReference ?: null, $this->now(), (string) $deposit['id']]);
                 return;
             }
             $db->execute("UPDATE transactions SET status = 'failed', updated_at = ? WHERE id = ?", [$this->now(), (string) $deposit['transaction_id']]);
-            $db->execute("UPDATE deposit_requests SET status = 'rejected', reviewed_by = ?, reviewed_at = ?, review_reason = ?, updated_at = ? WHERE id = ?", [$adminId, $this->now(), $reason, $this->now(), (string) $deposit['id']]);
+            $db->execute("UPDATE deposit_requests SET status = 'rejected', reviewed_by = ?, reviewed_at = ?, review_reason = ?, updated_at = ? WHERE id = ?", [$adminId, $this->now(), $remark ?: null, $this->now(), (string) $deposit['id']]);
         });
     }
 
-    public function submitWithdrawal(string $userId, string $assetCode, string $amount, array $destination, string $idempotencyToken): array
+    public function submitWithdrawal(string $userId, string $assetCode, string $amount, array $destination, string $idempotencyToken, string $remark = ''): array
     {
         $account = $this->accountFor($userId, $assetCode);
         $asset = $account['asset'];
@@ -118,40 +120,103 @@ final class BankingService
             $destination,
             array_flip($isCrypto ? ['network', 'address', 'memo'] : ['bank_name', 'account_name', 'account_number', 'routing', 'swift'])
         );
+        return $this->createExternalRequest($userId, $account, $asset, $amount, $destination, $idempotencyToken, 'withdrawal', $remark);
+    }
+
+    public function submitBankTransfer(string $userId, string $assetCode, string $amount, array $destination, string $idempotencyToken, string $remark = ''): array
+    {
+        $account = $this->accountFor($userId, $assetCode);
+        $asset = $account['asset'];
+        $this->guard($userId, $account, 'fiat_withdrawal');
+        if ((string) $asset['asset_type'] !== 'fiat') {
+            throw new \RuntimeException('Bank transfers require a fiat currency account.');
+        }
+        foreach (['country_code', 'beneficiary_name', 'bank_name'] as $field) {
+            if (trim((string) ($destination[$field] ?? '')) === '') {
+                throw new \RuntimeException('Complete the beneficiary country, name, and bank.');
+            }
+        }
+        $country = strtoupper(trim((string) $destination['country_code']));
+        if (!preg_match('/^[A-Z]{2}$/', $country)) {
+            throw new \RuntimeException('Choose a valid two-letter beneficiary country.');
+        }
+        if (function_exists('wayfairs_countries') && !array_key_exists($country, \wayfairs_countries())) {
+            throw new \RuntimeException('Choose a recognized beneficiary country.');
+        }
+        $iban = strtoupper(str_replace(' ', '', trim((string) ($destination['iban'] ?? ''))));
+        $accountNumber = trim((string) ($destination['account_number'] ?? ''));
+        if ($iban === '' && $accountNumber === '') {
+            throw new \RuntimeException('Enter an IBAN or account number.');
+        }
+        if ($iban !== '' && !preg_match('/^[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}$/', $iban)) {
+            throw new \RuntimeException('Enter a valid IBAN without unsupported characters.');
+        }
+        $swift = strtoupper(str_replace(' ', '', trim((string) ($destination['swift_bic'] ?? ''))));
+        if ($swift !== '' && !preg_match('/^[A-Z0-9]{8}([A-Z0-9]{3})?$/', $swift)) {
+            throw new \RuntimeException('Enter a valid 8 or 11 character SWIFT/BIC.');
+        }
+        $destination = array_intersect_key($destination, array_flip([
+            'country_code', 'beneficiary_name', 'beneficiary_address', 'bank_name',
+            'bank_address', 'iban', 'account_number', 'routing_code', 'swift_bic',
+        ]));
+        foreach ($destination as $field => $value) {
+            $destination[$field] = mb_substr(trim((string) $value), 0, 300);
+        }
+        $destination['country_code'] = $country;
+        if ($iban !== '') {
+            $destination['iban'] = $iban;
+        }
+        if ($swift !== '') {
+            $destination['swift_bic'] = $swift;
+        }
+        return $this->createExternalRequest($userId, $account, $asset, $amount, $destination, $idempotencyToken, 'bank_transfer', $remark);
+    }
+
+    private function createExternalRequest(string $userId, array $account, array $asset, string $amount, array $destination, string $idempotencyToken, string $kind, string $remark): array
+    {
+        if (!(int) $asset['withdrawal_enabled']) {
+            throw new \RuntimeException(($kind === 'bank_transfer' ? 'Bank transfers' : 'Withdrawals') . ' are not open for this asset.');
+        }
+        $idempotencyKey = $this->idempotencyKey($kind, $userId, $idempotencyToken);
+        $existing = $this->database->fetchOne(
+            'SELECT wr.* FROM withdrawal_requests wr JOIN journal_entries je ON je.id = wr.journal_entry_id WHERE je.idempotency_key = ?',
+            [$idempotencyKey]
+        );
+        if ($existing) {
+            return $existing;
+        }
         $amountMinor = $this->positiveAmount($amount, (int) $asset['scale']);
         if ($amountMinor < (int) $asset['min_withdrawal_minor']) {
-            throw new \RuntimeException('Withdrawal is below the minimum for this asset.');
+            throw new \RuntimeException(($kind === 'bank_transfer' ? 'Transfer' : 'Withdrawal') . ' is below the minimum for this asset.');
         }
         $fee = (int) $asset['withdrawal_fee_minor'];
         $total = $amountMinor + $fee;
         if ($this->ledger->accountBalance($account['id']) < $total) {
-            throw new \RuntimeException('Insufficient available balance for this withdrawal and its fee.');
+            throw new \RuntimeException('Insufficient available balance for this request and its fee.');
         }
-        $entryId = $this->ledger->createEntry('withdrawal', 'Withdrawal request', $userId, $this->idempotencyKey('withdrawal', $userId, $idempotencyToken));
-        $existing = $this->database->fetchOne('SELECT * FROM withdrawal_requests WHERE journal_entry_id = ?', [$entryId]);
-        if ($existing) {
-            return $existing;
-        }
+        $label = $kind === 'bank_transfer' ? 'Bank transfer' : 'Withdrawal';
+        $entryId = $this->ledger->createEntry('withdrawal', $label . ' request', $userId, $idempotencyKey);
         $withdrawalId = Security::uuid();
         $holdId = Security::uuid();
         $transactionId = Security::uuid();
         $encrypted = Security::encrypt($destination, (string) Config::instance()->get('app_key', ''));
         $summary = $this->destinationSummary($destination);
-        $this->database->transaction(function (Database $db) use ($userId, $account, $amountMinor, $fee, $total, $withdrawalId, $holdId, $transactionId, $entryId, $encrypted, $summary, $asset): void {
+        $remark = mb_substr(trim($remark), 0, 500);
+        $this->database->transaction(function (Database $db) use ($userId, $account, $amountMinor, $fee, $total, $withdrawalId, $holdId, $transactionId, $entryId, $encrypted, $summary, $asset, $kind, $label, $remark): void {
             $db->execute(
                 'INSERT INTO transactions (id, user_id, account_id, journal_entry_id, public_reference, transaction_type, direction, amount_minor, fee_minor, status, description, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                [$transactionId, $userId, $account['id'], $entryId, Security::reference('WDR'), 'withdrawal', 'debit', $amountMinor, $fee, 'pending', 'Withdrawal awaiting completion', '{}']
+                [$transactionId, $userId, $account['id'], $entryId, Security::reference($kind === 'bank_transfer' ? 'BTF' : 'WDR'), 'withdrawal', 'debit', $amountMinor, $fee, 'pending', $label . ' awaiting settlement', json_encode(['request_kind' => $kind, 'user_remark' => $remark ?: null], JSON_THROW_ON_ERROR)]
             );
             $db->execute('INSERT INTO holds (id, account_id, source_type, source_id, amount_minor) VALUES (?, ?, ?, ?, ?)', [$holdId, $account['id'], 'withdrawal', $withdrawalId, $total]);
             $db->execute(
-                'INSERT INTO withdrawal_requests (id, user_id, account_id, transaction_id, hold_id, withdrawal_type, amount_minor, fee_minor, destination_ciphertext, destination_summary, status, journal_entry_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                [$withdrawalId, $userId, $account['id'], $transactionId, $holdId, (string) $asset['asset_type'] === 'crypto' ? 'crypto' : 'fiat', $amountMinor, $fee, $encrypted, $summary, 'pending', $entryId]
+                'INSERT INTO withdrawal_requests (id, user_id, account_id, transaction_id, hold_id, withdrawal_type, request_kind, amount_minor, fee_minor, destination_ciphertext, destination_summary, user_remark, status, journal_entry_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                [$withdrawalId, $userId, $account['id'], $transactionId, $holdId, (string) $asset['asset_type'] === 'crypto' ? 'crypto' : 'fiat', $kind, $amountMinor, $fee, $encrypted, $summary, $remark ?: null, 'pending', $entryId]
             );
         });
         return $this->database->fetchOne('SELECT * FROM withdrawal_requests WHERE id = ?', [$withdrawalId]);
     }
 
-    public function approveWithdrawal(string $withdrawalId, string $adminId, bool $approve, string $reason, ?string $externalReference): void
+    public function approveWithdrawal(string $withdrawalId, string $adminId, bool $approve, string $remark, ?string $externalReference): void
     {
         $this->assertNotImpersonating('Withdrawal decisions');
         $request = $this->database->fetchOne('SELECT * FROM withdrawal_requests WHERE id = ?', [$withdrawalId]);
@@ -159,7 +224,8 @@ final class BankingService
             throw new \RuntimeException('This withdrawal is no longer actionable.');
         }
         $account = $this->database->fetchOne('SELECT * FROM accounts WHERE id = ?', [(string) $request['account_id']]);
-        $this->database->transaction(function (Database $db) use ($request, $account, $adminId, $approve, $reason, $externalReference): void {
+        $remark = mb_substr(trim($remark), 0, 500);
+        $this->database->transaction(function (Database $db) use ($request, $account, $adminId, $approve, $remark, $externalReference): void {
             if ($approve) {
                 $amount = (int) $request['amount_minor'];
                 $fee = (int) $request['fee_minor'];
@@ -176,12 +242,12 @@ final class BankingService
                 }
                 $db->execute("UPDATE holds SET status = 'captured', released_at = ? WHERE id = ?", [$this->now(), (string) $request['hold_id']]);
                 $db->execute("UPDATE transactions SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?", [$this->now(), $this->now(), (string) $request['transaction_id']]);
-                $db->execute("UPDATE withdrawal_requests SET status = 'completed', reviewed_by = ?, reviewed_at = ?, review_reason = ?, external_reference = ?, updated_at = ? WHERE id = ?", [$adminId, $this->now(), $reason, $externalReference ?: null, $this->now(), (string) $request['id']]);
+                $db->execute("UPDATE withdrawal_requests SET status = 'completed', reviewed_by = ?, reviewed_at = ?, review_reason = ?, external_reference = ?, updated_at = ? WHERE id = ?", [$adminId, $this->now(), $remark ?: null, $externalReference ?: null, $this->now(), (string) $request['id']]);
                 return;
             }
             $db->execute("UPDATE holds SET status = 'released', released_at = ? WHERE id = ?", [$this->now(), (string) $request['hold_id']]);
             $db->execute("UPDATE transactions SET status = 'failed', updated_at = ? WHERE id = ?", [$this->now(), (string) $request['transaction_id']]);
-            $db->execute("UPDATE withdrawal_requests SET status = 'rejected', reviewed_by = ?, reviewed_at = ?, review_reason = ?, updated_at = ? WHERE id = ?", [$adminId, $this->now(), $reason, $this->now(), (string) $request['id']]);
+            $db->execute("UPDATE withdrawal_requests SET status = 'rejected', reviewed_by = ?, reviewed_at = ?, review_reason = ?, updated_at = ? WHERE id = ?", [$adminId, $this->now(), $remark ?: null, $this->now(), (string) $request['id']]);
         });
     }
 
@@ -286,7 +352,7 @@ final class BankingService
 
     public function history(string $userId, ?string $accountId = null, int $limit = 100): array
     {
-        $sql = 'SELECT t.*, a.account_number, aset.code AS asset_code, aset.symbol AS asset_symbol, aset.scale AS asset_scale FROM transactions t JOIN accounts a ON a.id = t.account_id JOIN assets aset ON aset.id = a.asset_id WHERE t.user_id = ?';
+        $sql = 'SELECT t.*, a.account_number, aset.id AS asset_id, aset.code AS asset_code, aset.symbol AS asset_symbol, aset.scale AS asset_scale, aset.asset_type, aset.usd_provider_reference FROM transactions t JOIN accounts a ON a.id = t.account_id JOIN assets aset ON aset.id = a.asset_id WHERE t.user_id = ?';
         $params = [$userId];
         if ($accountId !== null) {
             $sql .= ' AND t.account_id = ?';
@@ -300,7 +366,7 @@ final class BankingService
     public function receipt(string $transactionId, string $userId): array
     {
         $row = $this->database->fetchOne(
-            'SELECT t.*, a.account_number, aset.code AS asset_code, aset.symbol AS asset_symbol, aset.scale AS asset_scale FROM transactions t JOIN accounts a ON a.id = t.account_id JOIN assets aset ON aset.id = a.asset_id WHERE t.id = ? AND t.user_id = ?',
+            'SELECT t.*, a.account_number, aset.id AS asset_id, aset.code AS asset_code, aset.symbol AS asset_symbol, aset.scale AS asset_scale, aset.asset_type, aset.usd_provider_reference FROM transactions t JOIN accounts a ON a.id = t.account_id JOIN assets aset ON aset.id = a.asset_id WHERE t.id = ? AND t.user_id = ?',
             [$transactionId, $userId]
         );
         if (!$row) {
@@ -382,10 +448,10 @@ final class BankingService
     private function destinationSummary(array $destination): string
     {
         $parts = [];
-        foreach (['bank_name', 'account_name', 'account_number', 'network', 'address', 'memo'] as $field) {
+        foreach (['country_code', 'beneficiary_name', 'bank_name', 'account_name', 'iban', 'account_number', 'routing_code', 'swift_bic', 'network', 'address', 'memo'] as $field) {
             if (!empty($destination[$field])) {
                 $value = (string) $destination[$field];
-                $parts[] = $field . ':' . (in_array($field, ['account_number', 'address'], true) ? '…' . substr($value, -4) : mb_substr($value, 0, 30));
+                $parts[] = $field . ':' . (in_array($field, ['iban', 'account_number', 'address'], true) ? '…' . substr($value, -4) : mb_substr($value, 0, 30));
             }
         }
         return mb_substr(implode('; ', $parts), 0, 200);

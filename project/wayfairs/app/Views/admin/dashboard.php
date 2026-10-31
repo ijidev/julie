@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 $depositCount = (int) $stats['deposits'];
 $withdrawalCount = (int) $stats['withdrawals'];
+$bankTransferCount = (int) $stats['bank_transfers'];
 $reviewCount = (int) $stats['kyc_review'];
 $restrictionCount = (int) ($stats['restrictions'] ?? 0);
 ?>
@@ -21,6 +22,7 @@ $restrictionCount = (int) ($stats['restrictions'] ?? 0);
   <a class="metric-card <?= $reviewCount > 0 ? 'warn' : '' ?>" href="<?= e(wayfairs_url('/admin/users')) ?>"><span class="metric-icon"><?= wayfairs_icon('verification') ?></span><span class="metric-copy"><strong class="metric-value"><?= $reviewCount ?></strong><span class="metric-label">Verification reviews</span></span></a>
   <a class="metric-card <?= $depositCount > 0 ? 'warn' : '' ?>" href="<?= e(wayfairs_url('/admin/deposits')) ?>"><span class="metric-icon"><?= wayfairs_icon('deposit') ?></span><span class="metric-copy"><strong class="metric-value"><?= $depositCount ?></strong><span class="metric-label">Pending deposits</span></span></a>
   <a class="metric-card <?= $withdrawalCount > 0 ? 'warn' : '' ?>" href="<?= e(wayfairs_url('/admin/withdrawals')) ?>"><span class="metric-icon"><?= wayfairs_icon('withdraw') ?></span><span class="metric-copy"><strong class="metric-value"><?= $withdrawalCount ?></strong><span class="metric-label">Open withdrawals</span></span></a>
+  <a class="metric-card <?= $bankTransferCount > 0 ? 'warn' : '' ?>" href="<?= e(wayfairs_url('/admin/bank-transfers')) ?>"><span class="metric-icon"><?= wayfairs_icon('transfer') ?></span><span class="metric-copy"><strong class="metric-value"><?= $bankTransferCount ?></strong><span class="metric-label">Bank transfers</span></span></a>
 </section>
 
 <nav class="quick-grid" aria-label="Administration shortcuts">
@@ -30,7 +32,7 @@ $restrictionCount = (int) ($stats['restrictions'] ?? 0);
   <a class="quick-action" href="<?= e(wayfairs_url('/admin/audit')) ?>"><span class="icon-wrap"><?= wayfairs_icon('audit') ?></span><span>Audit trail</span></a>
 </nav>
 
-<section class="content-grid equal">
+<section class="ops-queue-grid">
   <article class="card static">
     <div class="panel-head"><div><h2>Deposit queue</h2><p>Confirm observed receipt before crediting.</p></div><a class="btn small ghost" href="<?= e(wayfairs_url('/admin/deposits')) ?>">Open queue</a></div>
     <?php if ($pendingDeposits === []): ?>
@@ -50,6 +52,16 @@ $restrictionCount = (int) ($stats['restrictions'] ?? 0);
       <?php if ($withdrawalCount > count($pendingWithdrawals)): ?><p class="field-hint">Showing the oldest <?= count($pendingWithdrawals) ?> of <?= $withdrawalCount ?> requests.</p><?php endif; ?>
     <?php endif; ?>
   </article>
+
+  <article class="card static">
+    <div class="panel-head"><div><h2>Bank transfer queue</h2><p>Record manual beneficiary settlement.</p></div><a class="btn small ghost" href="<?= e(wayfairs_url('/admin/bank-transfers')) ?>">Open queue</a></div>
+    <?php if ($pendingBankTransfers === []): ?>
+      <div class="status-check"><span class="status-check-icon"><?= wayfairs_icon('check') ?></span><span class="status-check-copy"><strong>Queue clear</strong><span>No beneficiary transfers are waiting.</span></span></div>
+    <?php else: ?>
+      <div class="queue-list"><?php foreach ($pendingBankTransfers as $transfer): $rate = $usdRates[$transfer['asset_code']] ?? null; ?><a class="queue-item" href="<?= e(wayfairs_url('/admin/bank-transfers')) ?>"><span class="record-avatar"><?= e(mb_strtoupper(mb_substr((string) $transfer['first_name'], 0, 1) . mb_substr((string) $transfer['last_name'], 0, 1))) ?></span><span class="queue-main"><strong><?= e(trim((string) $transfer['first_name'] . ' ' . (string) $transfer['last_name'])) ?></strong><span><?= e((string) $transfer['destination_summary']) ?></span></span><span class="queue-amount"><?= e(wayfairs_usd_equivalent((int) $transfer['amount_minor'], (int) $transfer['asset_scale'], $rate)) ?></span></a><?php endforeach; ?></div>
+      <?php if ($bankTransferCount > count($pendingBankTransfers)): ?><p class="field-hint">Showing the oldest <?= count($pendingBankTransfers) ?> of <?= $bankTransferCount ?> requests.</p><?php endif; ?>
+    <?php endif; ?>
+  </article>
 </section>
 
 <section class="content-grid">
@@ -65,7 +77,7 @@ $restrictionCount = (int) ($stats['restrictions'] ?? 0);
   <aside class="card static surface-muted">
     <div class="panel-head"><div><h2>Decision controls</h2><p>The operating rules enforced by this console.</p></div></div>
     <div class="status-checklist">
-      <div class="status-check"><span class="status-check-icon"><?= wayfairs_icon('deposit') ?></span><span class="status-check-copy"><strong>Deposits</strong><span>Credit only after observed receipt and a recorded reason.</span></span></div>
+      <div class="status-check"><span class="status-check-icon"><?= wayfairs_icon('deposit') ?></span><span class="status-check-copy"><strong>Deposits</strong><span>Credit only after observed receipt; remarks remain optional.</span></span></div>
       <div class="status-check"><span class="status-check-icon"><?= wayfairs_icon('withdraw') ?></span><span class="status-check-copy"><strong>Withdrawals</strong><span>Mark sent only after the external payout is complete.</span></span></div>
       <div class="status-check"><span class="status-check-icon"><?= wayfairs_icon('audit') ?></span><span class="status-check-copy"><strong>Audit trail</strong><span>Every administrative decision is persisted.</span></span></div>
       <div class="status-check"><span class="status-check-icon"><?= wayfairs_icon('security') ?></span><span class="status-check-copy"><strong>Support access</strong><span>Impersonation is visible, limited, and mutation-blocked.</span></span></div>

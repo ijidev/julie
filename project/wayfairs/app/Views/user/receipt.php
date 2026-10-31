@@ -8,7 +8,11 @@ $name = (string) ($site['site.name'] ?? 'Wayfairs');
 $amount = wayfairs_amount((int) $r['amount_minor'], (int) $r['asset_scale'], (string) $r['asset_symbol'], (string) $r['asset_code']);
 $fee = (int) $r['fee_minor'] > 0 ? wayfairs_amount((int) $r['fee_minor'], (int) $r['asset_scale'], (string) $r['asset_symbol'], (string) $r['asset_code']) : null;
 $credit = (string) $r['direction'] === 'credit';
-$typeLabel = ucwords(str_replace('_', ' ', (string) $r['transaction_type']));
+$metadata = json_decode((string) ($r['metadata'] ?? '{}'), true);
+$typeLabel = is_array($metadata) && ($metadata['request_kind'] ?? null) === 'bank_transfer'
+    ? 'Bank Transfer'
+    : ucwords(str_replace('_', ' ', (string) $r['transaction_type']));
+$rate = $usdRates[$r['asset_code']] ?? null;
 ?>
 <div class="receipt-page">
   <header class="page-header">
@@ -22,7 +26,7 @@ $typeLabel = ucwords(str_replace('_', ' ', (string) $r['transaction_type']));
         <div class="receipt-brand"><span class="mark"><?= e(mb_substr($name, 0, 1)) ?></span><span><strong><?= e($name) ?></strong><small>Transaction receipt</small></span></div>
         <?= wayfairs_pill((string) $r['status']) ?>
       </div>
-      <div class="receipt-amount"><small><?= e($credit ? 'Amount received' : 'Amount sent') ?></small><strong><?= e(($credit ? '+' : '−') . $amount) ?></strong><span><?= e($typeLabel) ?> · <?= e(wayfairs_datetime((string) $r['created_at'])) ?></span></div>
+      <div class="receipt-amount"><small><?= e($credit ? 'Amount received' : 'Amount sent') ?></small><strong><?= e(($credit ? '+' : '−') . $amount) ?></strong><span>≈ <?= e(wayfairs_usd_equivalent((int) $r['amount_minor'], (int) $r['asset_scale'], $rate)) ?> · <?= e($typeLabel) ?></span></div>
     </div>
     <div class="receipt-body">
       <div class="receipt-status">
@@ -34,13 +38,14 @@ $typeLabel = ucwords(str_replace('_', ' ', (string) $r['transaction_type']));
         <div class="receipt-detail"><span>Transaction type</span><strong><?= e($typeLabel) ?></strong></div>
         <div class="receipt-detail"><span>Direction</span><strong><?= e(ucfirst((string) $r['direction'])) ?></strong></div>
         <div class="receipt-detail"><span>Currency</span><strong><?= e((string) $r['asset_code']) ?></strong></div>
+        <div class="receipt-detail"><span>USD equivalent</span><strong><?= e(wayfairs_usd_equivalent((int) $r['amount_minor'], (int) $r['asset_scale'], $rate)) ?></strong></div>
         <div class="receipt-detail"><span>Account</span><strong class="mono"><?= e((string) $r['account_number']) ?></strong></div>
         <?php if ($fee !== null): ?><div class="receipt-detail"><span>Fee</span><strong><?= e($fee) ?></strong></div><?php endif; ?>
         <?php if (!empty($r['counterparty_label'])): ?><div class="receipt-detail"><span>Counterparty</span><strong><?= e((string) $r['counterparty_label']) ?></strong></div><?php endif; ?>
         <div class="receipt-detail"><span>Created</span><strong><?= e(wayfairs_datetime((string) $r['created_at'])) ?></strong></div>
         <div class="receipt-detail"><span>Completed</span><strong><?= e(wayfairs_datetime($r['completed_at'] ?? null)) ?></strong></div>
       </div>
-      <div class="receipt-footnote"><?= wayfairs_icon('info') ?><span>Status and completion time are shown exactly as currently stored. A pending or failed record is not presented as settled.</span></div>
+      <div class="receipt-footnote"><?= wayfairs_icon('info') ?><span>Status and completion time are shown exactly as stored. USD equivalent uses <?= e(wayfairs_rate_disclosure($rate)) ?> and is not a separate ledger balance.</span></div>
     </div>
   </article>
 </div>

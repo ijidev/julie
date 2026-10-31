@@ -81,6 +81,7 @@ $footerMode = 'compact';
         <span><small>Personal banking</small><strong><?= e($currentLabel) ?></strong></span>
       </div>
       <div class="topbar-actions">
+        <?php require WAYFAIRS_ROOT . '/app/Views/partials/translator.php'; ?>
         <span class="topbar-date"><?= e(gmdate('D, M j')) ?> · UTC</span>
         <div class="topbar-profile"><span class="avatar"><?= e($initials ?: 'U') ?></span><span><strong><?= e($fullName ?: 'Account owner') ?></strong><small><?= e((string) ($user['email'] ?? '')) ?></small></span></div>
       </div>
@@ -96,6 +97,7 @@ $footerMode = 'compact';
               <a class="side-link<?= wayfairs_nav_active($link['path']) ? ' active' : '' ?>" href="<?= e(wayfairs_url($link['path'])) ?>"><?= wayfairs_icon($link['icon']) ?><span><?= e($link['label']) ?></span></a>
             <?php endforeach; ?>
           </nav>
+          <?php require WAYFAIRS_ROOT . '/app/Views/partials/translator.php'; ?>
           <form method="post" action="<?= e(wayfairs_url('/logout')) ?>"><input type="hidden" name="_token" value="<?= e(wayfairs_csrf()) ?>" /><button class="btn ghost full" type="submit">Sign out</button></form>
         </div>
       </details>

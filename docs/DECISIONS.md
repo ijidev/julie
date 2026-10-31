@@ -407,3 +407,17 @@ The capability gaps Julie identified are seeded as `feature_ideas` rows
 converted into tasks, and deleted like owner ideas instead of being decorative
 static text. Agents will post future ideas through the same store with source
 `agent`; the page renders only what the store contains.
+
+## D-039 — Wayfairs bank transfers and USD valuation preserve ledger truth
+Date: 2026-10-31
+Wayfairs external bank transfers reuse its withdrawal reservation and
+double-entry settlement path with a distinct request kind; there is no second
+balance implementation. Full beneficiary banking details stay encrypted and
+browser queues receive only safe summaries. USD equivalents come from persisted
+live Frankfurter/CoinGecko observations and integer decimal conversion, are
+labelled with source/freshness, and never replace original ledger currency.
+Customer removal is a reversible closed status rather than deletion because
+users, transactions, postings, receipts, and audit events are financial
+evidence. Likewise, support impersonation keeps password reauthentication,
+reason, dual identity, expiry, and mutation blocks even when a less restricted
+workflow is requested.

@@ -105,17 +105,17 @@ final class Installer
     private function seedAssets(Database $database, array $input): void
     {
         $assets = [
-            ['NGN', 'Nigerian Naira', 'fiat', '₦', 2, 100000, 100000, 0, 0],
-            ['USD', 'US Dollar', 'fiat', '$', 2, 1000, 1000, 0, 0],
-            ['BTC', 'Bitcoin', 'crypto', '₿', 8, 100000, 100000, 0, 0],
-            ['ETH', 'Ethereum', 'crypto', 'Ξ', 18, 1000000000000000, 1000000000000000, 0, 0],
+            ['NGN', 'Nigerian Naira', 'fiat', '₦', 2, 100000, 100000, 0, 0, null],
+            ['USD', 'US Dollar', 'fiat', '$', 2, 1000, 1000, 0, 0, null],
+            ['BTC', 'Bitcoin', 'crypto', '₿', 8, 100000, 100000, 0, 0, 'bitcoin'],
+            ['ETH', 'Ethereum', 'crypto', 'Ξ', 18, 1000000000000000, 1000000000000000, 0, 0, 'ethereum'],
         ];
-        foreach ($assets as [$code, $name, $type, $symbol, $scale, $minDeposit, $minWithdrawal, $withdrawalFee, $transferFee]) {
+        foreach ($assets as [$code, $name, $type, $symbol, $scale, $minDeposit, $minWithdrawal, $withdrawalFee, $transferFee, $providerReference]) {
             $assetId = Security::uuid();
             $systemLedgerId = Security::uuid();
             $database->execute(
-                'INSERT INTO assets (id, code, name, asset_type, symbol, scale, min_deposit_minor, min_withdrawal_minor, withdrawal_fee_minor, transfer_fee_minor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                [$assetId, $code, $name, $type, $symbol, $scale, $minDeposit, $minWithdrawal, $withdrawalFee, $transferFee]
+                'INSERT INTO assets (id, code, name, asset_type, symbol, scale, min_deposit_minor, min_withdrawal_minor, withdrawal_fee_minor, transfer_fee_minor, usd_provider_reference) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                [$assetId, $code, $name, $type, $symbol, $scale, $minDeposit, $minWithdrawal, $withdrawalFee, $transferFee, $providerReference]
             );
             $database->execute(
                 'INSERT INTO ledger_accounts (id, asset_id, owner_type, owner_id, code, name, account_class, normal_side) VALUES (?, ?, ?, NULL, ?, ?, ?, ?)',

@@ -18,6 +18,7 @@ use Wayfairs\Services\KycService;
 use Wayfairs\Services\LedgerService;
 use Wayfairs\Services\Restrictions;
 use Wayfairs\Services\SiteSettings;
+use Wayfairs\Services\UsdRateService;
 
 return function (Router $router, Database $database): void {
     $auth = new AuthService($database);
@@ -27,6 +28,7 @@ return function (Router $router, Database $database): void {
     $kyc = new KycService($database);
     $restrictions = new Restrictions($database);
     $audit = new Audit($database);
+    $rates = new UsdRateService($database);
 
     $page = static fn (string $view, array $data = []) => View::render($view, $data, 'layouts/app');
     $admin = static fn (string $view, array $data = []) => View::render($view, $data, 'layouts/admin');
@@ -105,17 +107,19 @@ return function (Router $router, Database $database): void {
     }, 'auth', true);
 
     // ---- customer dashboard ----
-    $router->get('/dashboard', static function () use ($page, $banking, $ledger, $database, $accountRows, $me, $restrictions, $kyc): void {
+    $router->get('/dashboard', static function () use ($page, $banking, $ledger, $database, $accountRows, $me, $restrictions, $kyc, $rates): void {
         $user = $me();
+        $accounts = $accountRows($banking, $ledger, $database, (string) $user['id']);
         $page('user/dashboard', [
-            'accounts' => $accountRows($banking, $ledger, $database, (string) $user['id']),
+            'accounts' => $accounts,
             'history' => $banking->history((string) $user['id'], null, 12),
             'restrictions' => $restrictions->active((string) $user['id']),
             'kyc' => $kyc->profile((string) $user['id']),
+            'usdRates' => $rates->ratesForAssets($database->fetchAll('SELECT id, code, asset_type, usd_provider_reference FROM assets ORDER BY code')),
         ]);
     }, 'auth');
 
-    $router->get('/accounts/{code}', static function (Request $request) use ($page, $banking, $ledger, $database, $me): void {
+    $router->get('/accounts/{code}', static function (Request $request) use ($page, $banking, $ledger, $database, $me, $rates): void {
         $user = $me();
         $account = $banking->accountFor((string) $user['id'], (string) $request->route('code'));
         $account['available_minor'] = $ledger->accountBalance((string) $account['id']);
@@ -127,76 +131,106 @@ return function (Router $router, Database $database): void {
         $page('user/account', [
             'account' => $account,
             'history' => $banking->history((string) $user['id'], (string) $account['id'], 100),
+            'usdRates' => $rates->ratesForAssets([$account['asset']]),
         ]);
     }, 'auth');
 
-    $router->get('/transactions', static function () use ($page, $banking, $ledger, $database, $accountRows, $me): void {
+    $router->get('/transactions', static function () use ($page, $banking, $ledger, $database, $accountRows, $me, $rates): void {
         $user = $me();
+        $accounts = $accountRows($banking, $ledger, $database, (string) $user['id']);
         $page('user/transactions', [
-            'accounts' => $accountRows($banking, $ledger, $database, (string) $user['id']),
+            'accounts' => $accounts,
             'history' => $banking->history((string) $user['id'], null, 200),
+            'usdRates' => $rates->ratesForAssets($database->fetchAll('SELECT id, code, asset_type, usd_provider_reference FROM assets ORDER BY code')),
         ]);
     }, 'auth');
 
-    $router->get('/receipts/{id}', static function (Request $request) use ($page, $banking, $me): void {
-        $page('user/receipt', ['receipt' => $banking->receipt((string) $request->route('id'), (string) $me()['id'])]);
+    $router->get('/receipts/{id}', static function (Request $request) use ($page, $banking, $me, $rates): void {
+        $receipt = $banking->receipt((string) $request->route('id'), (string) $me()['id']);
+        $page('user/receipt', [
+            'receipt' => $receipt,
+            'usdRates' => $rates->ratesForAssets([[
+                'id' => $receipt['asset_id'], 'code' => $receipt['asset_code'], 'asset_type' => $receipt['asset_type'], 'usd_provider_reference' => $receipt['usd_provider_reference'],
+            ]]),
+        ]);
     }, 'auth');
 
-    $router->get('/deposit', static function () use ($page, $banking, $ledger, $accountRows, $me, $database, $kyc): void {
+    $router->get('/deposit', static function () use ($page, $banking, $ledger, $accountRows, $me, $database, $kyc, $rates): void {
         $user = $me();
+        $accounts = $accountRows($banking, $ledger, $database, (string) $user['id']);
         $page('user/deposit', [
-            'accounts' => $accountRows($banking, $ledger, $database, (string) $user['id']),
+            'accounts' => $accounts,
             'deposits' => $database->fetchAll('SELECT d.*, a.account_number, s.code AS asset_code, s.scale AS asset_scale, s.symbol AS asset_symbol FROM deposit_requests d JOIN accounts a ON a.id = d.account_id JOIN assets s ON s.id = a.asset_id WHERE d.user_id = ? ORDER BY d.created_at DESC LIMIT 50', [(string) $user['id']]),
             'kyc' => $kyc->profile((string) $user['id']),
+            'usdRates' => $rates->ratesForAssets(array_column($accounts, 'asset')),
         ]);
     }, 'auth');
 
     $router->post('/deposit', static function (Request $request) use ($banking, $attempt): never {
         $user = Context::user() ?? [];
-        $attempt(static fn () => $banking->submitDeposit((string) $user['id'], (string) $request->post('asset_code', ''), (string) $request->post('amount', ''), (string) $request->post('sender_reference', ''), (string) $request->post('idem', '')), 'Deposit submitted for verification.', '/deposit');
+        $attempt(static fn () => $banking->submitDeposit((string) $user['id'], (string) $request->post('asset_code', ''), (string) $request->post('amount', ''), (string) $request->post('remark', ''), (string) $request->post('idem', '')), 'Deposit submitted for verification.', '/deposit');
     }, 'auth', true);
 
-    $router->get('/withdraw', static function () use ($page, $banking, $ledger, $accountRows, $me, $database, $kyc): void {
+    $router->get('/withdraw', static function () use ($page, $banking, $ledger, $accountRows, $me, $database, $kyc, $rates): void {
         $user = $me();
+        $accounts = $accountRows($banking, $ledger, $database, (string) $user['id']);
         $page('user/withdraw', [
-            'accounts' => $accountRows($banking, $ledger, $database, (string) $user['id']),
-            'withdrawals' => $database->fetchAll('SELECT w.*, a.account_number, s.code AS asset_code, s.scale AS asset_scale, s.symbol AS asset_symbol FROM withdrawal_requests w JOIN accounts a ON a.id = w.account_id JOIN assets s ON s.id = a.asset_id WHERE w.user_id = ? ORDER BY w.created_at DESC LIMIT 50', [(string) $user['id']]),
+            'accounts' => $accounts,
+            'withdrawals' => $database->fetchAll("SELECT w.*, a.account_number, s.code AS asset_code, s.scale AS asset_scale, s.symbol AS asset_symbol FROM withdrawal_requests w JOIN accounts a ON a.id = w.account_id JOIN assets s ON s.id = a.asset_id WHERE w.user_id = ? AND w.request_kind = 'withdrawal' ORDER BY w.created_at DESC LIMIT 50", [(string) $user['id']]),
             'kyc' => $kyc->profile((string) $user['id']),
+            'usdRates' => $rates->ratesForAssets(array_column($accounts, 'asset')),
         ]);
     }, 'auth');
 
     $router->post('/withdraw', static function (Request $request) use ($banking, $attempt): never {
         $user = Context::user() ?? [];
         $destination = $request->allPost();
-        foreach (['_token', 'asset_code', 'amount', 'idem'] as $reserved) {
+        foreach (['_token', 'asset_code', 'amount', 'idem', 'remark'] as $reserved) {
             unset($destination[$reserved]);
         }
         $destination = array_filter(array_map(static fn ($value) => is_string($value) ? trim($value) : '', $destination), static fn ($value) => $value !== '');
-        $attempt(static fn () => $banking->submitWithdrawal((string) $user['id'], (string) $request->post('asset_code', ''), (string) $request->post('amount', ''), $destination, (string) $request->post('idem', '')), 'Withdrawal submitted. The amount is reserved until it is processed.', '/withdraw');
+        $attempt(static fn () => $banking->submitWithdrawal((string) $user['id'], (string) $request->post('asset_code', ''), (string) $request->post('amount', ''), $destination, (string) $request->post('idem', ''), (string) $request->post('remark', '')), 'Withdrawal submitted. The amount is reserved until it is processed.', '/withdraw');
     }, 'auth', true);
 
-    $router->get('/transfer', static function () use ($page, $banking, $ledger, $accountRows, $me, $database, $kyc): void {
+    $router->get('/transfer', static function () use ($page, $banking, $ledger, $accountRows, $me, $database, $kyc, $rates): void {
         $user = $me();
+        $accounts = $accountRows($banking, $ledger, $database, (string) $user['id']);
         $page('user/transfer', [
-            'accounts' => $accountRows($banking, $ledger, $database, (string) $user['id']),
-            'transfers' => $database->fetchAll('SELECT t.*, s.code AS asset_code, s.scale AS asset_scale, s.symbol AS asset_symbol, su.email AS sender_email, ru.email AS recipient_email FROM transfers t JOIN assets s ON s.id = t.asset_id JOIN users su ON su.id = t.sender_user_id JOIN users ru ON ru.id = t.recipient_user_id WHERE t.sender_user_id = ? OR t.recipient_user_id = ? ORDER BY t.created_at DESC LIMIT 50', [(string) $user['id'], (string) $user['id']]),
+            'accounts' => $accounts,
+            'bankTransfers' => $database->fetchAll("SELECT w.*, a.account_number, s.code AS asset_code, s.scale AS asset_scale, s.symbol AS asset_symbol FROM withdrawal_requests w JOIN accounts a ON a.id = w.account_id JOIN assets s ON s.id = a.asset_id WHERE w.user_id = ? AND w.request_kind = 'bank_transfer' ORDER BY w.created_at DESC LIMIT 50", [(string) $user['id']]),
+            'internalTransfers' => $database->fetchAll('SELECT t.*, s.code AS asset_code, s.scale AS asset_scale, s.symbol AS asset_symbol, su.email AS sender_email, ru.email AS recipient_email FROM transfers t JOIN assets s ON s.id = t.asset_id JOIN users su ON su.id = t.sender_user_id JOIN users ru ON ru.id = t.recipient_user_id WHERE t.sender_user_id = ? OR t.recipient_user_id = ? ORDER BY t.created_at DESC LIMIT 50', [(string) $user['id'], (string) $user['id']]),
             'me' => (string) $user['id'],
             'kyc' => $kyc->profile((string) $user['id']),
+            'usdRates' => $rates->ratesForAssets(array_column($accounts, 'asset')),
         ]);
     }, 'auth');
 
     $router->post('/transfer', static function (Request $request) use ($banking, $attempt): never {
         $user = Context::user() ?? [];
-        $attempt(static fn () => $banking->internalTransfer((string) $user['id'], (string) $request->post('recipient_email', ''), (string) $request->post('asset_code', ''), (string) $request->post('amount', ''), (string) $request->post('note', ''), (string) $request->post('idem', '')), 'Transfer completed.', '/transfer');
+        $destination = [];
+        foreach (['country_code', 'beneficiary_name', 'beneficiary_address', 'bank_name', 'bank_address', 'iban', 'account_number', 'routing_code', 'swift_bic'] as $field) {
+            $value = trim((string) $request->post($field, ''));
+            if ($value !== '') {
+                $destination[$field] = $value;
+            }
+        }
+        $attempt(static fn () => $banking->submitBankTransfer((string) $user['id'], (string) $request->post('asset_code', 'USD'), (string) $request->post('amount', ''), $destination, (string) $request->post('idem', ''), (string) $request->post('remark', '')), 'Bank transfer submitted. Funds are reserved while operations settles it.', '/transfer');
     }, 'auth', true);
 
-    $router->get('/invoices', static function () use ($page, $banking, $ledger, $accountRows, $me, $database, $kyc): void {
+    $router->post('/transfer/internal', static function (Request $request) use ($banking, $attempt): never {
+        $user = Context::user() ?? [];
+        $attempt(static fn () => $banking->internalTransfer((string) $user['id'], (string) $request->post('recipient_email', ''), (string) $request->post('asset_code', ''), (string) $request->post('amount', ''), (string) $request->post('remark', ''), (string) $request->post('idem', '')), 'Internal transfer completed.', '/transfer');
+    }, 'auth', true);
+
+    $router->get('/invoices', static function () use ($page, $banking, $ledger, $accountRows, $me, $database, $kyc, $rates): void {
         $user = $me();
+        $accounts = $accountRows($banking, $ledger, $database, (string) $user['id']);
         $page('user/invoices', [
-            'accounts' => $accountRows($banking, $ledger, $database, (string) $user['id']),
+            'accounts' => $accounts,
             'issued' => $database->fetchAll('SELECT i.*, s.code AS asset_code, s.scale AS asset_scale, s.symbol AS asset_symbol FROM invoices i JOIN assets s ON s.id = i.asset_id WHERE i.issuer_user_id = ? ORDER BY i.created_at DESC LIMIT 50', [(string) $user['id']]),
             'paid' => $database->fetchAll('SELECT i.*, s.code AS asset_code, s.scale AS asset_scale, s.symbol AS asset_symbol FROM invoices i JOIN assets s ON s.id = i.asset_id WHERE i.paid_by_user_id = ? ORDER BY i.paid_at DESC LIMIT 50', [(string) $user['id']]),
             'kyc' => $kyc->profile((string) $user['id']),
+            'usdRates' => $rates->ratesForAssets(array_column($accounts, 'asset')),
         ]);
     }, 'auth');
 
@@ -228,14 +262,16 @@ return function (Router $router, Database $database): void {
     }, 'auth');
 
     // ---- administrator ----
-    $router->get('/admin', static function () use ($admin, $database): void {
+    $router->get('/admin', static function () use ($admin, $database, $rates): void {
         $count = static fn (string $sql, array $params = []): int => (int) ($database->fetchOne($sql, $params)['total'] ?? 0);
+        $rateAssets = $database->fetchAll('SELECT id, code, asset_type, usd_provider_reference FROM assets WHERE enabled = 1 ORDER BY code');
         $admin('admin/dashboard', [
             'stats' => [
                 'customers' => $count("SELECT COUNT(*) AS total FROM users WHERE role = 'user'"),
                 'kyc_review' => $count("SELECT COUNT(*) AS total FROM kyc_profiles WHERE status IN ('pending','in_review','needs_resubmission')"),
                 'deposits' => $count("SELECT COUNT(*) AS total FROM deposit_requests WHERE status = 'pending'"),
-                'withdrawals' => $count("SELECT COUNT(*) AS total FROM withdrawal_requests WHERE status IN ('pending','approved')"),
+                'withdrawals' => $count("SELECT COUNT(*) AS total FROM withdrawal_requests WHERE request_kind = 'withdrawal' AND status IN ('pending','approved')"),
+                'bank_transfers' => $count("SELECT COUNT(*) AS total FROM withdrawal_requests WHERE request_kind = 'bank_transfer' AND status IN ('pending','approved')"),
                 'restrictions' => $count('SELECT COUNT(*) AS total FROM capability_restrictions WHERE released_at IS NULL'),
             ],
             'pendingDeposits' => $database->fetchAll(
@@ -253,7 +289,16 @@ return function (Router $router, Database $database): void {
                  JOIN accounts a ON a.id = w.account_id
                  JOIN assets s ON s.id = a.asset_id
                  JOIN users u ON u.id = w.user_id
-                 WHERE w.status IN ('pending','approved')
+                 WHERE w.request_kind = 'withdrawal' AND w.status IN ('pending','approved')
+                 ORDER BY w.created_at ASC LIMIT 5"
+            ),
+            'pendingBankTransfers' => $database->fetchAll(
+                "SELECT w.id, w.amount_minor, w.fee_minor, w.destination_summary, w.created_at, s.code AS asset_code, s.symbol AS asset_symbol, s.scale AS asset_scale, u.first_name, u.last_name, u.email
+                 FROM withdrawal_requests w
+                 JOIN accounts a ON a.id = w.account_id
+                 JOIN assets s ON s.id = a.asset_id
+                 JOIN users u ON u.id = w.user_id
+                 WHERE w.request_kind = 'bank_transfer' AND w.status IN ('pending','approved')
                  ORDER BY w.created_at ASC LIMIT 5"
             ),
             'recentCustomers' => $database->fetchAll(
@@ -261,6 +306,7 @@ return function (Router $router, Database $database): void {
                  FROM users u LEFT JOIN kyc_profiles kp ON kp.user_id = u.id
                  WHERE u.role = 'user' ORDER BY u.created_at DESC LIMIT 6"
             ),
+            'usdRates' => $rates->ratesForAssets($rateAssets),
         ]);
     }, 'admin');
 
@@ -274,13 +320,29 @@ return function (Router $router, Database $database): void {
         ]);
     }, 'admin');
 
-    $router->get('/admin/users/{id}', static function (Request $request) use ($admin, $database, $ledger, $kyc, $restrictions): void {
+    $router->get('/admin/users/new', static function () use ($admin): void {
+        $admin('admin/user-form', ['profile' => null, 'mode' => 'create']);
+    }, 'admin');
+
+    $router->post('/admin/users', static function (Request $request) use ($auth, $audit): never {
+        try {
+            $customer = $auth->createCustomerByAdmin($request->allPost());
+            $audit->record('customer.created', 'user', (string) $customer['id'], null, ['status' => $customer['status']]);
+            Flash::put('success', 'Customer account created.');
+            Response::redirect('/admin/users/' . $customer['id']);
+        } catch (RuntimeException $error) {
+            Flash::put('error', $error->getMessage());
+            Response::redirect('/admin/users/new');
+        }
+    }, 'admin', true);
+
+    $router->get('/admin/users/{id}', static function (Request $request) use ($admin, $database, $ledger, $kyc, $restrictions, $rates): void {
         $userId = (string) $request->route('id');
         $profile = $database->fetchOne('SELECT u.id, u.email, u.first_name, u.last_name, u.phone, u.status, u.role, u.created_at, u.last_login_at FROM users u WHERE u.id = ?', [$userId]);
         if ($profile === null) {
             Response::notFound();
         }
-        $accounts = $database->fetchAll('SELECT a.*, s.code, s.symbol, s.scale FROM accounts a JOIN assets s ON s.id = a.asset_id WHERE a.user_id = ? ORDER BY s.code', [$userId]);
+        $accounts = $database->fetchAll("SELECT a.*, s.id AS asset_id, s.code, s.symbol, s.scale, s.asset_type, s.usd_provider_reference FROM accounts a JOIN assets s ON s.id = a.asset_id WHERE a.user_id = ? ORDER BY CASE WHEN s.code = 'USD' THEN 0 ELSE 1 END, s.code", [$userId]);
         foreach ($accounts as &$account) {
             $account['available_minor'] = $ledger->accountBalance((string) $account['id']);
             $held = $database->fetchOne("SELECT COALESCE(SUM(amount_minor),0) AS held FROM holds WHERE account_id = ? AND status = 'active' AND (expires_at IS NULL OR expires_at > ?)", [(string) $account['id'], gmdate('Y-m-d H:i:s.u')]);
@@ -290,11 +352,41 @@ return function (Router $router, Database $database): void {
         $admin('admin/user-detail', [
             'profile' => $profile,
             'accounts' => $accounts,
-            'history' => $database->fetchAll('SELECT t.*, s.code AS asset_code, s.symbol AS asset_symbol, s.scale AS asset_scale FROM transactions t JOIN accounts a ON a.id = t.account_id JOIN assets s ON s.id = a.asset_id WHERE t.user_id = ? ORDER BY t.created_at DESC LIMIT 100', [$userId]),
+            'history' => $database->fetchAll('SELECT t.*, s.id AS asset_id, s.code AS asset_code, s.symbol AS asset_symbol, s.scale AS asset_scale, s.asset_type, s.usd_provider_reference FROM transactions t JOIN accounts a ON a.id = t.account_id JOIN assets s ON s.id = a.asset_id WHERE t.user_id = ? ORDER BY t.created_at DESC LIMIT 100', [$userId]),
             'restrictions' => $restrictions->active($userId),
             'kyc' => $kyc->profile($userId),
+            'usdRates' => $rates->ratesForAssets(array_map(static fn (array $account): array => ['id' => $account['asset_id'], 'code' => $account['code'], 'asset_type' => $account['asset_type'], 'usd_provider_reference' => $account['usd_provider_reference']], $accounts)),
         ]);
     }, 'admin');
+
+    $router->get('/admin/users/{id}/edit', static function (Request $request) use ($admin, $database): void {
+        $profile = $database->fetchOne("SELECT id, email, first_name, last_name, phone, status FROM users WHERE id = ? AND role = 'user'", [(string) $request->route('id')]);
+        if ($profile === null) {
+            Response::notFound();
+        }
+        $admin('admin/user-form', ['profile' => $profile, 'mode' => 'edit']);
+    }, 'admin');
+
+    $router->post('/admin/users/{id}/edit', static function (Request $request) use ($auth, $audit, $attempt): never {
+        $userId = (string) $request->route('id');
+        $attempt(static function () use ($auth, $audit, $request, $userId): void {
+            $before = $auth->userById($userId);
+            $updated = $auth->updateCustomerByAdmin($userId, $request->allPost());
+            $remark = trim((string) $request->post('admin_remark', ''));
+            $audit->record('customer.updated', 'user', $userId, $remark ?: null, ['status_before' => $before['status'] ?? null, 'status_after' => $updated['status']]);
+        }, 'Customer profile updated.', '/admin/users/' . $userId);
+    }, 'admin', true);
+
+    $router->post('/admin/users/{id}/accounts/{accountId}/status', static function (Request $request) use ($auth, $audit, $attempt): never {
+        $userId = (string) $request->route('id');
+        $accountId = (string) $request->route('accountId');
+        $attempt(static function () use ($auth, $audit, $request, $userId, $accountId): void {
+            $status = (string) $request->post('status', '');
+            $remark = trim((string) $request->post('admin_remark', ''));
+            $change = $auth->updateCustomerAccountStatus($userId, $accountId, $status);
+            $audit->record('account.status_updated', 'account', $accountId, $remark ?: null, $change + ['user_id' => $userId]);
+        }, 'Currency account status updated.', '/admin/users/' . $userId);
+    }, 'admin', true);
 
     $router->post('/admin/users/{id}/kyc', static function (Request $request) use ($kyc, $audit, $attempt): never {
         $userId = (string) $request->route('id');
@@ -361,9 +453,11 @@ return function (Router $router, Database $database): void {
         }
     }, 'auth', true);
 
-    $router->get('/admin/deposits', static function () use ($admin, $database): void {
+    $router->get('/admin/deposits', static function () use ($admin, $database, $rates): void {
+        $assets = $database->fetchAll('SELECT id, code, asset_type, usd_provider_reference FROM assets');
         $admin('admin/deposits', [
             'deposits' => $database->fetchAll("SELECT d.*, u.email, u.first_name, u.last_name, a.account_number, s.code AS asset_code, s.symbol AS asset_symbol, s.scale AS asset_scale FROM deposit_requests d JOIN users u ON u.id = d.user_id JOIN accounts a ON a.id = d.account_id JOIN assets s ON s.id = a.asset_id ORDER BY CASE d.status WHEN 'pending' THEN 0 ELSE 1 END, d.created_at DESC LIMIT 300"),
+            'usdRates' => $rates->ratesForAssets($assets),
         ]);
     }, 'admin');
 
@@ -371,22 +465,30 @@ return function (Router $router, Database $database): void {
         $id = (string) $request->route('id');
         $attempt(static function () use ($banking, $audit, $id, $request): void {
             $approve = $request->post('decision') === 'approve';
-            $reason = trim((string) $request->post('reason', ''));
-            if (strlen($reason) < 5) {
-                throw new RuntimeException('Record the reason for this decision.');
-            }
-            $banking->verifyDeposit($id, (string) Context::user()['id'], $approve, $reason, (string) $request->post('external_reference', ''));
-            $audit->record($approve ? 'deposit.approved' : 'deposit.rejected', 'deposit_request', $id, $reason);
+            $remark = trim((string) $request->post('remark', ''));
+            $banking->verifyDeposit($id, (string) Context::user()['id'], $approve, $remark, (string) $request->post('external_reference', ''));
+            $audit->record($approve ? 'deposit.approved' : 'deposit.rejected', 'deposit_request', $id, $remark ?: null);
         }, 'Deposit decision recorded.', '/admin/deposits');
     }, 'admin', true);
 
-    $router->get('/admin/withdrawals', static function () use ($admin, $database): void {
+    $router->get('/admin/withdrawals', static function () use ($admin, $database, $rates): void {
+        $assets = $database->fetchAll('SELECT id, code, asset_type, usd_provider_reference FROM assets');
         $admin('admin/withdrawals', [
-            'withdrawals' => $database->fetchAll("SELECT w.*, u.email, u.first_name, u.last_name, a.account_number, s.code AS asset_code, s.symbol AS asset_symbol, s.scale AS asset_scale FROM withdrawal_requests w JOIN users u ON u.id = w.user_id JOIN accounts a ON a.id = w.account_id JOIN assets s ON s.id = a.asset_id ORDER BY CASE w.status WHEN 'pending' THEN 0 ELSE 1 END, w.created_at DESC LIMIT 300"),
+            'withdrawals' => $database->fetchAll("SELECT w.*, u.email, u.first_name, u.last_name, a.account_number, s.code AS asset_code, s.symbol AS asset_symbol, s.scale AS asset_scale FROM withdrawal_requests w JOIN users u ON u.id = w.user_id JOIN accounts a ON a.id = w.account_id JOIN assets s ON s.id = a.asset_id WHERE w.request_kind = 'withdrawal' ORDER BY CASE w.status WHEN 'pending' THEN 0 ELSE 1 END, w.created_at DESC LIMIT 300"),
+            'usdRates' => $rates->ratesForAssets($assets),
         ]);
     }, 'admin');
 
-    $router->get('/admin/transactions', static function () use ($admin, $database): void {
+    $router->get('/admin/bank-transfers', static function () use ($admin, $database, $rates): void {
+        $assets = $database->fetchAll('SELECT id, code, asset_type, usd_provider_reference FROM assets');
+        $admin('admin/bank-transfers', [
+            'transfers' => $database->fetchAll("SELECT w.*, u.email, u.first_name, u.last_name, a.account_number, s.code AS asset_code, s.symbol AS asset_symbol, s.scale AS asset_scale FROM withdrawal_requests w JOIN users u ON u.id = w.user_id JOIN accounts a ON a.id = w.account_id JOIN assets s ON s.id = a.asset_id WHERE w.request_kind = 'bank_transfer' ORDER BY CASE w.status WHEN 'pending' THEN 0 ELSE 1 END, w.created_at DESC LIMIT 300"),
+            'usdRates' => $rates->ratesForAssets($assets),
+        ]);
+    }, 'admin');
+
+    $router->get('/admin/transactions', static function () use ($admin, $database, $rates): void {
+        $assets = $database->fetchAll('SELECT id, code, asset_type, usd_provider_reference FROM assets');
         $admin('admin/transactions', [
             'transactions' => $database->fetchAll("SELECT t.*, u.email, u.first_name, u.last_name, a.account_number, s.code AS asset_code, s.symbol AS asset_symbol, s.scale AS asset_scale
                 FROM transactions t
@@ -394,20 +496,35 @@ return function (Router $router, Database $database): void {
                 JOIN accounts a ON a.id = t.account_id
                 JOIN assets s ON s.id = a.asset_id
                 ORDER BY t.created_at DESC LIMIT 300"),
+            'usdRates' => $rates->ratesForAssets($assets),
         ]);
     }, 'admin');
 
-    $router->post('/admin/withdrawals/{id}/decision', static function (Request $request) use ($banking, $audit, $attempt): never {
+    $router->post('/admin/withdrawals/{id}/decision', static function (Request $request) use ($banking, $database, $audit, $attempt): never {
         $id = (string) $request->route('id');
-        $attempt(static function () use ($banking, $audit, $id, $request): void {
-            $approve = $request->post('decision') === 'approve';
-            $reason = trim((string) $request->post('reason', ''));
-            if (strlen($reason) < 5) {
-                throw new RuntimeException('Record the reason for this decision.');
+        $attempt(static function () use ($banking, $database, $audit, $id, $request): void {
+            if (!$database->fetchOne("SELECT id FROM withdrawal_requests WHERE id = ? AND request_kind = 'withdrawal'", [$id])) {
+                throw new RuntimeException('Withdrawal request was not found.');
             }
-            $banking->approveWithdrawal($id, (string) Context::user()['id'], $approve, $reason, (string) $request->post('external_reference', ''));
-            $audit->record($approve ? 'withdrawal.completed' : 'withdrawal.rejected', 'withdrawal_request', $id, $reason, ['external_reference' => (string) $request->post('external_reference', '')]);
+            $approve = $request->post('decision') === 'approve';
+            $remark = trim((string) $request->post('remark', ''));
+            $banking->approveWithdrawal($id, (string) Context::user()['id'], $approve, $remark, (string) $request->post('external_reference', ''));
+            $audit->record($approve ? 'withdrawal.completed' : 'withdrawal.rejected', 'withdrawal_request', $id, $remark ?: null, ['external_reference' => (string) $request->post('external_reference', '')]);
         }, 'Withdrawal decision recorded.', '/admin/withdrawals');
+    }, 'admin', true);
+
+    $router->post('/admin/bank-transfers/{id}/decision', static function (Request $request) use ($banking, $database, $audit, $attempt): never {
+        $id = (string) $request->route('id');
+        $attempt(static function () use ($banking, $database, $audit, $id, $request): void {
+            $transfer = $database->fetchOne("SELECT id FROM withdrawal_requests WHERE id = ? AND request_kind = 'bank_transfer'", [$id]);
+            if (!$transfer) {
+                throw new RuntimeException('Bank transfer request was not found.');
+            }
+            $approve = $request->post('decision') === 'approve';
+            $remark = trim((string) $request->post('remark', ''));
+            $banking->approveWithdrawal($id, (string) Context::user()['id'], $approve, $remark, (string) $request->post('external_reference', ''));
+            $audit->record($approve ? 'bank_transfer.completed' : 'bank_transfer.rejected', 'withdrawal_request', $id, $remark ?: null, ['external_reference' => (string) $request->post('external_reference', '')]);
+        }, 'Bank transfer decision recorded.', '/admin/bank-transfers');
     }, 'admin', true);
 
     $router->get('/admin/settings', static function () use ($admin): void {
@@ -436,11 +553,23 @@ return function (Router $router, Database $database): void {
         }, 'Site information saved.', '/admin/settings');
     }, 'admin', true);
 
-    $router->get('/admin/assets', static function () use ($admin, $database): void {
+    $router->get('/admin/assets', static function () use ($admin, $database, $rates): void {
+        $assets = $database->fetchAll('SELECT * FROM assets ORDER BY asset_type, code');
         $admin('admin/assets', [
-            'assets' => $database->fetchAll('SELECT * FROM assets ORDER BY asset_type, code'),
+            'assets' => $assets,
+            'usdRates' => $rates->ratesForAssets($assets),
         ]);
     }, 'admin');
+
+    $router->post('/admin/assets/rates/refresh', static function () use ($database, $rates, $audit): never {
+        $assets = $database->fetchAll('SELECT * FROM assets WHERE enabled = 1 ORDER BY code');
+        $projection = $rates->ratesForAssets($assets, true);
+        $statuses = array_map(static fn (array $rate): string => (string) ($rate['status'] ?? 'unavailable'), $projection);
+        $audit->record('usd_rates.refreshed', 'usd_rate', null, null, ['statuses' => $statuses]);
+        $available = count(array_filter($statuses, static fn (string $status): bool => $status !== 'unavailable'));
+        Flash::put($available > 0 ? 'success' : 'error', $available . ' of ' . count($assets) . ' enabled USD rates are available.');
+        Response::redirect('/admin/assets');
+    }, 'admin', true);
 
     $router->post('/admin/assets', static function (Request $request) use ($database, $audit, $attempt): never {
         $attempt(static function () use ($database, $audit, $request): void {
@@ -449,16 +578,20 @@ return function (Router $router, Database $database): void {
             $type = (string) $request->post('asset_type', '');
             $symbol = trim((string) $request->post('symbol', ''));
             $scale = (int) $request->post('scale', 0);
+            $providerReference = strtolower(trim((string) $request->post('usd_provider_reference', '')));
             if ($code === '' || $name === '' || !in_array($type, ['fiat', 'crypto'], true) || $symbol === '' || $scale < 0 || $scale > 18) {
                 throw new \RuntimeException('Complete all asset fields with a valid type and scale.');
+            }
+            if ($type === 'crypto' && $providerReference !== '' && !preg_match('/^[a-z0-9-]{1,120}$/', $providerReference)) {
+                throw new \RuntimeException('CoinGecko ID may contain lowercase letters, numbers, and hyphens only.');
             }
             $existing = $database->fetchOne('SELECT id FROM assets WHERE code = ?', [$code]);
             if ($existing) {
                 throw new \RuntimeException('That asset code already exists.');
             }
             $assetId = Security::uuid();
-            $database->transaction(function (Database $db) use ($assetId, $code, $name, $type, $symbol, $scale): void {
-                $db->execute('INSERT INTO assets (id, code, name, asset_type, symbol, scale) VALUES (?, ?, ?, ?, ?, ?)', [$assetId, $code, $name, $type, $symbol, $scale]);
+            $database->transaction(function (Database $db) use ($assetId, $code, $name, $type, $symbol, $scale, $providerReference): void {
+                $db->execute('INSERT INTO assets (id, code, name, asset_type, symbol, scale, usd_provider_reference) VALUES (?, ?, ?, ?, ?, ?, ?)', [$assetId, $code, $name, $type, $symbol, $scale, $type === 'crypto' && $providerReference !== '' ? $providerReference : null]);
                 $db->execute("INSERT INTO ledger_accounts (id, asset_id, owner_type, owner_id, code, name, account_class, normal_side) VALUES (?, ?, 'system', NULL, ?, ?, 'asset', 'debit')", [Security::uuid(), $assetId, 'SYSTEM:' . $code, 'System ' . $code . ' control']);
                 $db->execute("INSERT INTO ledger_accounts (id, asset_id, owner_type, owner_id, code, name, account_class, normal_side) VALUES (?, ?, 'system', NULL, ?, ?, 'revenue', 'credit')", [Security::uuid(), $assetId, 'SYSTEM:' . $code . ':REVENUE', 'System ' . $code . ' revenue']);
             });
@@ -478,6 +611,10 @@ return function (Router $router, Database $database): void {
                 throw new \RuntimeException('Asset name is required.');
             }
             $scale = (int) $asset['scale'];
+            $providerReference = strtolower(trim((string) $request->post('usd_provider_reference', '')));
+            if ((string) $asset['asset_type'] === 'crypto' && $providerReference !== '' && !preg_match('/^[a-z0-9-]{1,120}$/', $providerReference)) {
+                throw new \RuntimeException('CoinGecko ID may contain lowercase letters, numbers, and hyphens only.');
+            }
             try {
                 $minDeposit = Money::parse((string) $request->post('min_deposit', '0'), $scale);
                 $minWithdrawal = Money::parse((string) $request->post('min_withdrawal', '0'), $scale);
@@ -487,7 +624,7 @@ return function (Router $router, Database $database): void {
                 throw new \RuntimeException('Check limits and fees for ' . $code . ': ' . $error->getMessage());
             }
             $database->execute(
-                'UPDATE assets SET name = ?, enabled = ?, deposit_enabled = ?, withdrawal_enabled = ?, min_deposit_minor = ?, min_withdrawal_minor = ?, withdrawal_fee_minor = ?, transfer_fee_minor = ?, deposit_bank_name = ?, deposit_account_name = ?, deposit_account_number = ?, deposit_routing = ?, deposit_swift = ?, deposit_wallet_address = ?, deposit_network = ?, deposit_memo = ?, deposit_instructions = ?, updated_at = ? WHERE code = ?',
+                'UPDATE assets SET name = ?, enabled = ?, deposit_enabled = ?, withdrawal_enabled = ?, min_deposit_minor = ?, min_withdrawal_minor = ?, withdrawal_fee_minor = ?, transfer_fee_minor = ?, usd_provider_reference = ?, deposit_bank_name = ?, deposit_account_name = ?, deposit_account_number = ?, deposit_routing = ?, deposit_swift = ?, deposit_wallet_address = ?, deposit_network = ?, deposit_memo = ?, deposit_instructions = ?, updated_at = ? WHERE code = ?',
                 [
                     $name,
                     (int) ($request->post('enabled') === '1'),
@@ -497,6 +634,7 @@ return function (Router $router, Database $database): void {
                     $minWithdrawal,
                     $withdrawalFee,
                     $transferFee,
+                    (string) $asset['asset_type'] === 'crypto' ? ($providerReference ?: null) : null,
                     trim((string) $request->post('deposit_bank_name', '')) ?: null,
                     trim((string) $request->post('deposit_account_name', '')) ?: null,
                     trim((string) $request->post('deposit_account_number', '')) ?: null,

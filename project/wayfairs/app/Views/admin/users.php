@@ -8,6 +8,7 @@ $restrictedCount = count(array_filter($users, static fn (array $u): bool => (int
 ?>
 <header class="page-header">
   <div class="page-heading"><span class="page-icon"><?= wayfairs_icon('customers') ?></span><div class="page-heading-copy"><span class="page-kicker">Customer operations</span><h1>Customers</h1><p>Search registered customers, inspect verification state, and open account controls.</p></div></div>
+  <div class="page-actions"><a class="btn" href="<?= e(wayfairs_url('/admin/users/new')) ?>"><?= wayfairs_icon('plus') ?> Create customer</a></div>
 </header>
 
 <section class="metric-grid">

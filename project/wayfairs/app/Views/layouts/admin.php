@@ -13,6 +13,7 @@ $links = [
     ['path' => '/admin', 'label' => 'Dashboard', 'icon' => 'overview'],
     ['path' => '/admin/users', 'label' => 'Customers', 'icon' => 'customers'],
     ['path' => '/admin/transactions', 'label' => 'Transactions', 'icon' => 'activity'],
+    ['path' => '/admin/bank-transfers', 'label' => 'Bank transfers', 'icon' => 'transfer'],
     ['path' => '/admin/deposits', 'label' => 'Deposits', 'icon' => 'deposit'],
     ['path' => '/admin/withdrawals', 'label' => 'Withdrawals', 'icon' => 'withdraw'],
     ['path' => '/admin/assets', 'label' => 'Currencies', 'icon' => 'layers'],
@@ -70,6 +71,7 @@ $footerMode = 'compact';
         <span><small>Operations console</small><strong><?= e($currentLabel) ?></strong></span>
       </div>
       <div class="topbar-actions">
+        <?php require WAYFAIRS_ROOT . '/app/Views/partials/translator.php'; ?>
         <span class="topbar-audit-note"><?= wayfairs_icon('verification') ?> Actions are audited</span>
         <div class="topbar-profile"><span class="avatar"><?= e($initials ?: 'A') ?></span><span><strong><?= e($fullName ?: 'Administrator') ?></strong><small>Administrator</small></span></div>
       </div>
@@ -85,6 +87,7 @@ $footerMode = 'compact';
               <a class="side-link<?= wayfairs_nav_active($link['path']) ? ' active' : '' ?>" href="<?= e(wayfairs_url($link['path'])) ?>"><?= wayfairs_icon($link['icon']) ?><span><?= e($link['label']) ?></span></a>
             <?php endforeach; ?>
           </nav>
+          <?php require WAYFAIRS_ROOT . '/app/Views/partials/translator.php'; ?>
           <form method="post" action="<?= e(wayfairs_url('/logout')) ?>"><input type="hidden" name="_token" value="<?= e(wayfairs_csrf()) ?>" /><button class="btn ghost full" type="submit">Sign out</button></form>
         </div>
       </details>

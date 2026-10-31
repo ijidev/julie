@@ -1,5 +1,75 @@
 # Changelog
 
+## Wayfairs — world-class banking workflow refinement (2026-10-31)
+### Added
+- Traditional external bank-transfer workflow: ISO/ICU country selection,
+  beneficiary name/address, bank, IBAN or local account number, routing code,
+  SWIFT/BIC, optional remark, immediate reservation, idempotent replay, and a
+  dedicated administrator settlement queue.
+- Paired SQLite/MySQL migration `003_bank_transfers_and_usd_rates`: request kind,
+  optional customer remarks, crypto provider references, and successful live
+  USD-rate observations.
+- `UsdRateService`: Frankfurter fiat rates, CoinGecko crypto prices, bounded
+  HTTPS/cURL requests, provider timestamps, explicit stale/unavailable state,
+  optional `WAYFAIRS_COINGECKO_API_KEY`, and race-safe caching.
+- Integer/decimal-string USD conversion in `Money::convert`; no binary floating
+  point. Dashboard portfolio, account statements, receipts, transaction pages,
+  request histories, invoices, and operations tables show sourced USD
+  equivalents while preserving original currency amounts.
+- Administrator customer creation/editing, global active/pending/restricted/
+  blocked/closed status, session revocation on block/close, and per-currency
+  account active/restricted/frozen/closed controls.
+- Browser-native translation control for English, French, Spanish, German,
+  Portuguese, and Italian with on-device Translator API and honest unsupported-
+  browser fallback.
+
+### Changed
+- Customer balance is now a horizontal credit-card composition. USD is the
+  default selected account; a separate panel shows total priced portfolio value
+  in USD and clearly identifies partial/unavailable pricing.
+- Transfer is bank-first instead of email-only. Instant Wayfairs email transfer
+  remains available as a secondary expandable option.
+- Customer/admin side-navigation text is white; selected rows use high-contrast
+  green (customer) or blue (admin) backgrounds.
+- Deposit, withdrawal, and bank-transfer customer remarks are optional.
+  Deposit/withdrawal/bank settlement forms no longer require a decision reason;
+  external references and operational remarks are optional. KYC, restriction,
+  and support-impersonation justifications remain required security controls.
+- Customer deletion is represented by reversible closure. Immutable transaction,
+  journal, posting, receipt, and audit history has no deletion path.
+
+### Security boundaries retained
+- Support impersonation still requires current administrator password and a
+  reason, retains both identities, expires, and blocks financial/security
+  mutations. Requested unaudited one-click full-access impersonation was not
+  implemented because it conflicts with repository security policy.
+- Full beneficiary account/IBAN data is encrypted and never returned in browser
+  queue payloads; only safe labels and last-four summaries are shown.
+
+### Verified
+- Pre-migration SQLite online backup mode 0600; migration 003 applied; live
+  `integrity_check` and `quick_check` both `ok`; three migration receipts.
+- 54/54 tests: migration replay, decimal conversion, admin customer management,
+  session revocation, account freezing/hold-close denial, bank-transfer input
+  denial, encrypted details, reservation, idempotency, rejection release,
+  completion capture, optional settlement remark, and ledger balance invariant.
+- Fresh `display_errors=1` crawl: 26 guest/customer/admin/detail/receipt pages
+  returned 200 with zero PHP warnings. Guest/customer authorization denials
+  returned 303/403; invalid admin customer creation persisted no row.
+- Real rate round-trips: CoinGecko BTC/ETH and Frankfurter NGN returned HTTP 200;
+  forced admin refresh reported 3/3 enabled USD rates available.
+- Live dashboard rendered one horizontal card, USD default, sourced USD portfolio
+  total, two unique translator controls, and 257 ICU country/territory options.
+- Live insufficient-funds bank-transfer POST created no request row.
+
+### Honest limits
+- Bank payouts remain manual; no banking rail is connected. Because full banking
+  details cannot be exposed to browser queues, production settlement requires an
+  approved server-to-server provider or secure operations channel.
+- CoinGecko keyless access is preview-only, browser Translator API availability
+  varies, and MySQL migration/concurrency behavior remains unverified on a real
+  MySQL host.
+
 ## Wayfairs — complete customer and admin workspace redesign (2026-10-31)
 ### Added
 - Consolidated customer `/transactions` and administrator

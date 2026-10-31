@@ -6,6 +6,7 @@ $asset = $account['asset'];
 $available = (int) $account['available_minor'];
 $held = (int) ($account['held_minor'] ?? 0);
 $total = $available + $held;
+$rate = $usdRates[$asset['code']] ?? null;
 ?>
 <header class="page-header">
   <div class="page-heading">
@@ -27,6 +28,7 @@ $total = $available + $held;
       <div>
         <p class="eyebrow">Available balance</p>
         <div class="balance"><?= e(wayfairs_amount($available, (int) $asset['scale'], (string) $asset['symbol'], (string) $asset['code'])) ?></div>
+        <strong class="usd-equivalent">≈ <?= e(wayfairs_usd_equivalent($available, (int) $asset['scale'], $rate)) ?></strong>
         <div class="balance-owner"><span class="hint"><?= e((string) $account['account_number']) ?></span><?= wayfairs_pill((string) $account['status']) ?></div>
       </div>
       <div class="balance-side">
@@ -70,7 +72,7 @@ $total = $available + $held;
         <a class="transaction-item" href="<?= e(wayfairs_url('/receipts/' . $row['id'])) ?>">
           <span class="transaction-symbol <?= $credit ? 'credit' : 'debit' ?>"><?= wayfairs_icon($credit ? 'deposit' : 'withdraw') ?></span>
           <span class="transaction-main"><strong><?= e((string) $row['description']) ?></strong><span><?= e((string) $row['public_reference']) ?> · <?= e(str_replace('_', ' ', (string) $row['transaction_type'])) ?></span></span>
-          <span class="transaction-meta"><strong><?= wayfairs_pill((string) $row['status']) ?></strong><span><?= e(wayfairs_datetime((string) $row['created_at'])) ?></span></span>
+          <span class="transaction-meta"><strong><?= e(wayfairs_usd_equivalent((int) $row['amount_minor'], (int) $asset['scale'], $rate)) ?></strong><span><?= e(wayfairs_datetime((string) $row['created_at'])) ?></span></span>
           <span class="transaction-amount <?= $credit ? 'amount-positive' : 'amount-negative' ?>"><?= e(($credit ? '+' : '−') . wayfairs_amount((int) $row['amount_minor'], (int) $asset['scale'], (string) $asset['symbol'])) ?></span>
           <span class="transaction-arrow"><?= wayfairs_icon('arrow-right') ?></span>
         </a>

@@ -30,3 +30,34 @@ Impersonation requires administrator reauthentication and a reason, expires in
 30 minutes, retains/restores the original admin session, is prominently shown,
 and blocks value movement and sensitive mutations. Audit events retain the real
 administrator and effective user.
+
+## WDR-006 — Live USD estimates are provider-backed and non-authoritative
+
+USD equivalents use cached observations from Frankfurter for fiat currencies
+and CoinGecko for crypto assets. Decimal conversion never uses binary floating
+point. The original asset amount remains authoritative, rate source/freshness is
+shown, stale cache is labelled, and absence stays unavailable. CoinGecko's
+keyless API is preview-grade; production requires an appropriate API plan and
+`WAYFAIRS_COINGECKO_API_KEY`.
+
+## WDR-007 — Bank transfers reuse the withdrawal settlement invariant
+
+External beneficiary transfers are distinguished by `request_kind`, but reuse
+the existing hold, encrypted destination, approval/rejection, double-entry, and
+idempotency machinery. This avoids a second balance path. Full IBAN/account data
+never enters browser queue payloads; operations sees a safe summary until an
+approved secure payout integration exists.
+
+## WDR-008 — Customer deletion means closure, never ledger erasure
+
+Administrators can create and edit customers, block/restrict/close access, and
+control individual currency-account status. Closing is reversible and preserves
+users, transactions, journal entries, postings, receipts, and audit events.
+There is no transaction-history deletion control.
+
+## WDR-009 — Translation is browser-native and optional
+
+The interface uses the browser Translator API when available, keeping
+translation on-device. Unsupported browsers receive an honest browser-menu
+fallback. Identifiers, inputs, account data, amounts, and customer identity
+elements are excluded from the page text walker.

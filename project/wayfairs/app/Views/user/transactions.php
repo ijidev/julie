@@ -14,6 +14,8 @@ $failed = count(array_filter($history, static fn (array $row): bool => in_array(
   <div class="page-actions"><a class="btn ghost" href="<?= e(wayfairs_url('/dashboard')) ?>">Back to overview</a></div>
 </header>
 
+<div class="notice brand"><?= wayfairs_icon('activity') ?><div><strong>USD normalization</strong><p>Equivalent values use the latest observed provider rate available now, not a reconstructed historical trade rate. Unavailable rates remain explicitly unavailable.</p></div></div>
+
 <section class="metric-grid">
   <div class="metric-card"><span class="metric-icon"><?= wayfairs_icon('receipt') ?></span><span class="metric-copy"><strong class="metric-value"><?= count($history) ?></strong><span class="metric-label">Loaded records</span></span></div>
   <div class="metric-card"><span class="metric-icon"><?= wayfairs_icon('check') ?></span><span class="metric-copy"><strong class="metric-value"><?= $completed ?></strong><span class="metric-label">Completed</span></span></div>
@@ -32,11 +34,11 @@ $failed = count(array_filter($history, static fn (array $row): bool => in_array(
       <label><span class="sr-only">Filter by status</span><select class="filter-select" data-filter-key="status"><option value="">All statuses</option><option value="completed">Completed</option><option value="pending">Pending</option><option value="processing">Processing</option><option value="failed">Failed</option><option value="reversed">Reversed</option><option value="cancelled">Cancelled</option></select></label>
     </div>
     <div class="transaction-list">
-      <?php foreach ($history as $row): $credit = (string) $row['direction'] === 'credit'; ?>
+      <?php foreach ($history as $row): $credit = (string) $row['direction'] === 'credit'; $rate = $usdRates[$row['asset_code']] ?? null; ?>
         <a class="transaction-item" data-filter-row data-asset="<?= e((string) $row['asset_code']) ?>" data-status="<?= e((string) $row['status']) ?>" href="<?= e(wayfairs_url('/receipts/' . $row['id'])) ?>">
           <span class="transaction-symbol <?= $credit ? 'credit' : 'debit' ?>"><?= wayfairs_icon($credit ? 'deposit' : 'withdraw') ?></span>
           <span class="transaction-main"><strong><?= e((string) $row['description']) ?></strong><span><?= e(str_replace('_', ' ', (string) $row['transaction_type'])) ?> · <?= e((string) $row['public_reference']) ?></span></span>
-          <span class="transaction-meta"><strong><?= e((string) $row['asset_code']) ?> · <?= wayfairs_pill((string) $row['status']) ?></strong><span><?= e(wayfairs_datetime((string) $row['created_at'])) ?></span></span>
+          <span class="transaction-meta"><strong><?= e(wayfairs_usd_equivalent((int) $row['amount_minor'], (int) $row['asset_scale'], $rate)) ?></strong><span><?= e((string) $row['asset_code']) ?> · <?= e(wayfairs_datetime((string) $row['created_at'])) ?></span></span>
           <span class="transaction-amount <?= $credit ? 'amount-positive' : 'amount-negative' ?>"><?= e(($credit ? '+' : '−') . wayfairs_amount((int) $row['amount_minor'], (int) $row['asset_scale'], (string) $row['asset_symbol'], (string) $row['asset_code'])) ?></span>
           <span class="transaction-arrow"><?= wayfairs_icon('arrow-right') ?></span>
         </a>

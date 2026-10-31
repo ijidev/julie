@@ -45,6 +45,78 @@ final class AuthService
         return $this->userById($id);
     }
 
+    public function createCustomerByAdmin(array $input): array
+    {
+        $firstName = trim((string) ($input['first_name'] ?? ''));
+        $lastName = trim((string) ($input['last_name'] ?? ''));
+        if ($firstName === '' || $lastName === '') {
+            throw new \RuntimeException('First and last name are required.');
+        }
+        $customer = $this->register($input + ['first_name' => $firstName, 'last_name' => $lastName]);
+        $status = (string) ($input['status'] ?? 'active');
+        if ($status !== 'active') {
+            return $this->updateCustomerByAdmin((string) $customer['id'], $input);
+        }
+        return $customer;
+    }
+
+    public function updateCustomerByAdmin(string $userId, array $input): array
+    {
+        $customer = $this->userById($userId);
+        if (!$customer || (string) $customer['role'] !== 'user') {
+            throw new \RuntimeException('Customer account was not found.');
+        }
+        $email = $this->normalizeEmail((string) ($input['email'] ?? ''));
+        $firstName = trim((string) ($input['first_name'] ?? ''));
+        $lastName = trim((string) ($input['last_name'] ?? ''));
+        $phone = trim((string) ($input['phone'] ?? ''));
+        $status = (string) ($input['status'] ?? 'active');
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            throw new \RuntimeException('Enter a valid customer email address.');
+        }
+        if ($firstName === '' || $lastName === '') {
+            throw new \RuntimeException('First and last name are required.');
+        }
+        if (!in_array($status, ['active', 'restricted', 'blocked', 'closed', 'pending'], true)) {
+            throw new \RuntimeException('Choose a valid customer status.');
+        }
+        $duplicate = $this->database->fetchOne('SELECT id FROM users WHERE email_normalized = ? AND id <> ?', [$email, $userId]);
+        if ($duplicate) {
+            throw new \RuntimeException('That email address is already registered.');
+        }
+        $this->database->execute(
+            'UPDATE users SET email = ?, email_normalized = ?, first_name = ?, last_name = ?, phone = ?, status = ?, updated_at = ? WHERE id = ? AND role = ?',
+            [$email, $email, mb_substr($firstName, 0, 120), mb_substr($lastName, 0, 120), $phone !== '' ? mb_substr($phone, 0, 40) : null, $status, gmdate('Y-m-d H:i:s.u'), $userId, 'user']
+        );
+        if (in_array($status, ['blocked', 'closed'], true)) {
+            $this->revokeAllForUser($userId);
+        }
+        return $this->userById($userId) ?? throw new \RuntimeException('Customer update did not persist.');
+    }
+
+    public function updateCustomerAccountStatus(string $userId, string $accountId, string $status): array
+    {
+        if (!in_array($status, ['active', 'restricted', 'frozen', 'closed'], true)) {
+            throw new \RuntimeException('Choose a valid account status.');
+        }
+        $account = $this->database->fetchOne('SELECT id, ledger_account_id, status FROM accounts WHERE id = ? AND user_id = ?', [$accountId, $userId]);
+        if (!$account) {
+            throw new \RuntimeException('Currency account was not found.');
+        }
+        if ($status === 'closed') {
+            $holds = (int) ($this->database->fetchOne("SELECT COUNT(*) AS total FROM holds WHERE account_id = ? AND status = 'active' AND (expires_at IS NULL OR expires_at > ?)", [$accountId, gmdate('Y-m-d H:i:s.u')])['total'] ?? 0);
+            if ($holds > 0) {
+                throw new \RuntimeException('Resolve active reservations before closing this currency account.');
+            }
+        }
+        $this->database->transaction(function (Database $database) use ($account, $status, $accountId): void {
+            $database->execute('UPDATE accounts SET status = ?, updated_at = ? WHERE id = ?', [$status, gmdate('Y-m-d H:i:s.u'), $accountId]);
+            $ledgerStatus = $status === 'active' ? 'active' : ($status === 'closed' ? 'closed' : 'frozen');
+            $database->execute('UPDATE ledger_accounts SET status = ? WHERE id = ?', [$ledgerStatus, (string) $account['ledger_account_id']]);
+        });
+        return ['status_before' => (string) $account['status'], 'status_after' => $status];
+    }
+
     public function authenticate(string $email, string $password, string $ip): ?array
     {
         $user = $this->database->fetchOne('SELECT * FROM users WHERE email_normalized = ?', [$this->normalizeEmail($email)]);

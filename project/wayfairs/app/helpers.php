@@ -118,13 +118,64 @@ function wayfairs_major(int|string $minor, int $scale): string
     return Money::format($minor, $scale, '', '');
 }
 
+function wayfairs_usd_minor(int|string $minor, int $assetScale, ?array $rate): ?int
+{
+    if (!is_array($rate) || empty($rate['rate']) || ($rate['status'] ?? 'unavailable') === 'unavailable') {
+        return null;
+    }
+    try {
+        return Money::convert($minor, $assetScale, (string) $rate['rate'], 2);
+    } catch (Throwable) {
+        return null;
+    }
+}
+
+function wayfairs_usd_equivalent(int|string $minor, int $assetScale, ?array $rate): string
+{
+    $usdMinor = wayfairs_usd_minor($minor, $assetScale, $rate);
+    return $usdMinor === null ? 'USD rate unavailable' : wayfairs_amount($usdMinor, 2, '$', 'USD');
+}
+
+function wayfairs_rate_disclosure(?array $rate): string
+{
+    if (!is_array($rate) || ($rate['status'] ?? 'unavailable') === 'unavailable') {
+        return 'Live USD rate unavailable';
+    }
+    $label = (string) ($rate['provider_label'] ?? 'Observed provider');
+    $status = ($rate['status'] ?? '') === 'stale' ? 'stale cached rate' : 'observed rate';
+    $at = wayfairs_datetime($rate['source_updated_at'] ?? $rate['fetched_at'] ?? null);
+    return $label . ' · ' . $status . ($at !== '—' ? ' · ' . $at : '');
+}
+
+function wayfairs_countries(): array
+{
+    static $countries = null;
+    if ($countries !== null) {
+        return $countries;
+    }
+    $countries = [];
+    if (class_exists(ResourceBundle::class)) {
+        $bundle = ResourceBundle::create('en', 'ICUDATA-region');
+        $regions = $bundle instanceof ResourceBundle ? $bundle->get('Countries') : null;
+        if ($regions instanceof ResourceBundle) {
+            foreach ($regions as $code => $name) {
+                if (preg_match('/^[A-Z]{2}$/', (string) $code) && !in_array((string) $code, ['EU', 'EZ', 'QO', 'UN', 'XA', 'XB', 'ZZ'], true) && is_string($name) && $name !== 'Unknown Region') {
+                    $countries[(string) $code] = $name;
+                }
+            }
+        }
+    }
+    asort($countries, SORT_NATURAL | SORT_FLAG_CASE);
+    return $countries;
+}
+
 function wayfairs_pill(string $status): string
 {
     $label = str_replace('_', ' ', $status);
     $tone = match (true) {
-        in_array($status, ['completed', 'verified', 'active', 'paid', 'approved'], true), str_starts_with($status, 'kyc verified') => 'good',
-        in_array($status, ['pending', 'processing', 'in_review', 'reviewing', 'open', 'restricted', 'needs_resubmission', 'kyc pending', 'kyc in_review', 'kyc needs_resubmission'], true) => 'warn',
-        in_array($status, ['failed', 'rejected', 'blocked', 'closed', 'frozen', 'reversed', 'kyc rejected', 'kyc expired'], true) => 'bad',
+        in_array($status, ['completed', 'verified', 'active', 'paid', 'approved', 'current', 'sent', 'received'], true), str_starts_with($status, 'kyc verified') => 'good',
+        in_array($status, ['pending', 'processing', 'in_review', 'reviewing', 'open', 'restricted', 'needs_resubmission', 'stale', 'kyc pending', 'kyc in_review', 'kyc needs_resubmission'], true) => 'warn',
+        in_array($status, ['failed', 'rejected', 'blocked', 'closed', 'frozen', 'reversed', 'unavailable', 'kyc rejected', 'kyc expired'], true) => 'bad',
         default => '',
     };
     return '<span class="pill ' . e($tone) . '">' . e($label) . '</span>';

@@ -50,9 +50,8 @@ $firstAsset = $firstAccount['asset'] ?? null;
           <input name="amount" inputmode="decimal" placeholder="0.00" required <?= $verified ? '' : 'disabled' ?> />
           <span class="field-hint">Enter the amount in the selected currency. Values below its configured minimum are rejected.</span>
         </label>
-        <label>Sender reference or transaction hash <span class="field-hint">Optional</span>
-          <input name="sender_reference" maxlength="200" placeholder="Bank reference or blockchain transaction hash" <?= $verified ? '' : 'disabled' ?> />
-          <span class="field-hint">Give operations a reference they can match to the received funds.</span>
+        <label>Remark <span class="field-hint">Optional</span>
+          <input name="remark" maxlength="500" placeholder="Add a note for the operations team" <?= $verified ? '' : 'disabled' ?> />
         </label>
         <div class="form-actions"><button class="btn full" type="submit" <?= $verified ? '' : 'disabled' ?>><?= $verified ? 'Submit deposit for verification' : 'Verification required' ?> <?= wayfairs_icon('arrow-right', 'btn-icon') ?></button></div>
       </form>
@@ -131,8 +130,8 @@ $firstAsset = $firstAccount['asset'] ?? null;
   <?php if ($deposits === []): ?>
     <div class="empty-state"><div class="empty-icon"><?= wayfairs_icon('deposit') ?></div><h3>No deposit requests</h3><p>Your submitted requests will appear here without invented provider statuses.</p></div>
   <?php else: ?>
-    <div class="table-wrap"><table><thead><tr><th>Submitted</th><th>Currency</th><th>Amount</th><th>Your reference</th><th>Status</th></tr></thead><tbody>
-    <?php foreach ($deposits as $deposit): ?><tr><td><span class="cell-title"><?= e(wayfairs_datetime((string) $deposit['created_at'])) ?></span></td><td><span class="cell-title"><?= e((string) $deposit['asset_code']) ?></span><span class="cell-subtitle"><?= e((string) $deposit['account_number']) ?></span></td><td class="cell-amount"><?= e(wayfairs_amount((int) $deposit['amount_minor'], (int) $deposit['asset_scale'], (string) $deposit['asset_symbol'], (string) $deposit['asset_code'])) ?></td><td class="wrap-anywhere"><?= e(trim((string) ($deposit['sender_reference'] ?? '')) !== '' ? (string) $deposit['sender_reference'] : '—') ?></td><td><?= wayfairs_pill((string) $deposit['status']) ?></td></tr><?php endforeach; ?>
+    <div class="table-wrap"><table><thead><tr><th>Submitted</th><th>Currency</th><th>Amount</th><th>USD equivalent</th><th>Remark</th><th>Status</th></tr></thead><tbody>
+    <?php foreach ($deposits as $deposit): $rate = $usdRates[$deposit['asset_code']] ?? null; ?><tr><td><span class="cell-title"><?= e(wayfairs_datetime((string) $deposit['created_at'])) ?></span></td><td><span class="cell-title"><?= e((string) $deposit['asset_code']) ?></span><span class="cell-subtitle"><?= e((string) $deposit['account_number']) ?></span></td><td class="cell-amount"><?= e(wayfairs_amount((int) $deposit['amount_minor'], (int) $deposit['asset_scale'], (string) $deposit['asset_symbol'], (string) $deposit['asset_code'])) ?></td><td><span class="cell-title"><?= e(wayfairs_usd_equivalent((int) $deposit['amount_minor'], (int) $deposit['asset_scale'], $rate)) ?></span><span class="cell-subtitle"><?= e(wayfairs_rate_disclosure($rate)) ?></span></td><td class="wrap-anywhere"><?= e(trim((string) ($deposit['user_remark'] ?? '')) !== '' ? (string) $deposit['user_remark'] : '—') ?></td><td><?= wayfairs_pill((string) $deposit['status']) ?></td></tr><?php endforeach; ?>
     </tbody></table></div>
   <?php endif; ?>
 </section>

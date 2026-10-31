@@ -50,8 +50,8 @@ $openIssued = count(array_filter($issued, static fn (array $invoice): bool => (s
   <?php if ($issued === []): ?>
     <div class="empty-state"><div class="empty-icon"><?= wayfairs_icon('invoice') ?></div><h3>No issued invoices</h3><p>Create an invoice above to generate your first payment code.</p></div>
   <?php else: ?>
-    <div class="table-wrap"><table><thead><tr><th>Invoice code</th><th>Title</th><th>Amount</th><th>Due</th><th>Status</th><th></th></tr></thead><tbody>
-    <?php foreach ($issued as $i): ?><tr><td><code><?= e((string) $i['public_code']) ?></code></td><td><span class="cell-title"><?= e((string) $i['title']) ?></span><span class="cell-subtitle"><?= e(mb_substr((string) ($i['description'] ?? ''), 0, 70)) ?></span></td><td class="cell-amount"><?= e(wayfairs_amount((int) $i['amount_minor'], (int) $i['asset_scale'], (string) $i['asset_symbol'], (string) $i['asset_code'])) ?></td><td><?= e($i['due_at'] ? wayfairs_datetime((string) $i['due_at']) : 'No due date') ?></td><td><?= wayfairs_pill((string) $i['status']) ?></td><td><button class="btn small ghost copy-button" type="button" data-copy="<?= e((string) $i['public_code']) ?>" aria-label="Copy invoice code"><?= wayfairs_icon('copy') ?></button></td></tr><?php endforeach; ?>
+    <div class="table-wrap"><table><thead><tr><th>Invoice code</th><th>Title</th><th>Amount</th><th>USD equivalent</th><th>Due</th><th>Status</th><th></th></tr></thead><tbody>
+    <?php foreach ($issued as $i): $rate = $usdRates[$i['asset_code']] ?? null; ?><tr><td><code><?= e((string) $i['public_code']) ?></code></td><td><span class="cell-title"><?= e((string) $i['title']) ?></span><span class="cell-subtitle"><?= e(mb_substr((string) ($i['description'] ?? ''), 0, 70)) ?></span></td><td class="cell-amount"><?= e(wayfairs_amount((int) $i['amount_minor'], (int) $i['asset_scale'], (string) $i['asset_symbol'], (string) $i['asset_code'])) ?></td><td><?= e(wayfairs_usd_equivalent((int) $i['amount_minor'], (int) $i['asset_scale'], $rate)) ?></td><td><?= e($i['due_at'] ? wayfairs_datetime((string) $i['due_at']) : 'No due date') ?></td><td><?= wayfairs_pill((string) $i['status']) ?></td><td><button class="btn small ghost copy-button" type="button" data-copy="<?= e((string) $i['public_code']) ?>" aria-label="Copy invoice code"><?= wayfairs_icon('copy') ?></button></td></tr><?php endforeach; ?>
     </tbody></table></div>
   <?php endif; ?>
 </section>
@@ -61,8 +61,8 @@ $openIssued = count(array_filter($issued, static fn (array $invoice): bool => (s
   <?php if ($paid === []): ?>
     <div class="empty-state"><div class="empty-icon"><?= wayfairs_icon('check') ?></div><h3>No paid invoices</h3><p>Completed invoice payments will appear here.</p></div>
   <?php else: ?>
-    <div class="table-wrap"><table><thead><tr><th>Paid</th><th>Code</th><th>Title</th><th>Amount</th><th>Status</th></tr></thead><tbody>
-    <?php foreach ($paid as $i): ?><tr><td><?= e(wayfairs_datetime($i['paid_at'] ?? null)) ?></td><td><code><?= e((string) $i['public_code']) ?></code></td><td><span class="cell-title"><?= e((string) $i['title']) ?></span></td><td class="cell-amount"><?= e(wayfairs_amount((int) $i['amount_minor'], (int) $i['asset_scale'], (string) $i['asset_symbol'], (string) $i['asset_code'])) ?></td><td><?= wayfairs_pill((string) $i['status']) ?></td></tr><?php endforeach; ?>
+    <div class="table-wrap"><table><thead><tr><th>Paid</th><th>Code</th><th>Title</th><th>Amount</th><th>USD equivalent</th><th>Status</th></tr></thead><tbody>
+    <?php foreach ($paid as $i): $rate = $usdRates[$i['asset_code']] ?? null; ?><tr><td><?= e(wayfairs_datetime($i['paid_at'] ?? null)) ?></td><td><code><?= e((string) $i['public_code']) ?></code></td><td><span class="cell-title"><?= e((string) $i['title']) ?></span></td><td class="cell-amount"><?= e(wayfairs_amount((int) $i['amount_minor'], (int) $i['asset_scale'], (string) $i['asset_symbol'], (string) $i['asset_code'])) ?></td><td><?= e(wayfairs_usd_equivalent((int) $i['amount_minor'], (int) $i['asset_scale'], $rate)) ?></td><td><?= wayfairs_pill((string) $i['status']) ?></td></tr><?php endforeach; ?>
     </tbody></table></div>
   <?php endif; ?>
 </section>

@@ -13,6 +13,7 @@ use Wayfairs\Services\BankingService;
 use Wayfairs\Services\Installer;
 use Wayfairs\Services\LedgerService;
 use Wayfairs\Services\KycService;
+use Wayfairs\Services\UsdRateService;
 
 $failures = 0;
 $passes = 0;
@@ -33,6 +34,10 @@ $expectThrows = static function (callable $fn, string $needle): bool {
 $check('money parses 12.50 at scale 2 to 1250', Money::parse('12.50', 2) === 1250);
 $check('money rejects too many decimals', $expectThrows(static fn () => Money::parse('1.234', 2), 'decimal'));
 $check('money formats 1250 at scale 2', Money::format(1250, 2) === '12.50');
+$check('money converts BTC to USD cents without floats', Money::convert(100000, 8, '77494.80950901', 2) === 7749);
+$check('money conversion rounds half up', Money::convert(1, 2, '1.50', 2) === 2);
+$check('money conversion preserves USD minor units', Money::convert(1250, 2, '1', 2) === 1250);
+$check('bank transfer country catalog comes from ICU', count(wayfairs_countries()) > 200 && (wayfairs_countries()['US'] ?? '') === 'United States');
 
 // Fresh SQLite database in a temporary directory.
 $directory = sys_get_temp_dir() . '/wayfairs-test-' . bin2hex(random_bytes(4));
@@ -56,7 +61,7 @@ $check('flash rejects a tampered payload', \Wayfairs\Core\Flash::decode(substr($
 
 $database = new Database(['driver' => 'sqlite', 'path' => $directory . '/test.sqlite']);
 $applied = (new Migrator($database))->migrate();
-$check('migrations apply once', $applied === ['001_core', '002_asset_deposit_details']);
+$check('migrations apply once', $applied === ['001_core', '002_asset_deposit_details', '003_bank_transfers_and_usd_rates']);
 $check('migrations are idempotent', (new Migrator($database))->migrate() === []);
 
 // Install through the real installer, then exercise the banking flow.
@@ -94,6 +99,14 @@ $alice = $register('alice@test.local');
 $bob = $register('bob@test.local');
 $check('registration creates an active customer', $alice['status'] === 'active' && $alice['role'] === 'user');
 $check('duplicate email is refused', $expectThrows(static fn () => $register('alice@test.local'), 'already registered'));
+$adminCreated = $auth->createCustomerByAdmin(['email' => 'created@test.local', 'password' => 'customer-password-456', 'first_name' => 'Created', 'last_name' => 'Customer', 'status' => 'pending']);
+$check('administrator can create a pending customer', $adminCreated['role'] === 'user' && $adminCreated['status'] === 'pending');
+$adminEdited = $auth->updateCustomerByAdmin((string) $adminCreated['id'], ['email' => 'edited@test.local', 'first_name' => 'Edited', 'last_name' => 'Customer', 'phone' => '+10000000000', 'status' => 'active']);
+$check('administrator can edit customer profile and status', $adminEdited['email_normalized'] === 'edited@test.local' && $adminEdited['status'] === 'active' && $adminEdited['phone'] === '+10000000000');
+$createdSession = $auth->createSession((string) $adminCreated['id']);
+$auth->updateCustomerByAdmin((string) $adminCreated['id'], ['email' => 'edited@test.local', 'first_name' => 'Edited', 'last_name' => 'Customer', 'phone' => '', 'status' => 'blocked']);
+$check('blocking a customer revokes active sessions', $auth->sessionUser($createdSession) === null);
+$check('administrator cannot edit another administrator as a customer', $expectThrows(static fn () => $auth->updateCustomerByAdmin($adminId, ['email' => 'admin@test.local', 'first_name' => 'Ada', 'last_name' => 'Admin', 'status' => 'active']), 'not found'));
 
 $check('KYC gates deposits before approval', $expectThrows(static fn () => $banking->submitDeposit((string) $alice['id'], 'NGN', '1000', 'ref', 'x'), 'verification'));
 
@@ -105,15 +118,21 @@ foreach ([$alice, $bob] as $person) {
 // Deposit, admin credit, and balance correctness.
 $deposit = $banking->submitDeposit((string) $alice['id'], 'NGN', '5000.00', 'bank-ref-1', 'tok-1');
 $check('deposit is pending until verified', $deposit['status'] === 'pending');
+$check('deposit optional remark is stored', $deposit['user_remark'] === 'bank-ref-1');
 $repeat = $banking->submitDeposit((string) $alice['id'], 'NGN', '5000.00', 'bank-ref-1', 'tok-1');
 $check('repeated deposit with same token is idempotent', $repeat['id'] === $deposit['id']);
 $aliceNgn = $banking->accountFor((string) $alice['id'], 'NGN');
 $check('pending deposit does not change the balance', $ledger->accountBalance($aliceNgn['id']) === 0);
+$accountStatusChange = $auth->updateCustomerAccountStatus((string) $alice['id'], (string) $aliceNgn['id'], 'frozen');
+$check('administrator can freeze a customer currency account', $accountStatusChange['status_before'] === 'active' && $database->fetchOne('SELECT status FROM accounts WHERE id = ?', [$aliceNgn['id']])['status'] === 'frozen');
+$check('frozen currency account blocks money movement', $expectThrows(static fn () => $banking->submitDeposit((string) $alice['id'], 'NGN', '1000', '', 'frozen-check'), 'frozen'));
+$auth->updateCustomerAccountStatus((string) $alice['id'], (string) $aliceNgn['id'], 'active');
 $banking->verifyDeposit((string) $deposit['id'], $adminId, true, 'Bank receipt matched', 'BANK-REF-1');
 $check('approved deposit credits exactly 5000.00', $ledger->accountBalance($aliceNgn['id']) === 500000);
 
 $bobNgn = $banking->accountFor((string) $bob['id'], 'NGN');
 $check('second account on same asset opens without ledger code clash', $bobNgn['id'] !== $aliceNgn['id']);
+$check('account status control rejects cross-customer account IDs', $expectThrows(static fn () => $auth->updateCustomerAccountStatus((string) $alice['id'], (string) $bobNgn['id'], 'frozen'), 'not found'));
 
 // Transfers: atomic, idempotent per token, overdraft refused.
 $transfer = $banking->internalTransfer((string) $alice['id'], 'bob@test.local', 'NGN', '1200.00', 'Rent', 'tok-t1');
@@ -134,6 +153,39 @@ $check('rejected withdrawal releases the reservation', $ledger->accountBalance($
 $withdrawal2 = $banking->submitWithdrawal((string) $alice['id'], 'NGN', '1000.00', ['bank_name' => 'Test Bank', 'account_number' => '0123456789'], 'wtok-2');
 $banking->approveWithdrawal((string) $withdrawal2['id'], $adminId, true, 'Sent via settlement batch', 'SETTLE-77');
 $check('completed withdrawal debits exactly once', $ledger->accountBalance($aliceNgn['id']) === $expectedAfterTransfers - 100000);
+
+// External bank transfers use the same reservation/settlement invariants.
+$check('bank transfer requires beneficiary banking details', $expectThrows(static fn () => $banking->submitBankTransfer((string) $alice['id'], 'NGN', '1000.00', ['country_code' => 'NG'], 'btok-0'), 'beneficiary'));
+$check('bank transfer rejects malformed IBAN', $expectThrows(static fn () => $banking->submitBankTransfer((string) $alice['id'], 'NGN', '1000.00', ['country_code' => 'GB', 'beneficiary_name' => 'Test Beneficiary', 'bank_name' => 'Test Bank', 'iban' => 'NOT-AN-IBAN'], 'btok-invalid'), 'IBAN'));
+$bankTransfer = $banking->submitBankTransfer((string) $alice['id'], 'NGN', '1000.00', [
+    'country_code' => 'NG',
+    'beneficiary_name' => 'Test Beneficiary',
+    'bank_name' => 'Test Bank',
+    'account_number' => '0123456789',
+    'swift_bic' => 'TESTNGLA',
+], 'btok-1', 'Optional customer remark');
+$check('bank transfer is a distinct pending request', $bankTransfer['request_kind'] === 'bank_transfer' && $bankTransfer['status'] === 'pending');
+$check('bank transfer stores optional remark', $bankTransfer['user_remark'] === 'Optional customer remark');
+$check('bank transfer summary redacts account number', str_contains((string) $bankTransfer['destination_summary'], '…6789') && !str_contains((string) $bankTransfer['destination_summary'], '0123456789'));
+$decryptedBankDestination = \Wayfairs\Core\Security::decrypt((string) $bankTransfer['destination_ciphertext'], (string) $mockConfig->get('app_key'));
+$check('bank transfer details are encrypted and recoverable server-side', !str_contains((string) $bankTransfer['destination_ciphertext'], '0123456789') && $decryptedBankDestination['account_number'] === '0123456789');
+$check('bank transfer reserves funds', $ledger->accountBalance($aliceNgn['id']) === $expectedAfterTransfers - 200000);
+$check('currency account cannot close with an active reservation', $expectThrows(static fn () => $auth->updateCustomerAccountStatus((string) $alice['id'], (string) $aliceNgn['id'], 'closed'), 'reservations'));
+$check('bank transfer retry is idempotent', $banking->submitBankTransfer((string) $alice['id'], 'NGN', '1000.00', ['country_code' => 'NG', 'beneficiary_name' => 'Test Beneficiary', 'bank_name' => 'Test Bank', 'account_number' => '0123456789'], 'btok-1')['id'] === $bankTransfer['id']);
+$banking->approveWithdrawal((string) $bankTransfer['id'], $adminId, false, '', null);
+$check('rejected bank transfer releases reservation', $ledger->accountBalance($aliceNgn['id']) === $expectedAfterTransfers - 100000);
+$bankTransfer2 = $banking->submitBankTransfer((string) $alice['id'], 'NGN', '1000.00', ['country_code' => 'NG', 'beneficiary_name' => 'Second Beneficiary', 'bank_name' => 'Test Bank', 'account_number' => '9988776655'], 'btok-2');
+$banking->approveWithdrawal((string) $bankTransfer2['id'], $adminId, true, '', 'BANK-SETTLE-2');
+$completedBankTransfer = $database->fetchOne('SELECT status, external_reference, review_reason FROM withdrawal_requests WHERE id = ?', [$bankTransfer2['id']]);
+$check('completed bank transfer captures funds once', $ledger->accountBalance($aliceNgn['id']) === $expectedAfterTransfers - 200000 && $completedBankTransfer['status'] === 'completed' && $completedBankTransfer['external_reference'] === 'BANK-SETTLE-2');
+$check('settlement remark is optional', $completedBankTransfer['review_reason'] === null);
+
+// USD projections use persisted observed decimal rates without floats.
+$ngnAsset = $database->fetchOne("SELECT * FROM assets WHERE code = 'NGN'");
+$database->execute('INSERT INTO usd_rates (asset_id, rate_decimal, provider, provider_reference, source_updated_at, fetched_at) VALUES (?, ?, ?, ?, ?, ?)', [(string) $ngnAsset['id'], '0.00069', 'frankfurter', 'NGN/USD', gmdate('Y-m-d H:i:s'), gmdate('Y-m-d H:i:s.u')]);
+$observedRates = (new UsdRateService($database))->ratesForAssets([$ngnAsset, $database->fetchOne("SELECT * FROM assets WHERE code = 'USD'")]);
+$check('cached observed fiat rate projects as current', $observedRates['NGN']['status'] === 'current' && $observedRates['NGN']['rate'] === '0.00069');
+$check('USD projects as the base currency', $observedRates['USD']['provider'] === 'base' && $observedRates['USD']['rate'] === '1');
 
 // Restriction enforcement and impersonation guard.
 (new \Wayfairs\Services\Restrictions($database))->apply((string) $alice['id'], 'internal_transfer', 'manual_review', 'Test restriction for verification', $adminId, null);
