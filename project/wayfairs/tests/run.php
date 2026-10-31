@@ -63,6 +63,10 @@ $database = new Database(['driver' => 'sqlite', 'path' => $directory . '/test.sq
 $applied = (new Migrator($database))->migrate();
 $check('migrations apply once', $applied === ['001_core', '002_asset_deposit_details', '003_bank_transfers_and_usd_rates']);
 $check('migrations are idempotent', (new Migrator($database))->migrate() === []);
+$generatedMysql = (string) shell_exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(WAYFAIRS_ROOT . '/scripts/build-mysql-install.php'));
+$committedMysql = (string) file_get_contents(WAYFAIRS_ROOT . '/database/mysql/wayfairs-install.sql');
+$check('single MySQL install file matches the numbered migrations', $generatedMysql !== '' && $generatedMysql === $committedMysql);
+$check('migration runner ignores the consolidated install file', !in_array('wayfairs-install', array_map(static fn (string $file): string => pathinfo($file, PATHINFO_FILENAME), glob(WAYFAIRS_ROOT . '/database/mysql/[0-9][0-9][0-9]_*.sql') ?: []), true));
 $database->transaction(static fn (Database $db) => $db->execute("INSERT INTO site_settings (setting_key, setting_value, is_public) VALUES ('test.immediate.commit', 'yes', 0)"), true);
 $check('immediate SQLite transaction commits', $database->fetchOne("SELECT setting_value FROM site_settings WHERE setting_key = 'test.immediate.commit'")['setting_value'] === 'yes');
 try {

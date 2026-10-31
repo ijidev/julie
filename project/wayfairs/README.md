@@ -54,6 +54,25 @@ The language control uses the browser's on-device Translator API where
 available. If unsupported, it directs the user to the browser's own translation
 menu. No server-side or third-party translation widget receives page content.
 
+## MySQL: one-file import
+
+`database/mysql/wayfairs-install.sql` is the complete MySQL 8.4+ schema
+(23 tables, append-only triggers, and the migration ledger) in one file. It is
+generated from the numbered migrations, so do not edit it by hand:
+
+    php scripts/build-mysql-install.php > database/mysql/wayfairs-install.sql
+
+Upload it to an empty utf8mb4 database with the MySQL command line:
+
+    CREATE DATABASE wayfairs CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+    mysql -u USER -p wayfairs < database/mysql/wayfairs-install.sql
+
+Then open `/install` to create the administrator, site settings, and currencies.
+The file contains no customer, balance, or administrator data. phpMyAdmin
+usually imports it too, but the command line is the path verified by the
+generator; it has not been executed against a live MySQL server in this
+environment.
+
 ## Install
 
 1. Upload the project outside the public web root when possible and point the
