@@ -421,3 +421,14 @@ users, transactions, postings, receipts, and audit events are financial
 evidence. Likewise, support impersonation keeps password reauthentication,
 reason, dual identity, expiry, and mutation blocks even when a less restricted
 workflow is requested.
+
+## D-040 — Wayfairs admin funding is an audited adjustment, not impersonation
+Date: 2026-10-31
+Administrator funding/debiting uses a dedicated idempotent adjustment journal,
+balanced system/customer postings, available-balance enforcement, a required
+evidence note, a customer-visible transaction, and an audit event attributed to
+the real administrator. Support impersonation remains time-limited and mutation-
+blocked. The unused legacy fiat asset was physically removed only because a
+mode-0600 backup and zero-evidence dependency check proved its sole customer
+account and ledgers were empty; immutable evidence would have forced archival
+instead.

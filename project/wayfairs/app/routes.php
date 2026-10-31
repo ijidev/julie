@@ -388,6 +388,24 @@ return function (Router $router, Database $database): void {
         }, 'Currency account status updated.', '/admin/users/' . $userId);
     }, 'admin', true);
 
+    $router->post('/admin/users/{id}/adjust', static function (Request $request) use ($banking, $audit, $attempt): never {
+        $userId = (string) $request->route('id');
+        $attempt(static function () use ($banking, $audit, $request, $userId): void {
+            $direction = (string) $request->post('direction', '');
+            $remark = trim((string) $request->post('remark', ''));
+            $transaction = $banking->adminAdjustBalance(
+                (string) Context::user()['id'],
+                $userId,
+                (string) $request->post('account_id', ''),
+                $direction,
+                (string) $request->post('amount', ''),
+                $remark,
+                (string) $request->post('idem', '')
+            );
+            $audit->record('account.adjusted', 'transaction', (string) $transaction['id'], $remark, ['direction' => $direction, 'user_id' => $userId, 'public_reference' => $transaction['public_reference']]);
+        }, 'Customer balance adjustment completed.', '/admin/users/' . $userId);
+    }, 'admin', true);
+
     $router->post('/admin/users/{id}/kyc', static function (Request $request) use ($kyc, $audit, $attempt): never {
         $userId = (string) $request->route('id');
         $attempt(static function () use ($kyc, $audit, $userId, $request): void {

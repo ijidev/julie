@@ -13,6 +13,7 @@ final class Database
 {
     private PDO $pdo;
     private string $driver;
+    private bool $manualTransaction = false;
 
     public function __construct(array $configuration)
     {
@@ -103,20 +104,35 @@ final class Database
 
     public function transaction(callable $callback, bool $immediate = false): mixed
     {
-        if ($this->pdo->inTransaction()) {
+        if ($this->pdo->inTransaction() || $this->manualTransaction) {
             return $callback($this);
         }
+        $manual = false;
         try {
             if ($this->driver === 'sqlite' && $immediate) {
                 $this->pdo->exec('BEGIN IMMEDIATE');
+                $this->manualTransaction = true;
+                $manual = true;
             } else {
                 $this->pdo->beginTransaction();
             }
             $result = $callback($this);
-            $this->pdo->commit();
+            if ($manual) {
+                $this->pdo->exec('COMMIT');
+                $this->manualTransaction = false;
+            } else {
+                $this->pdo->commit();
+            }
             return $result;
         } catch (Throwable $error) {
-            if ($this->pdo->inTransaction()) {
+            if ($manual && $this->manualTransaction) {
+                try {
+                    $this->pdo->exec('ROLLBACK');
+                } catch (Throwable) {
+                    // Preserve the original failure.
+                }
+                $this->manualTransaction = false;
+            } elseif ($this->pdo->inTransaction()) {
                 $this->pdo->rollBack();
             }
             throw $error;

@@ -61,3 +61,26 @@ The interface uses the browser Translator API when available, keeping
 translation on-device. Unsupported browsers receive an honest browser-menu
 fallback. Identifiers, inputs, account data, amounts, and customer identity
 elements are excluded from the page text walker.
+
+## WDR-010 — Administrator balance changes are explicit adjustments
+
+Funding or debiting a customer never occurs by pretending to be that customer.
+An active administrator posts an idempotent `adjustment` transaction through a
+balanced journal entry. Debits cannot exceed available funds, closed accounts
+are rejected, the note becomes customer-visible transaction evidence, and the
+real administrator is retained in transaction metadata and the audit trail.
+
+## WDR-011 — Remove an asset only after a zero-evidence check
+
+The unused legacy fiat catalog was deleted only after an online mode-0600 backup
+and observed zero transactions, postings, holds, requests, transfers, invoices,
+beneficiaries, and crypto addresses. Its one empty account and corresponding
+ledger scaffolding were then removed transactionally. Assets with financial
+evidence remain immutable/archivable rather than deletable.
+
+## WDR-012 — Public source does not imply an open-source grant
+
+The standalone publication is prepared as a clean snapshot so ignored runtime
+configuration, databases, sessions, backups, and prior preview credentials do
+not enter public history. The project carries an explicit all-rights-reserved
+license; public GitHub visibility alone grants no reuse rights.

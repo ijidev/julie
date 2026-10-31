@@ -304,6 +304,66 @@ final class BankingService
         return $this->database->fetchOne('SELECT * FROM transfers WHERE id = ?', [$transferId]);
     }
 
+    public function adminAdjustBalance(string $adminId, string $userId, string $accountId, string $direction, string $amount, string $remark, string $idempotencyToken): array
+    {
+        $this->assertNotImpersonating('Administrative balance adjustments');
+        $admin = $this->database->fetchOne("SELECT id FROM users WHERE id = ? AND role = 'admin' AND status = 'active'", [$adminId]);
+        if (!$admin) {
+            throw new \RuntimeException('An active administrator account is required.');
+        }
+        if (!in_array($direction, ['credit', 'debit'], true)) {
+            throw new \RuntimeException('Choose credit or debit.');
+        }
+        $remark = trim($remark);
+        if (mb_strlen($remark) < 10) {
+            throw new \RuntimeException('Enter an adjustment note of at least 10 characters.');
+        }
+        $account = $this->database->fetchOne(
+            "SELECT a.*, s.code AS asset_code, s.scale AS asset_scale, s.id AS resolved_asset_id, u.role AS user_role
+             FROM accounts a JOIN assets s ON s.id = a.asset_id JOIN users u ON u.id = a.user_id
+             WHERE a.id = ? AND a.user_id = ?",
+            [$accountId, $userId]
+        );
+        if (!$account || (string) $account['user_role'] !== 'user') {
+            throw new \RuntimeException('Customer currency account was not found.');
+        }
+        if ((string) $account['status'] === 'closed') {
+            throw new \RuntimeException('A closed currency account cannot be adjusted.');
+        }
+        $key = $this->idempotencyKey('admin_adjustment', $adminId . ':' . $userId, $idempotencyToken);
+        $existing = $this->database->fetchOne(
+            "SELECT t.* FROM transactions t JOIN journal_entries je ON je.id = t.journal_entry_id WHERE je.idempotency_key = ? AND t.user_id = ? AND t.account_id = ? AND t.transaction_type = 'adjustment'",
+            [$key, $userId, $accountId]
+        );
+        if ($existing) {
+            return $existing;
+        }
+        $minor = $this->positiveAmount($amount, (int) $account['asset_scale']);
+        if ($direction === 'debit' && $this->ledger->accountBalance($accountId) < $minor) {
+            throw new \RuntimeException('Debit exceeds the customer available balance.');
+        }
+        $entryId = $this->ledger->createEntry('adjustment', mb_substr($remark, 0, 500), $adminId, $key);
+        $system = $this->systemAccountId((string) $account['resolved_asset_id'], 'asset');
+        $postings = $direction === 'credit'
+            ? [
+                ['ledger_account_id' => $system, 'side' => 'debit', 'amount_minor' => $minor],
+                ['ledger_account_id' => (string) $account['ledger_account_id'], 'side' => 'credit', 'amount_minor' => $minor],
+            ]
+            : [
+                ['ledger_account_id' => (string) $account['ledger_account_id'], 'side' => 'debit', 'amount_minor' => $minor],
+                ['ledger_account_id' => $system, 'side' => 'credit', 'amount_minor' => $minor],
+            ];
+        $transactionId = Security::uuid();
+        $this->database->transaction(function (Database $database) use ($postings, $adminId, $entryId, $transactionId, $userId, $accountId, $direction, $minor, $remark): void {
+            $this->ledger->post($postings, $adminId, $entryId);
+            $database->execute(
+                'INSERT INTO transactions (id, user_id, account_id, journal_entry_id, public_reference, transaction_type, direction, amount_minor, fee_minor, status, counterparty_label, description, metadata, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                [$transactionId, $userId, $accountId, $entryId, Security::reference('ADJ'), 'adjustment', $direction, $minor, 0, 'completed', 'Wayfairs administration', mb_substr($remark, 0, 500), json_encode(['admin_user_id' => $adminId], JSON_THROW_ON_ERROR), $this->now()]
+            );
+        });
+        return $this->database->fetchOne('SELECT * FROM transactions WHERE id = ?', [$transactionId]) ?? throw new \RuntimeException('Adjustment did not persist.');
+    }
+
     public function createInvoice(string $issuerId, string $assetCode, string $amount, string $title, ?string $description, ?string $dueAt): array
     {
         $this->guard($issuerId, $this->accountFor($issuerId, $assetCode), 'invoice');

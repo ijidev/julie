@@ -1,5 +1,51 @@
 # Changelog
 
+## Wayfairs — admin balance adjustments and safe catalog cleanup (2026-10-31)
+### Added
+- Customer-detail **Fund or debit customer** control backed by a balanced,
+  immutable, idempotent adjustment transaction. Credits fund through the system
+  asset control; debits enforce available balance; closed accounts and non-admin
+  actors are denied; the adjustment note appears on the customer receipt and the
+  real administrator is audited.
+- Public-repository preparation: preview credentials removed from README,
+  ignored runtime paths verified, and an explicit proprietary/all-rights-
+  reserved `LICENSE` added so public visibility is not mistaken for an open-
+  source grant.
+- Regression coverage for SQLite immediate-transaction commit/rollback and
+  administrative credit/debit positive, replay, overdraft, non-admin, and
+  missing-evidence paths.
+
+### Changed
+- Mobile dropdown navigation now overrides the desktop white-link treatment:
+  dark text on its white surface, with white text only on the green/blue active
+  item. Desktop sidebars remain dark with readable white links.
+- The large support-access restriction explainer was condensed to a compact
+  audited-session form and directs administrators to the separate balance-
+  adjustment workflow. Mandatory impersonation safeguards remain enforced.
+- Fresh installs and tests no longer create the unused legacy fiat asset; test
+  coverage uses EUR/USD instead.
+
+### Data maintenance
+- Observed the legacy asset had one empty account but zero transactions,
+  postings, holds, deposits, withdrawals, transfers, invoices, beneficiaries,
+  or crypto addresses.
+- Created a second online SQLite backup at mode 0600, fixed a dormant
+  `BEGIN IMMEDIATE` commit/rollback bug exposed by the cleanup, reran the cleanup
+  transaction, removed only empty account/catalog/ledger/rate scaffolding, and
+  recorded an audit event. Remaining catalog: BTC, ETH, USD; integrity `ok`.
+
+### Verified
+- 62/62 integration tests before documentation finalization; PHP lint and CSS
+  brace checks clean; invalid live adjustment posted no transaction.
+- Customer/admin route rendering remains warning-free; no removed-currency
+  reference remains in Wayfairs source, installer, migrations, tests, or docs.
+
+### Publishing status
+- Target selected: public `ijidev/wayfairs`, Wayfairs-only clean snapshot.
+  OpenCode still reports no GitHub MCP resources and `gh` is unauthenticated, so
+  external repository creation/push remains blocked until the selected GitHub
+  MCP is actually exposed to this session.
+
 ## Wayfairs — world-class banking workflow refinement (2026-10-31)
 ### Added
 - Traditional external bank-transfer workflow: ISO/ICU country selection,
@@ -56,7 +102,7 @@
 - Fresh `display_errors=1` crawl: 26 guest/customer/admin/detail/receipt pages
   returned 200 with zero PHP warnings. Guest/customer authorization denials
   returned 303/403; invalid admin customer creation persisted no row.
-- Real rate round-trips: CoinGecko BTC/ETH and Frankfurter NGN returned HTTP 200;
+- Real rate round-trips: CoinGecko BTC/ETH and Frankfurter fiat returned HTTP 200;
   forced admin refresh reported 3/3 enabled USD rates available.
 - Live dashboard rendered one horizontal card, USD default, sourced USD portfolio
   total, two unique translator controls, and 257 ICU country/territory options.
@@ -115,7 +161,7 @@
   `rejected`.
 - Live redesigned deposit flow: BTC 0.001 entered the operations queue and an
   administrator rejection persisted `rejected` with its decision reason.
-- Customer pages continue to omit disabled NGN, and the overview renders one
+- Customer pages continue to omit removed legacy fiat, and the overview renders one
   selected balance card with its real account selector.
 
 ### Honest limits
@@ -145,7 +191,7 @@
   fees, availability, no-JS first-panel fallback, and empty states are all read
   from persisted asset configuration.
 - Landing page rebuilt around real enabled assets and the manual settlement
-  flow; all sample balances and NGN references were removed.
+  flow; all sample balances and unsupported legacy-currency references were removed.
 - Admin dashboard now reports live customer, verification, deposit, withdrawal,
   and restriction counts with real work queues.
 - Ending administrative impersonation restores a fresh administrator session

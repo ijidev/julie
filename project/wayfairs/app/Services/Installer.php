@@ -105,7 +105,6 @@ final class Installer
     private function seedAssets(Database $database, array $input): void
     {
         $assets = [
-            ['NGN', 'Nigerian Naira', 'fiat', '₦', 2, 100000, 100000, 0, 0, null],
             ['USD', 'US Dollar', 'fiat', '$', 2, 1000, 1000, 0, 0, null],
             ['BTC', 'Bitcoin', 'crypto', '₿', 8, 100000, 100000, 0, 0, 'bitcoin'],
             ['ETH', 'Ethereum', 'crypto', 'Ξ', 18, 1000000000000000, 1000000000000000, 0, 0, 'ethereum'],

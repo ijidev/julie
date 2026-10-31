@@ -48,19 +48,43 @@ $initials = mb_strtoupper(mb_substr((string) $profile['first_name'], 0, 1) . mb_
   </article>
 
   <article class="card form-card">
-    <div class="form-intro"><h2>Protected support view</h2><p>Open the customer dashboard for support without allowing financial or security mutations.</p></div>
-    <div class="status-checklist">
-      <div class="status-check"><span class="status-check-icon"><?= wayfairs_icon('clock') ?></span><span class="status-check-copy"><strong>30-minute session</strong><span>The support view expires automatically.</span></span></div>
-      <div class="status-check"><span class="status-check-icon"><?= wayfairs_icon('security') ?></span><span class="status-check-copy"><strong>Sensitive actions blocked</strong><span>Money movement and security changes cannot execute.</span></span></div>
-      <div class="status-check"><span class="status-check-icon"><?= wayfairs_icon('audit') ?></span><span class="status-check-copy"><strong>Dual-identity audit</strong><span>The administrator and effective customer are both recorded.</span></span></div>
-    </div>
+    <div class="form-intro"><h2>View customer dashboard</h2><p>Open a time-limited audited support session using your current administrator credentials.</p></div>
+    <div class="notice brand"><?= wayfairs_icon('security') ?><div><strong>Support access</strong><p>Use the separate balance-adjustment control below for funding or debiting an account.</p></div></div>
     <form class="stack" method="post" action="<?= e(wayfairs_url('/admin/impersonate/' . $profile['id'])) ?>">
       <input type="hidden" name="_token" value="<?= e(wayfairs_csrf()) ?>" />
       <label>Support reason<input name="reason" minlength="10" maxlength="300" placeholder="Why support access is necessary" required /></label>
       <label>Your administrator password<input type="password" name="password" autocomplete="current-password" required /></label>
-      <div class="form-actions"><button class="btn danger" type="submit">Open protected customer view</button></div>
+      <div class="form-actions"><button class="btn" type="submit">Open customer dashboard</button></div>
     </form>
   </article>
+</section>
+
+<section class="content-grid">
+  <article class="card form-card admin-adjustment-card">
+    <div class="form-intro"><span class="page-kicker">Ledger operation</span><h2>Fund or debit customer</h2><p>Post an explicit balanced adjustment to one currency account without entering support impersonation.</p></div>
+    <?php if ($accounts === []): ?>
+      <div class="empty-state"><div class="empty-icon"><?= wayfairs_icon('wallet') ?></div><h3>No currency accounts</h3><p>The customer has no account available for adjustment.</p></div>
+    <?php else: ?>
+      <form class="stack" method="post" action="<?= e(wayfairs_url('/admin/users/' . $profile['id'] . '/adjust')) ?>">
+        <input type="hidden" name="_token" value="<?= e(wayfairs_csrf()) ?>" /><input type="hidden" name="idem" value="<?= e(wayfairs_idem()) ?>" />
+        <div class="form-grid">
+          <label>Currency account<select name="account_id" required><?php foreach ($accounts as $account): ?><option value="<?= e((string) $account['id']) ?>" <?= $account['status'] === 'closed' ? 'disabled' : '' ?>><?= e((string) $account['code']) ?> · <?= e((string) $account['account_number']) ?> · <?= e(wayfairs_amount((int) $account['available_minor'], (int) $account['scale'], (string) $account['symbol'])) ?> available<?= $account['status'] === 'closed' ? ' · closed' : '' ?></option><?php endforeach; ?></select></label>
+          <label>Operation<select name="direction" required><option value="credit">Credit — fund account</option><option value="debit">Debit — reduce account</option></select></label>
+        </div>
+        <label>Amount<input name="amount" inputmode="decimal" placeholder="0.00" required /></label>
+        <label>Adjustment note<input name="remark" minlength="10" maxlength="500" placeholder="Explain the verified basis for this adjustment" required /><span class="field-hint">Required financial evidence; shown in the customer transaction history.</span></label>
+        <div class="form-actions"><button class="btn" type="submit">Post balance adjustment</button></div>
+      </form>
+    <?php endif; ?>
+  </article>
+  <aside class="card static surface-muted sticky-panel">
+    <div class="panel-head"><div><h2>Adjustment controls</h2><p>This is the supported way to act on a customer balance.</p></div></div>
+    <div class="status-checklist">
+      <div class="status-check"><span class="status-check-icon"><?= wayfairs_icon('audit') ?></span><span class="status-check-copy"><strong>Immutable receipt</strong><span>A completed adjustment transaction and audit event are appended.</span></span></div>
+      <div class="status-check"><span class="status-check-icon"><?= wayfairs_icon('layers') ?></span><span class="status-check-copy"><strong>Double-entry posting</strong><span>Customer and system control accounts remain balanced.</span></span></div>
+      <div class="status-check"><span class="status-check-icon warn"><?= wayfairs_icon('security') ?></span><span class="status-check-copy"><strong>No overdrafts</strong><span>Administrative debits cannot exceed available funds or target a closed account.</span></span></div>
+    </div>
+  </aside>
 </section>
 
 <section class="content-grid">

@@ -1,5 +1,35 @@
 # Project State: Julie AiOS
 
+## Wayfairs — audited admin adjustments, clean three-asset catalog, publish-ready
+**Date:** 2026-10-31
+
+### Outcome
+Wayfairs administrators can now fund or debit customer currency accounts through
+an explicit balanced adjustment rather than unsafe full-access impersonation.
+The unused legacy fiat catalog and its one empty account were removed after a
+zero-evidence check and protected backup. Desktop and mobile navigation now keep
+readable contrast on both dark and white menu surfaces.
+
+### Verification
+- ✅ Adjustment credit, replay, debit, overdraft denial, non-admin denial,
+  required evidence note, and global ledger balance covered in the integration
+  suite.
+- ✅ SQLite immediate transaction commit/rollback regression added after the
+  cleanup safely rolled back on the previously dormant wrapper bug.
+- ✅ Live catalog is exactly BTC, ETH, USD; no orphan account; integrity `ok`.
+- ✅ Invalid live adjustment created zero transaction rows.
+- ✅ Runtime databases/config/sessions/backups ignored; public README contains no
+  preview credentials; standalone all-rights-reserved license added.
+
+### Publishing blocker
+The owner selected a public Wayfairs-only repository at `ijidev/wayfairs`.
+OpenCode currently discovers no MCP resources and GitHub CLI is unauthenticated.
+The local clean snapshot can be prepared, but creating/pushing the GitHub repo
+must wait until GitHub MCP tools are exposed to this OpenCode session or `gh`
+authentication is completed.
+
+---
+
 ## Wayfairs — traditional banking transfers, live USD valuation, customer administration
 **Date:** 2026-10-31
 
@@ -30,7 +60,8 @@ capability is fabricated when unavailable.
 ### Verification
 - ✅ SQLite backup before schema change; migration `003` applied; database mode
   0600; `integrity_check = ok`; `quick_check = ok`.
-- ✅ PHP lint clean; CSS braces 842/842; diff whitespace check clean; 54/54 tests.
+- ✅ PHP lint clean; CSS braces 847/847; diff whitespace check clean; current
+  integration suite 62/62.
 - ✅ 26-page authenticated/guest crawl at `display_errors=1`: all expected pages
   HTTP 200, no PHP warnings.
 - ✅ Real CoinGecko BTC/ETH and Frankfurter fiat round-trips; persisted current
@@ -101,9 +132,9 @@ transaction pages without inventing a cross-currency total or provider state.
   stop-impersonation returned to the admin session.
 - ✅ Live asset update round-trip with major-unit fields preserved exact stored
   minor values and destination details.
-- ✅ NGN remains disabled and absent from overview, transactions, deposit,
-  withdrawal, transfer, and invoice pages; overview still renders one active
-  balance card.
+- ✅ The unused legacy fiat catalog and its empty account scaffolding were
+  removed after a zero-evidence check; overview still renders one active balance
+  card.
 
 ### Honest boundaries / next decision
 - Settlement is manual by design. No payment provider, blockchain node, or
