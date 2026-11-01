@@ -1,5 +1,26 @@
 # Changelog
 
+## Wayfairs — payment review, saved beneficiaries, and exact-match prefill (2026-11-01)
+### Changed
+- Bank transfers and bill payments show a review page with every detail before
+  anything is sent. Confirming re-validates the reviewed input; repeat confirms do
+  not create a second payment (WDR-021). Old direct `POST /transfer` and `POST /bills` are removed.
+- Administrators publish beneficiaries under Beneficiaries; customers see them only
+  by typing the exact account number.
+- Transfer page: typing a saved account number fills the beneficiary fields; "Save to
+  my beneficiaries" stores the payee for next time; saved payees can be removed.
+- Migration `006_beneficiaries` creates `saved_beneficiaries` (the older unused
+  `beneficiaries` table from migration 001 is left as is). Migrator skips existing
+  indexes on a rerun.
+- Shared validation moved into `BankingService::cleanBankDestination`.
+
+### Verified
+- 121/121 tests pass, including review-without-write, exact-match and private lookup,
+  no plain-text identifiers, duplicate and archive rules.
+- HTTP run on a throwaway install: review, confirm, replay, admin publish, IBAN
+  prefill, bill review, and no server errors.
+- Not verified: rate limiting on lookups; MySQL path for migration 006.
+
 ## Wayfairs — encryption without sodium, flight requests, and a transfer switch (2026-11-01)
 ### Changed
 - Bank-detail encryption falls back to OpenSSL AES-256-GCM when the sodium

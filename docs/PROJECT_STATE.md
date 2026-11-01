@@ -1,5 +1,11 @@
 # Project State: Julie AiOS
 
+## Wayfairs — payment review and saved beneficiaries (2026-11-01)
+
+- Transfers and bill payments are reviewed before they are sent (WDR-021).
+- Administrators publish beneficiaries; customers save their own; exact-match prefill.
+- Open: lookups need rate limiting before launch; MySQL path for migration 006 is untested.
+
 ## Wayfairs — transfers work without sodium; flight requests; transfer switch (2026-11-01)
 
 - Bank details are encrypted with sodium where present, otherwise OpenSSL AES-256-GCM (WDR-019).

@@ -496,3 +496,11 @@ Transfers failed on a host without the sodium extension. Encryption now falls
 back to OpenSSL AES-256-GCM with the same application key, and sodium is still
 used where it exists (`project/wayfairs/docs/DECISIONS.md`, WDR-019). The
 AGENTS.md rule naming Sodium needs owner approval to change.
+
+## D-046 — Payments are reviewed before sending; beneficiary lookups are exact-match
+
+Date: 2026-11-01
+
+Transfers and bill payments show a review step before submission, and saved
+beneficiaries are matched only on an exact account identifier. Details are in
+`project/wayfairs/docs/DECISIONS.md`, WDR-021. Lookup rate limiting is still open.
