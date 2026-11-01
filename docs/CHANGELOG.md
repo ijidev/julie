@@ -1,5 +1,36 @@
 # Changelog
 
+## Wayfairs — cPanel root deployment fix (2026-11-01)
+### Added
+- Root front controller (`index.php` shim + `.htaccess`) so the site answers at
+  the domain root when the host keeps the document root at `public_html/`, with
+  `/public/...` and `/index.php` redirecting to the clean URL.
+- Per-directory deny `.htaccess` files for `app/`, `config/`, `database/`,
+  `docs/`, `scripts/`, `storage/`, and `tests/`; repository metadata and
+  dotfiles are denied at the root as well.
+- `docs/DEPLOYMENT.md`: the two supported layouts, PHP/mod_rewrite
+  requirements, a curl verification matrix, exposure-rotation steps, and a
+  troubleshooting table.
+- Deployment guard tests: root shim, deny rules, `Options -Indexes`, and the
+  `/public` canonicalisation rule are asserted on every test run.
+
+### Changed
+- `HEAD` requests now match `GET` routes with the body discarded, so uptime
+  monitors and `curl -I` no longer receive 404 for healthy pages.
+- README install section rewritten around the two layouts and the hidden-file
+  requirement on cPanel.
+
+### Verified
+- Real Apache 2.4.58 instance (temporary, no system service changes) run against
+  the project root as document root: `/`, `/login`, `/dashboard`, `/admin/*`
+  return 200; `/public/*` and `/index.php` 301 to the clean URL; `/app/*`,
+  `/config/*`, `/database/*`, `/docs/*`, `/scripts/*`, `/storage/*`,
+  `/tests/*`, `README.md`, `.htaccess`, `.gitignore` return 403; no directory
+  listing; installation completed over HTTP at the clean URL with an empty
+  `base_path` and zero PHP warnings while crawling customer and admin pages.
+- Root cause of the persistent `/public` in URLs: a child `.htaccess` owns
+  rewriting for its subtree, so the redirect must live in `public/.htaccess`.
+
 ## Wayfairs — admin balance adjustments and safe catalog cleanup (2026-10-31)
 ### Added
 - Customer-detail **Fund or debit customer** control backed by a balanced,

@@ -1,5 +1,39 @@
 # Project State: Julie AiOS
 
+## Wayfairs — deploys at the domain root on cPanel (Layout B)
+**Date:** 2026-11-01
+
+### Outcome
+Wayfairs now serves clean URLs at the domain root on shared hosting whose
+document root is `public_html/`, the layout the owner's cPanel account uses.
+Previously only `/public/...` resolved, `/` returned a raw directory listing,
+and `storage/config.php`, `storage/wayfairs.sqlite`, and `tests/run.php` were
+downloadable — a credential/data disclosure, not just a cosmetic URL problem.
+
+### Verification
+- ✅ Real Apache 2.4.58 (temporary instance from `/tmp`, no system service
+  changes) with the project root as document root: `/admin`, `/admin/users`,
+  `/admin/transactions`, `/admin/assets`, `/admin/settings`, `/admin/audit`,
+  `/admin/deposits`, `/admin/withdrawals`, `/admin/bank-transfers` → 200.
+- ✅ `/public`, `/public/install`, `/public/assets/app.css`, `/index.php` → 301
+  to the clean URL; `/assets/app.css` → 200.
+- ✅ `app/`, `config/`, `database/`, `docs/`, `scripts/`, `storage/`, `tests/`,
+  `README.md`, `AGENTS.md`, `package.json`, `.htaccess`, `.gitignore` → 403.
+- ✅ Installation completed over HTTP at the clean URL with empty `base_path`;
+  authenticated crawl produced zero `Fatal error`/`Warning`/`Notice` output.
+- ✅ `HEAD` returns the same status as `GET` with no body (previously 404).
+- ✅ Integration suite 72/72 passing, including new deployment guard tests.
+
+### Known limits
+- Layout B depends on `mod_rewrite` and `.htaccess` overrides. If a host ignores
+  them, Layout A (document root = `public/`) is required; the failure mode is
+  documented rather than hidden.
+- `X-Powered-By: PHP/8.3.6` survives `Header always unset` under mod_php on the
+  local harness. Cosmetic only; host-level `expose_php = Off` is the real fix.
+- Visual/aesthetic review on real desktop and phone hardware still needs the
+  owner; no browser binary exists on this host.
+- MySQL migrations remain unexecuted against a live MySQL 8.4 server here.
+
 ## Wayfairs — audited admin adjustments, clean three-asset catalog, publish-ready
 **Date:** 2026-10-31
 

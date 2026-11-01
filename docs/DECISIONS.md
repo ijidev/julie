@@ -432,3 +432,16 @@ blocked. The unused legacy fiat asset was physically removed only because a
 mode-0600 backup and zero-evidence dependency check proved its sole customer
 account and ledgers were empty; immutable evidence would have forced archival
 instead.
+
+## D-041 — Wayfairs supports both document-root layouts
+Date: 2026-11-01
+The owner's cPanel account keeps the document root at `public_html/`, which made
+`/public` mandatory in every URL and left `app/`, `storage/`, `database/`, and
+`tests/` readable over HTTP. Rather than requiring a hosting change, Wayfairs
+ships a root `.htaccess` front controller, a root `index.php` shim, and deny
+rules in each internal directory, while pointing the document root at `public/`
+stays the recommended layout. Because a child `.htaccess` owns rewriting for its
+subtree, the `/public` canonicalisation lives in `public/.htaccess`. Rationale:
+the owner needs the site reachable now, and a missing dotfile must fail loudly
+(guard tests) instead of silently re-exposing credentials. See WDR-013 in
+`project/wayfairs/docs/DECISIONS.md`.
