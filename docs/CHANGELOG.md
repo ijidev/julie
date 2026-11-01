@@ -1,5 +1,38 @@
 # Changelog
 
+## Wayfairs — MySQL/MariaDB portability and verified hosted schema (2026-11-01)
+### Fixed
+- `ERROR 1273 Unknown collation: 'utf8mb4_0900_ai_ci'` on cPanel/MariaDB: the
+  hosted schema, the migration runner, README, and deployment docs now use
+  `utf8mb4_unicode_ci`, which exists in MySQL 5.5+ and MariaDB 10.x.
+- `ERROR 1005 Foreign key constraint is incorrectly formed`:
+  `site_settings.updated_by` was `utf8mb4` while `users.id` is `ascii`; the
+  column now declares `CHARACTER SET ascii COLLATE ascii_bin`. Both this and the
+  collation defect would have failed on MySQL 8.x too, so the one-file schema
+  had never actually been executed before.
+- The web installer's MySQL path failed with the same collation error as the
+  file import; both now share the portable definition.
+- MySQL copy now reads "MySQL 8.x / MariaDB 10.4+"; the installer dropdown and
+  docs no longer claim an 8.4-only database.
+
+### Verified against a real server (first time)
+- MariaDB 10.11 on a database created with the server's default `latin1`
+  collation: one-file import → 24 tables, 6 append-only triggers, 3 ledger rows,
+  every table `utf8mb4_unicode_ci`.
+- Web installer (MySQL driver) completed; migration ledger recorded 001–003.
+- Authenticated HTTP crawl of admin dashboard, customers, transactions, assets,
+  settings, audit, deposits, withdrawals, and bank transfers: 200 with zero PHP
+  warnings.
+- Balance credit, idempotent replay, debit, and overdraft refusal through the
+  real MySQL driver; every journal entry balanced; append-only audit trigger
+  accepted inserts and rejected UPDATE/DELETE.
+- Two new tests guard the portable collation and explicit `ascii` charset on
+  `CHAR(36)` key columns; 74/74 tests pass.
+
+### Known limits
+- MySQL 8.x is still unobserved: only MariaDB 10.11 was available here.
+- Concurrency/row-locking behavior under load remains unverified on MySQL.
+
 ## Wayfairs — cPanel root deployment fix (2026-11-01)
 ### Added
 - Root front controller (`index.php` shim + `.htaccess`) so the site answers at

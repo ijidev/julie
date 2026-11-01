@@ -1,5 +1,34 @@
 # Project State: Julie AiOS
 
+## Wayfairs — hosted MySQL/MariaDB schema now executes (2026-11-01)
+**Date:** 2026-11-01
+
+### Outcome
+The one-file hosted schema and the MySQL path of `/install` now work on
+cPanel-style servers. Two defects were found by finally executing the schema
+against a real server: the MySQL-8-only `utf8mb4_0900_ai_ci` collation
+(`ERROR 1273`) and a charset mismatch on the `site_settings.updated_by` foreign
+key (`ERROR 1005`). Both were pre-existing and would also have failed on
+MySQL 8.x, so "import verified" was previously an unobserved claim.
+
+### Verification
+- ✅ MariaDB 10.11, database created with the server's default `latin1`
+  collation: import produced 24 tables, 6 triggers, 3 ledger rows, all tables
+  `utf8mb4_unicode_ci`.
+- ✅ Web installer with the MySQL driver completed against it.
+- ✅ Admin HTTP crawl (dashboard, customers, transactions, assets, settings,
+  audit, deposits, withdrawals, bank transfers) → 200, zero PHP warnings.
+- ✅ Credit, idempotent replay, debit, and overdraft refusal on real MySQL;
+  zero unbalanced journals; append-only audit trigger rejects UPDATE/DELETE.
+- ✅ 74/74 tests, including a portable-collation guard and an explicit-ascii
+  `CHAR(36)` guard.
+
+### Known limits
+- MySQL 8.x itself is unobserved; only MariaDB 10.11 was available.
+- MySQL locking/concurrency and backup/restore under load remain unverified.
+- Layout B (root `.htaccess`) still depends on the host honouring overrides;
+  the owner's host now serves the site, but only the owner can confirm it.
+
 ## Wayfairs — deploys at the domain root on cPanel (Layout B)
 **Date:** 2026-11-01
 

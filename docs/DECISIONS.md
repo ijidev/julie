@@ -445,3 +445,16 @@ subtree, the `/public` canonicalisation lives in `public/.htaccess`. Rationale:
 the owner needs the site reachable now, and a missing dotfile must fail loudly
 (guard tests) instead of silently re-exposing credentials. See WDR-013 in
 `project/wayfairs/docs/DECISIONS.md`.
+
+## D-042 — Wayfairs hosted schema must import on MariaDB, not only MySQL 8
+Date: 2026-11-01
+The owner's cPanel database server rejected the install file with `ERROR 1273
+Unknown collation: 'utf8mb4_0900_ai_ci'`. Hosted schemas now use
+`utf8mb4_unicode_ci` (MySQL 5.5+/MariaDB 10.x) and every `CHAR(36)` key column
+declares `ascii`/`ascii_bin`, because a `site_settings` foreign key was silently
+uncreatable with inherited `utf8mb4`. The schema and the web installer were
+then actually executed against a temporary MariaDB 10.11 instance, which also
+surfaced the FK defect. Rationale: "MySQL-compatible" is a claim that must be
+demonstrated on the database family shared hosting actually runs. MySQL 8.x
+remains unobserved and is reported as such. See WDR-014 in
+`project/wayfairs/docs/DECISIONS.md`.
