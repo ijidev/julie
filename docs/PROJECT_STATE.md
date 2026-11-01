@@ -1,5 +1,17 @@
 # Project State: Julie AiOS
 
+## Wayfairs — migrations repair themselves; bills and utilities added (2026-11-01)
+
+- Database updates no longer need manual SQL. Each request applies pending
+  migrations under a file lock and finishes any interrupted migration (WDR-017).
+- Customers can pay bills from `/bills` and see a Utilities section on the
+  dashboard. Flight booking is shown as not yet available, because no travel
+  provider is configured (WDR-018).
+- Transfers accept pasted IBANs and account numbers and ignore the unused route.
+  Seeded minimums are removed for new installs and cleared on existing ones.
+- Open: MySQL/MariaDB repair path is untested on a live server; the owner's
+  cPanel build has not yet been re-verified; the browser visual review is pending.
+
 ## Wayfairs — transfer form and homepage are customer-facing (2026-11-01)
 **Date:** 2026-11-01
 

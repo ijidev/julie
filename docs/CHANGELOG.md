@@ -1,5 +1,29 @@
 # Changelog
 
+## Wayfairs — self-repairing migrations, bill payments, and transfer fixes (2026-11-01)
+### Changed
+- Migrator (`app/Core/Migrator.php`) repairs interrupted migrations automatically:
+  file lock against concurrent requests, skip of existing `ADD COLUMN` and
+  `CREATE TABLE` parts, trigger-aware statement splitting, and a retry page on
+  failure. No manual SQL is required on deployment.
+- Migration `004_bill_payments_and_open_limits` (SQLite and MySQL): adds
+  `withdrawal_requests.payment_purpose` and clears the untouched seeded minimums.
+  `wayfairs-install.sql` regenerated.
+- Transfers: the selected route decides which identifier is used; stale values in
+  the other field are ignored. IBAN/account input is cleaned of spaces, hyphens,
+  and dots; free text is UTF-8 safe. Specific messages replace the generic error
+  for amount and identifier mistakes; unexpected failures are logged server-side.
+- Dashboard: Utilities section with "Pay a bill" and an honest "Book a flight"
+  card. Admin and operations wording removed from customer pages.
+- New `/bills` page reusing the transfer engine with biller details and bill reference.
+
+### Verified
+- 85/85 tests pass, including the interrupted-migration repair and bill/route tests.
+- Throwaway SQLite install at a pre-004 schema upgraded itself on first request;
+  the customer flows (local, IBAN with messy input, bad IBAN, bill via IBAN and via
+  account number) returned the expected messages and history.
+- Not verified: MySQL/MariaDB repair path (no server on this host).
+
 ## Wayfairs — dynamic transfer routes and a customer-facing homepage (2026-11-01)
 ### Changed
 - Bank transfer form: a beneficiary is now addressed by **one** route at a time.

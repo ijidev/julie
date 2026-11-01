@@ -477,3 +477,13 @@ page. Rationale: the request was credibility as a fintech platform, and a
 sales page that explains settlement plumbing reads like a technical manual. No
 provider, statistic, or testimonial was invented. See WDR-015 and WDR-016 in
 `project/wayfairs/docs/DECISIONS.md`.
+
+## D-044 — Wayfairs repairs its own schema; flight booking waits for a provider
+
+Date: 2026-11-01
+
+Wayfairs now completes interrupted migrations on the next request instead of
+requiring manual SQL on hosting (WDR-017). Bill payments reuse the transfer
+engine and are kept separate in the history (WDR-018). Flight booking is shown
+as unavailable rather than as a working search, because no travel provider
+exists to fulfil a booking.
