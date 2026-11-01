@@ -1,5 +1,21 @@
 # Changelog
 
+## Wayfairs — OTP, SMTP, email templates, dynamic beneficiaries (2026-11-01)
+### Changed
+- Transfers and bill payments require an email verification code before sending, when
+  an administrator enables it (off by default).
+- SMTP settings with a test-email button; editable templates for 9 events.
+- Welcome email on registration when SMTP is configured.
+- Admin beneficiary form shows only the fields for the chosen route.
+- Admin topbar width matches the body content width.
+- Account-number lookup moved to the top of the transfer form.
+- Migration 007 (otp_codes, email_templates); bootstrap logs file and line.
+
+### Verified
+- 121/121 tests pass.
+- Throwaway install: all admin and customer pages return 200, zero server errors,
+  OTP issue and verify round-trip passes.
+
 ## Wayfairs — payment review, saved beneficiaries, and exact-match prefill (2026-11-01)
 ### Changed
 - Bank transfers and bill payments show a review page with every detail before
