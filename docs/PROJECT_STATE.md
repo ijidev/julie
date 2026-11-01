@@ -1,5 +1,38 @@
 # Project State: Julie AiOS
 
+## Wayfairs — transfer form and homepage are customer-facing (2026-11-01)
+**Date:** 2026-11-01
+
+### Outcome
+The bank-transfer form no longer shows every banking field at once. Customers
+choose **International (IBAN)** or **Local account number**, and only that
+route's fields are rendered and validated; switching clears the other route so a
+stale value cannot be submitted. The homepage is now a marketing page: it leads
+with "Your money. Multiple currencies. One place." and covers multi-currency
+balances, receive/send payments, personal and business use, invoices, security,
+and a final call to action, without implementation narration or invented
+statistics.
+
+### Verification
+- ✅ `php -l` clean on every changed PHP file.
+- ✅ 77/77 tests, including 3 new guards (positioning, no implementation
+  language on the homepage, two-route transfer form).
+- ✅ Fresh install over HTTP: homepage 200, no PHP warnings, banned-term scan
+  clean, all six section anchors present, only enabled asset codes shown.
+- ✅ Authenticated `/transfer` 200: both route options present, only IBAN group
+  visible on load, inline JS parses under `node --check`.
+- ✅ Funded IBAN transfer and funded local-account transfer both submitted;
+  history rows redacted destinations to `…5555` and `…6789`.
+- ✅ Unfunded submissions were refused only for balance, proving destination
+  validation accepted either route.
+
+### Known limits
+- No browser binary here: visual/aesthetic verification on desktop and phone is
+  still an owner check.
+- The owner's existing installation keeps its stored footer/tagline until it is
+  updated; the footer partial already falls back from the old settlement-preview
+  string, and Settings can override both.
+
 ## Wayfairs — hosted MySQL/MariaDB schema now executes (2026-11-01)
 **Date:** 2026-11-01
 

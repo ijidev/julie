@@ -458,3 +458,22 @@ surfaced the FK defect. Rationale: "MySQL-compatible" is a claim that must be
 demonstrated on the database family shared hosting actually runs. MySQL 8.x
 remains unobserved and is reported as such. See WDR-014 in
 `project/wayfairs/docs/DECISIONS.md`.
+
+## D-043 — Wayfairs transfer form uses progressive disclosure; homepage is marketing-only
+Date: 2026-11-01
+A beneficiary bank account is addressed by an IBAN or a local account number,
+never both, so the transfer form now asks the customer to choose a route and
+renders only the matching fields. This is a UI change only: the banking service
+already accepted either, and it still enforces IBAN format, SWIFT length, and
+country validity server-side. Disabling and clearing the inactive group is
+required, because the POST handler forwards any non-empty destination field and
+the service prefers a supplied IBAN.
+
+The public homepage now carries marketing copy only. Product mechanics
+(manual settlement, ledger internals, encryption implementation, impersonation,
+internal audit) remain documented in code, tests, and the operations screens
+where they belong; they are not deleted from the product, just out of the sales
+page. Rationale: the request was credibility as a fintech platform, and a
+sales page that explains settlement plumbing reads like a technical manual. No
+provider, statistic, or testimonial was invented. See WDR-015 and WDR-016 in
+`project/wayfairs/docs/DECISIONS.md`.

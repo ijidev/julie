@@ -1,5 +1,44 @@
 # Changelog
 
+## Wayfairs — dynamic transfer routes and a customer-facing homepage (2026-11-01)
+### Changed
+- Bank transfer form: a beneficiary is now addressed by **one** route at a time.
+  Two selectable options (International/IBAN, Local account number) show only the
+  matching fields; the hidden group is disabled and cleared so a stale IBAN
+  cannot be submitted after switching. IBAN or account number becomes `required`
+  only for the active route. Without JavaScript both groups are shown with a
+  note, so the form still works. No backend change: the service already accepted
+  IBAN or account number with optional SWIFT/BIC and routing code.
+- Homepage rewritten as marketing surface: new headline "Your money. Multiple
+  currencies. One place.", sections for multi-currency, receive/send payments,
+  personal and business, invoices, security and trust, and a final CTA.
+  Manual-settlement narration, double-entry/ledger description, Sodium internals,
+  impersonation procedure, internal audit mechanisms, and placeholder statistics
+  are gone. Honest settlement state stays on the pages where money moves.
+- Guest nav and footer now link to the new sections (`#features`, `#payments`,
+  `#business`, `#security`); installer tagline/footer defaults use the same
+  positioning, and the footer partial replaces the previously seeded
+  "manual settlement preview" line on older installations.
+- New marketing CSS (`hero-panel`, `payments-grid`, `journey`, `trust-card`,
+  `section-tint`, `route-selector`) with responsive rules at 1024px and 640px.
+
+### Verified
+- `php -l` clean on `home.php`, `transfer.php`, `layouts/guest.php`,
+  `partials/footer.php`, `Installer.php`.
+- 77/77 tests pass, including three new guards: homepage positioning, no
+  implementation-only language on the homepage, and the two-route transfer form.
+- Fresh SQLite install served over HTTP: homepage 200 with the new headline and
+  zero PHP warnings; authenticated `/transfer` 200 renders both route options
+  with only the IBAN group visible; funded IBAN submission and funded local
+  account-number submission both completed and both history rows redacted the
+  destination to last four characters.
+- Inline page JavaScript parsed with `node --check`.
+
+### Known limits
+- No browser binary on this host, so the visual/aesthetic review on desktop and
+  phone remains an owner check; only markup, CSS presence, and HTTP behaviour
+  were verified here.
+
 ## Wayfairs — MySQL/MariaDB portability and verified hosted schema (2026-11-01)
 ### Fixed
 - `ERROR 1273 Unknown collation: 'utf8mb4_0900_ai_ci'` on cPanel/MariaDB: the
