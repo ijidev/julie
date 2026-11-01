@@ -487,3 +487,12 @@ requiring manual SQL on hosting (WDR-017). Bill payments reuse the transfer
 engine and are kept separate in the history (WDR-018). Flight booking is shown
 as unavailable rather than as a working search, because no travel provider
 exists to fulfil a booking.
+
+## D-045 — Bank-detail encryption works on servers without sodium
+
+Date: 2026-11-01
+
+Transfers failed on a host without the sodium extension. Encryption now falls
+back to OpenSSL AES-256-GCM with the same application key, and sodium is still
+used where it exists (`project/wayfairs/docs/DECISIONS.md`, WDR-019). The
+AGENTS.md rule naming Sodium needs owner approval to change.

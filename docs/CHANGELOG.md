@@ -1,5 +1,26 @@
 # Changelog
 
+## Wayfairs — encryption without sodium, flight requests, and a transfer switch (2026-11-01)
+### Changed
+- Bank-detail encryption falls back to OpenSSL AES-256-GCM when the sodium
+  extension is missing; records written that way are prefixed `gcm1:`. Existing
+  sodium records still open where sodium exists (WDR-019).
+- Administrator switch for bank transfers and bill payments under Site
+  information → Payments. Off by default; refused when encryption is unavailable (WDR-020).
+- Flight booking is a request form with a customer list and admin review
+  (`/flights`, `/admin/flights`). Nothing is booked or charged automatically.
+- Utilities added to the customer sidebar (`/utilities`).
+- Migration `005_flight_requests` (SQLite and MySQL); `wayfairs-install.sql` regenerated.
+
+### Fixed
+- Flight service was created before the audit service, which broke every page.
+  Unit tests did not load the routes file, so this was caught only by an HTTP check.
+
+### Verified
+- 106/106 tests pass.
+- A complete bank transfer and bill payment passed with sodium present and again
+  with sodium disabled through `disable_functions`.
+
 ## Wayfairs — self-repairing migrations, bill payments, and transfer fixes (2026-11-01)
 ### Changed
 - Migrator (`app/Core/Migrator.php`) repairs interrupted migrations automatically:

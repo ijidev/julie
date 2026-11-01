@@ -1,5 +1,13 @@
 # Project State: Julie AiOS
 
+## Wayfairs — transfers work without sodium; flight requests; transfer switch (2026-11-01)
+
+- Bank details are encrypted with sodium where present, otherwise OpenSSL AES-256-GCM (WDR-019).
+- Bank transfers and bill payments are off until an administrator switches them on (WDR-020).
+- Flight booking is a reviewed request workflow; nothing is booked automatically.
+- Open: the AGENTS.md "Sodium" wording needs owner approval; the flight flow has not been
+  exercised in a browser; the MySQL path for migration 005 is untested on a live server.
+
 ## Wayfairs — migrations repair themselves; bills and utilities added (2026-11-01)
 
 - Database updates no longer need manual SQL. Each request applies pending
