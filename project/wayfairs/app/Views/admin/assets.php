@@ -59,7 +59,7 @@ $configuredCount = count(array_filter($assets, static function (array $asset): b
     <details class="asset-editor">
       <summary>
         <span class="asset-summary-main"><span class="mark"><?= e(mb_substr((string) $asset['code'], 0, 2)) ?></span><span class="asset-summary-copy"><strong><?= e((string) $asset['name']) ?> · <?= e((string) $asset['code']) ?></strong><span><?= e(ucfirst((string) $asset['asset_type'])) ?> · <?= (int) $asset['scale'] ?> decimals · symbol <?= e((string) $asset['symbol']) ?></span></span></span>
-        <span class="asset-summary-state"><?= wayfairs_pill((int) $asset['enabled'] === 1 ? 'active' : 'closed') ?><?= wayfairs_pill((string) ($rate['status'] ?? 'unavailable')) ?><span class="btn small ghost">Edit</span></span>
+        <span class="asset-summary-state"><?= wayfairs_pill((int) $asset['enabled'] === 1 ? 'active' : 'closed') ?><span class="btn small ghost">Edit</span></span>
       </summary>
       <div class="asset-editor-body">
         <?php if ($missingDestination): ?><div class="notice warn"><?= wayfairs_icon('info') ?><div><strong>Deposits are open without a complete destination</strong><p>Customers see a warning until the required <?= $isFiat ? 'bank name and account number' : 'network and wallet address' ?> are saved.</p></div></div><?php endif; ?>
