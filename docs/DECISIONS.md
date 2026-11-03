@@ -504,3 +504,15 @@ Date: 2026-11-01
 Transfers and bill payments show a review step before submission, and saved
 beneficiaries are matched only on an exact account identifier. Details are in
 `project/wayfairs/docs/DECISIONS.md`, WDR-021. Lookup rate limiting is still open.
+
+## D-024 — OpenCode Go is an OpenClaw provider; beam-free is the default model
+Date: 2026-11-02
+OpenClaw gained an `opencode-go` provider pointed at OpenCode Go's
+OpenAI-compatible endpoint (`https://opencode.ai/zen/go/v1`), importing the full
+37-model catalog with real context windows. `opencode-go/beam-free` (alias
+`beam`) is now the default primary model for all agents, with the prior nvidia
+lead model retained as a fallback. The credential was reused from OpenCode's
+own stored auth rather than re-entered. Julie needs no code change for this: it
+reads the agent roster from the Gateway, which now reports beam-free as primary.
+Julie's own coding runtime (OpenCode) is unaffected and keeps its own model
+policy (agentrouter primary, nvidia fallback).

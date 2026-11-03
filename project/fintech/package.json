@@ -1,0 +1,34 @@
+{
+  "name": "fintech-banking-platform",
+  "version": "0.1.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "description": "Sandbox-first, ledger-first fiat and crypto banking platform",
+  "engines": {
+    "node": ">=22.12.0",
+    "npm": ">=10.0.0"
+  },
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace @fintech/web && npm run build --workspace @fintech/api",
+    "start": "npm run start --workspace @fintech/api",
+    "dev:api": "npm run dev --workspace @fintech/api",
+    "dev:web": "npm run dev --workspace @fintech/web",
+    "typecheck": "npm run typecheck --workspace @fintech/api && npm run typecheck --workspace @fintech/web",
+    "test": "npm run test --workspace @fintech/api && npm run test --workspace @fintech/web",
+    "db:migrate:sqlite": "npm run db:migrate:sqlite --workspace @fintech/api",
+    "db:validate": "node scripts/validate-database-artifacts.mjs",
+    "secrets:check": "node scripts/check-secrets.mjs",
+    "verify": "npm run secrets:check && npm run db:validate && npm run typecheck && npm test && npm run build"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  },
+  "allowScripts": {
+    "better-sqlite3@13.0.3": true,
+    "esbuild@0.28.2": true
+  }
+}

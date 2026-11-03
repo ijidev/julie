@@ -58,15 +58,24 @@ export function engineeringTaskPolicy(agentId: string): string {
   return policyText(agentId, null);
 }
 
+const toolsCache = new Map<string, { value: string[] | null; expires: number }>();
+const TOOLS_TTL_MS = 60_000;
+
 export async function engineeringRuntimeContext(agentId: string): Promise<string> {
   const profile = getAgentProfile(agentId);
   if (!profile) return "";
   let toolIds: string[] | null = null;
   if (profile.department === ENGINEERING_DEPARTMENT) {
-    try {
-      toolIds = (await gateway.listTools(agentId)).map((tool) => tool.id);
-    } catch {
-      toolIds = null;
+    const cached = toolsCache.get(agentId);
+    if (cached && cached.expires > Date.now()) {
+      toolIds = cached.value;
+    } else {
+      try {
+        toolIds = (await gateway.listTools(agentId)).map((tool) => tool.id);
+      } catch {
+        toolIds = null;
+      }
+      toolsCache.set(agentId, { value: toolIds, expires: Date.now() + TOOLS_TTL_MS });
     }
   }
   return policyText(agentId, toolIds);

@@ -1,0 +1,61 @@
+{
+  "id": "omniroute-media",
+  "name": "OmniRoute Media Provider",
+  "description": "Adds native OmniRoute image generation, batch transcription, and text-to-speech capabilities without relabeling the upstream model vendor.",
+  "version": "0.1.0",
+  "categories": [
+    "models"
+  ],
+  "providers": [
+    "omniroute"
+  ],
+  "setup": {
+    "providers": [
+      {
+        "id": "omniroute",
+        "envVars": [
+          "OMNIROUTE_API_KEY"
+        ]
+      }
+    ]
+  },
+  "contracts": {
+    "imageGenerationProviders": [
+      "omniroute"
+    ],
+    "mediaUnderstandingProviders": [
+      "omniroute"
+    ],
+    "speechProviders": [
+      "omniroute"
+    ]
+  },
+  "imageGenerationProviderMetadata": {
+    "omniroute": {
+      "authProviders": [
+        "omniroute"
+      ]
+    }
+  },
+  "mediaUnderstandingProviderMetadata": {
+    "omniroute": {
+      "capabilities": [
+        "audio"
+      ],
+      "defaultModels": {
+        "audio": "openrouter/openai/whisper-large-v3-turbo"
+      },
+      "autoPriority": {
+        "audio": 30
+      }
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  },
+  "activation": {
+    "onStartup": false
+  }
+}

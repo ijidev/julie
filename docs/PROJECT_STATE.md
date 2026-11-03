@@ -952,6 +952,16 @@ center AI ASSISTANT panel.
   fed by OpenCode `/api/project` records, grouped by canonical path with
   bounded per-path session counts; host paths stay server-side (D-022/D-023).
 
+### OpenClaw model provider: OpenCode Go (2026-11-02)
+- `opencode-go` added to `/home/admin/.openclaw/openclaw.json` (37 models,
+  base URL `https://opencode.ai/zen/go/v1`), with `opencode-go/beam-free`
+  (alias `beam`) as the default primary model for all 10 agents; previous
+  nvidia lead retained as fallback. Credential reused from OpenCode's stored
+  auth (never printed). Gateway restarted and verified: catalog shows
+  `opencode-go/beam-free` as default/configured/alias:beam and Julie's agent
+  roster reports it as primary for every agent. Config backup at
+  `data/backups/openclaw.json.20261102-175215`.
+
 ### Known Limitations (honest)
 - The avatar is a hand-built SVG illustration (stylized hologram), not a rendered
   3D mesh — no three.js/webgl dependency per minimal-deps rule. A real glTF model

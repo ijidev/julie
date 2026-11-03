@@ -545,7 +545,7 @@ export type AgentChatResponse = AgentHistoryResponse & {
 };
 export type AgentChatTurn = {
   turnId: string;
-  state: "queued" | "accepted" | "complete" | "cancel_requested" | "cancelled" | "error";
+  state: "queued" | "accepted" | "streaming" | "complete" | "cancel_requested" | "cancelled" | "error";
   text: string;
   createdAt: number;
   updatedAt: number;

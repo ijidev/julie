@@ -8,7 +8,7 @@ import { julieOperationsContext } from "./julie-operations.js";
 import { invalidateAgentDetail } from "./agent-detail.js";
 import { invalidateAgentOverview } from "./agent-overview.js";
 
-type AgentTurnState = "queued" | "accepted" | "complete" | "cancel_requested" | "cancelled" | "error";
+type AgentTurnState = "queued" | "accepted" | "streaming" | "complete" | "cancel_requested" | "cancelled" | "error";
 
 type AgentTurn = {
   turnId: string;
@@ -112,16 +112,21 @@ export async function startAgentTurn(
   const existing = turnsBySession.get(prepared.sessionId) ?? [];
   const busy = prepared.row?.hasActiveRun === true || existing.some((turn) => !isTerminal(turn.state));
   const turnId = crypto.randomUUID();
-  const runtimeContext = await engineeringRuntimeContext(agentId);
-  const directoryContext = await agentDirectoryContext();
+  // Parallelize the two independent context fetches; loadAgentDirectory is cached
+  // (30s TTL) so the directory load inside agentDirectoryContext and the one
+  // used for @mention resolution no longer run twice per turn.
+  const [runtimeContext, directoryContext, directoryEntries] = await Promise.all([
+    engineeringRuntimeContext(agentId),
+    agentDirectoryContext(),
+    agentId === "main" ? loadAgentDirectory() : Promise.resolve([] as Awaited<ReturnType<typeof loadAgentDirectory>>),
+  ]);
 
   // Julie orchestrates: an owner @mention is dispatched to the named agent's own
   // durable, named session before Julie's turn runs, so the work cannot silently
   // fall back to Julie doing it herself.
   let directive = "";
   if (agentId === "main" && !options.skipDelegation) {
-    const entries = await loadAgentDirectory();
-    const { matched, unknown } = resolveAgentMentions(text, entries);
+    const { matched, unknown } = resolveAgentMentions(text, directoryEntries);
     if (matched.length > 0) {
       const dispatched: Array<{ entry: (typeof matched)[number]; sessionId: string }> = [];
       const failures: string[] = [];
@@ -193,7 +198,13 @@ export async function startAgentTurn(
   retain(turn);
   publish(turn.sessionId, { type: "turn", turn: publicTurn(turn) });
 
-  void gateway.waitForChatReply(prepared.sessionKey, accepted.runId, 10 * 60_000, prompt, accepted.startedAt)
+  void gateway.waitForChatReply(prepared.sessionKey, accepted.runId, 10 * 60_000, prompt, accepted.startedAt, (partial) => {
+      if (turn.state === "complete" || turn.state === "error" || turn.state === "cancelled") return;
+      turn.state = "streaming";
+      turn.reply = partial;
+      turn.updatedAt = Date.now();
+      publish(turn.sessionId, { type: "turn", turn: publicTurn(turn) });
+    })
     .then((reply) => {
       turn.state = "complete";
       turn.reply = reply.text;
@@ -214,8 +225,9 @@ export async function startAgentTurn(
       options.onComplete?.({ state: turn.state, error: turn.error });
     });
 
-  const rows = await allAgentSessions(agentId);
-  const row = rows.find((candidate) => candidate?.key === prepared.sessionKey) ?? prepared.row;
+  // Reuse the session row already fetched during prepareAgentChatSession instead
+  // of re-paginating the agent's session list on every turn.
+  const row = prepared.row ?? null;
   return {
     ok: true as const,
     source: "gateway" as const,

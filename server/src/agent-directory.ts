@@ -24,7 +24,11 @@ function modelText(agent: GatewayAgent | undefined): string | null {
   return primary || null;
 }
 
+let directoryCache: { value: AgentDirectoryEntry[]; expires: number } | null = null;
+const DIRECTORY_TTL_MS = 30_000;
+
 export async function loadAgentDirectory(): Promise<AgentDirectoryEntry[]> {
+  if (directoryCache && directoryCache.expires > Date.now()) return directoryCache.value;
   const profiles: Map<string, AgentProfile> = getAgentProfileMap();
   const assignments = getAgentWorkspaceAssignmentMap();
   let agents: GatewayAgent[] | null = null;
@@ -65,11 +69,13 @@ export async function loadAgentDirectory(): Promise<AgentDirectoryEntry[]> {
       model: modelText(agent),
     });
   }
-  return entries.sort((left, right) => {
+  const sorted = entries.sort((left, right) => {
     if (left.agentId === "main") return -1;
     if (right.agentId === "main") return 1;
     return left.humanName.localeCompare(right.humanName);
   });
+  directoryCache = { value: sorted, expires: Date.now() + DIRECTORY_TTL_MS };
+  return sorted;
 }
 
 export function formatAgentDirectory(entries: AgentDirectoryEntry[]): string {

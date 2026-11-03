@@ -1095,3 +1095,54 @@
 - `project/wayfairs/app/Views/admin/dashboard.php`, `users.php`: refreshed operations dashboard and customer table.
 - `project/wayfairs/app/Core/Request.php`, `public/index.php`, `app/routes.php`: fixed route-parameter propagation so admin customer detail pages load.
 - Verified: PHP syntax checks pass, 25 integration tests pass, Julie-managed launch on port 4100 serves `/project/wayfairs/`, admin and test customer sessions work.
+
+### OpenClaw provider: OpenCode Go (2026-11-02)
+- Added `opencode-go` to `/home/admin/.openclaw/openclaw.json` providers
+  (base URL `https://opencode.ai/zen/go/v1`, OpenAI-completions API), importing
+  all 37 models from the OpenCode Go catalog with their real context windows.
+  `opencode-go/beam-free` (alias `beam`) is set as the default model for every
+  agent (`agents.defaults.model.primary` and the `main` / `julie-command-center-qa`
+  overrides), with the previous nvidia lead model retained as a fallback.
+- Credential was reused from OpenCode's own stored auth (copied internally; never
+  printed, logged, or committed). Config backup saved at
+  `data/backups/openclaw.json.20261102-175215` (mode 0600).
+- Gateway restarted and verified: `opencode-go/beam-free` shows as
+  default/configured/alias:beam in the gateway catalog and Julie's agent roster
+  now reports it as primary for all 10 agents. Gateway version 2026.10.5,
+  connectivity ok.
+
+### Chat latency improvements (2026-11-02)
+- Pre-turn work parallelized and cached: `engineeringRuntimeContext` now caches
+  the per-agent tool list (60s TTL) and `loadAgentDirectory` caches its roster
+  (30s TTL); context fetches run via `Promise.all` instead of sequentially.
+  Accepted time dropped from ~3.2s to ~1.9s on the measured PONG turn.
+- `waitForChatReply` poll interval reduced from 3s to 1s so completion is
+  detected sooner (the gateway emits no intermediate delta frames for the
+  current model, so polling is the detection path).
+- Removed the redundant second `allAgentSessions` pagination at the end of a
+  turn (reuses the row already fetched during session preparation).
+- Frontend now shows the owner's message optimistically and a "Waiting for
+  OpenClaw's first reply…" indicator instead of a blank log, so the UI feels
+  responsive during the model's generation window.
+- Root cause documented: the gateway sends only a `status` frame for this model
+  (no `delta`/`final`), so true token streaming is not available from the
+  Gateway for Julie today; the remaining ~7-11s is model generation time driven
+  by Julie's large system prompt (engineering context + agent directory +
+  operations context) and the model's reasoning. Further reductions require
+  prompt trimming, a faster model, or lower thinking level — flagged as the next
+  decision, not silently changed.
+
+### Streaming enabled (2026-11-02)
+- Streaming plumbing is now live end-to-end: `gateway.waitForChatReply` accepts
+  an `onDelta` callback that accumulates partial text from Gateway `chat`
+  `delta` frames and fires it; `startAgentTurn` publishes a `streaming` turn
+  event with the partial reply; the frontend's `awaitAgentTurnEvent` forwards
+  deltas to a new `agentChatStreaming` state rendered as a live assistant
+  bubble (with a "Waiting for OpenClaw's first reply…" fallback).
+- Honest boundary: the Gateway emits at most one `delta` frame (full text) for
+  Julie's backend client connection, ~1s before completion detection, so the
+  streaming bubble appears roughly a second earlier than the final history.
+  True token-by-token streaming would require Julie to be recognized as a
+  control-UI client (client id/mode change), which breaks the Gateway auth
+  handshake, or Gateway-side changes. The plumbing stays in place and will
+  activate fully if the Gateway ever sends incremental deltas.

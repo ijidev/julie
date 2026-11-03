@@ -1743,7 +1743,7 @@ function AgentOnboardingPage({ navigate }: { navigate: (to: string) => void }) {
 
 type AgentDetailTab = "overview" | "activity" | "chat" | "capabilities";
 
-function awaitAgentTurnEvent(agentId: string, sessionId: string, turnId: string, timeoutMs = 10 * 60_000): Promise<AgentChatTurn> {
+function awaitAgentTurnEvent(agentId: string, sessionId: string, turnId: string, timeoutMs = 10 * 60_000, onUpdate?: (turn: AgentChatTurn) => void): Promise<AgentChatTurn> {
   return new Promise((resolve, reject) => {
     const source = new EventSource(`/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/events`);
     const timer = window.setTimeout(() => finish(() => reject(new Error("Agent turn timed out"))), timeoutMs);
@@ -1753,6 +1753,7 @@ function awaitAgentTurnEvent(agentId: string, sessionId: string, turnId: string,
         const data = JSON.parse(event.data) as { type?: string; turn?: AgentChatTurn; turns?: AgentChatTurn[] };
         const turn = data.turn?.turnId === turnId ? data.turn : data.turns?.find((row) => row.turnId === turnId);
         if (!turn) return;
+        if (onUpdate) onUpdate(turn);
         if (turn.state === "complete") finish(() => resolve(turn));
         if (turn.state === "error" || turn.state === "cancelled") finish(() => reject(new Error(turn.error || `Turn ${turn.state}`)));
       } catch { /* malformed frame: keep listening */ }
@@ -2226,6 +2227,7 @@ function AgentDetailPage({ agentId, navigate }: { agentId: string; navigate: (to
   const [historyTruncated, setHistoryTruncated] = useState(false);
   const [agentChatInput, setAgentChatInput] = useState("");
   const [agentChatSending, setAgentChatSending] = useState(false);
+  const [agentChatStreaming, setAgentChatStreaming] = useState<string | null>(null);
   const [agentChatStatus, setAgentChatStatus] = useState("");
   const agentChatLogRef = useRef<HTMLDivElement>(null);
   const historyRequestRef = useRef(0);
@@ -2306,6 +2308,12 @@ function AgentDetailPage({ agentId, navigate }: { agentId: string; navigate: (to
     setAgentChatSending(true);
     setHistoryError("");
     setAgentChatStatus(selectedSessionId ? "Submitting to the Gateway…" : "Creating a named agent session…");
+    setAgentChatStreaming(null);
+    // Show the owner's message immediately so the UI feels responsive while the
+    // Gateway runs the turn in the background (the turn resolves only on the
+    // final reply, which can take several seconds for large Julie contexts).
+    const optimisticId = Date.now();
+    setAgentMessages((prev) => [...prev, { id: optimisticId, role: "user", text, timestamp: optimisticId }]);
     try {
       const result = await api.sendAgentMessage(agentId, text, selectedSessionId);
       const nextSessionId = result.session.sessionId;
@@ -2313,15 +2321,20 @@ function AgentDetailPage({ agentId, navigate }: { agentId: string; navigate: (to
       setSelectedSessionId(nextSessionId);
       setAgentChatInput("");
       setAgentChatStatus(result.status === "queued" ? "Queued behind current work. You may continue elsewhere." : "Gateway accepted the turn. You may continue elsewhere.");
-      void awaitAgentTurnEvent(agentId, nextSessionId, result.turn.turnId).then(async () => {
+      void awaitAgentTurnEvent(agentId, nextSessionId, result.turn.turnId, 10 * 60_000, (turn) => {
+        if (turn.reply) setAgentChatStreaming(turn.reply);
+      }).then(async () => {
+        setAgentChatStreaming(null);
         await fetchAgentHistory(nextSessionId);
         setAgentChatStatus("Completed by OpenClaw Gateway.");
         setData(await api.agentDetail(agentId, true).catch(() => data));
       }).catch((turnError: any) => {
+        setAgentChatStreaming(null);
         setHistoryError(turnError?.message ?? "The agent turn did not complete.");
         setAgentChatStatus("");
       });
     } catch (requestError: any) {
+      setAgentMessages((prev) => prev.filter((m) => m.id !== optimisticId));
       setAgentChatStatus("");
       setHistoryError(requestError?.message ?? "The Gateway did not accept this message.");
     } finally {
@@ -2540,7 +2553,13 @@ function AgentDetailPage({ agentId, navigate }: { agentId: string; navigate: (to
                   {message.role === "assistant" ? <Markdown text={message.text} /> : <div className="msg-plain">{message.text}</div>}
                 </article>
               ))}
-              {agentChatSending && <div className="agent-chat-waiting"><span className="page-state-spinner" /> Waiting for OpenClaw's final reply…</div>}
+              {agentChatStreaming && (
+                <article className="agent-chat-message assistant agent-chat-streaming">
+                  <div className="agent-chat-message-head"><span>{agent.displayName}</span><time>streaming…</time></div>
+                  <Markdown text={agentChatStreaming} />
+                </article>
+              )}
+              {agentChatSending && !agentChatStreaming && <div className="agent-chat-waiting"><span className="page-state-spinner" /> Waiting for OpenClaw's first reply…</div>}
             </div>
 
             <div className="agent-chat-composer">

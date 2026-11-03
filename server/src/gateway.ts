@@ -450,7 +450,8 @@ export class GatewayClient {
     runId: string | undefined,
     timeoutMs: number,
     expectedUserMessage = "",
-    startedAt = Date.now()
+    startedAt = Date.now(),
+    onDelta?: (text: string) => void,
   ): Promise<{ runId?: string; text: string }> {
     return new Promise((resolve, reject) => {
       let settled = false;
@@ -468,10 +469,21 @@ export class GatewayClient {
         cleanup();
         reject(err);
       };
+      let accumulated = "";
       const listener = (event: string, payload: ChatEventPayload) => {
         if (event !== "chat") return;
         if (payload?.sessionKey !== sessionKey) return;
         if (runId && payload.runId && payload.runId !== runId) return;
+        if (payload.state === "delta") {
+          const hasSnapshot = payload.message?.content !== undefined && extractText(payload.message.content).length > 0;
+          if (hasSnapshot) accumulated = extractText(payload.message!.content);
+          else if (typeof payload.deltaText === "string" && payload.deltaText) {
+            if (payload.replace === true) accumulated = payload.deltaText;
+            else accumulated += payload.deltaText;
+          }
+          if (accumulated && onDelta) onDelta(accumulated);
+          return;
+        }
         if (payload.state === "final") {
           const text = extractText(payload.message?.content);
           if (text) finishOk(text);
@@ -508,7 +520,7 @@ export class GatewayClient {
             if (text && (recent || userMatches || observedExpectedUser)) finishOk(text);
           }
         } catch { /* transient poll failure: keep waiting */ }
-      }, 3000);
+      }, 1000);
       const timeout = setTimeout(() => finishErr(new Error("chat reply timeout")), timeoutMs);
       const cleanup = () => {
         this.eventListeners = this.eventListeners.filter((l) => l !== listener);
